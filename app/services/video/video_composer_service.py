@@ -212,8 +212,7 @@ class VideoComposerService:
         else:
             for cand in [
                 settings.BASE_DIR / "assets" / "logo_nengia_fire.png",
-                settings.BASE_DIR / "assets" / "logo.png",
-                Path("d:/NENGHIA0980/video/static/assets/logo_nengia_fire.png")
+                settings.BASE_DIR / "assets" / "logo.png"
             ]:
                 if cand.exists():
                     final_logo = str(cand)
@@ -400,8 +399,7 @@ class VideoComposerService:
         else:
             for cand in [
                 settings.BASE_DIR / "assets" / "logo_nengia_fire.png",
-                settings.BASE_DIR / "assets" / "logo.png",
-                Path("d:/NENGHIA0980/video/static/assets/logo_nengia_fire.png")
+                settings.BASE_DIR / "assets" / "logo.png"
             ]:
                 if cand.exists():
                     final_logo = str(cand)

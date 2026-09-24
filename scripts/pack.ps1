@@ -1,5 +1,5 @@
-$sourceDir = "d:\NENGHIA0980\ReviewMatThon"
-$zipPath = "d:\NENGHIA0980\ReviewMatThon_FULL_1CLICK.zip"
+$sourceDir = (Resolve-Path "$PSScriptRoot\..").Path
+$zipPath = Join-Path (Split-Path -Parent $sourceDir) "ReviewMatThon_FULL_1CLICK.zip"
 $tempDir = Join-Path $env:TEMP "ReviewMatThon_PackageTemp"
 
 Write-Host '=============================================================================='
