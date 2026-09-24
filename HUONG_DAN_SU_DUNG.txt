@@ -1,0 +1,29 @@
+================================================================================
+          STUDIO REVIEW MẮT THẦN - HƯỚNG DẪN CÀI ĐẶT & SỬ DỤNG
+================================================================================
+
+👉 BƯỚC 1: CÀI ĐẶT LẦN ĐẦU (Chỉ cần làm 1 lần duy nhất)
+   - Nhấn đúp chuột vào file: 1_CAI_DAT_HE_THONG.bat
+   - Hệ thống sẽ tự động hoàn toàn:
+     + Kiểm tra & cài đặt Python 3.11 chính thức (nếu máy chưa có).
+     + Kiểm tra & cấu hình bộ công cụ video FFmpeg.
+     + Tạo môi trường ảo độc lập (venv).
+     + Tự động nhận diện GPU NVIDIA để cài PyTorch tăng tốc AI, hoặc CPU.
+     + Cài đặt các thư viện cần thiết.
+     + Tự động tạo biểu tượng 'Review Mắt Thần' ngoài màn hình Desktop.
+
+👉 BƯỚC 2: KHỞI ĐỘNG VÀ SỬ DỤNG
+   - Nhấn đúp vào biểu tượng 'Review Mắt Thần' ngoài màn hình Desktop
+     hoặc chạy file: 2_KHOI_DONG.bat
+   - Trình duyệt web sẽ tự động mở giao diện Studio tại: http://127.0.0.1:8686
+
+👉 BƯỚC 3: CÀI ĐẶT API KEY (Để dịch thuật & AI)
+   - Mở giao diện Studio trên trình duyệt -> Chọn tab 'Cài Đặt'.
+   - Nhập Gemini API Key hoặc OpenRouter API Key của bạn và nhấn Lưu.
+
+👉 KHI MUỐN TẮT CHƯƠNG TRÌNH:
+   - Chỉ cần đóng cửa sổ dòng lệnh đen (Command Prompt) lại là xong.
+
+================================================================================
+Chúc bạn tạo ra những video Review Mắt Thần chất lượng cao!
+================================================================================

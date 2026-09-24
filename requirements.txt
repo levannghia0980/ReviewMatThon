@@ -1,0 +1,25 @@
+# ============================================================
+# REVIEW MẮT THẦN - PYTHON DEPENDENCIES
+# ============================================================
+
+# Web & API Framework
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+python-multipart>=0.0.9
+websockets>=12.0
+pydantic>=2.0.0
+sqlalchemy>=2.0.0
+
+# HTTP & Cloud APIs
+httpx>=0.27.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+groq>=0.9.0
+yt-dlp>=2024.3.10
+
+# Audio Processing & AI Models
+numpy>=1.24.0,<2.0.0
+scipy>=1.11.0
+pydub>=0.25.1
+deepfilternet>=0.5.6
+faster-whisper>=1.0.0
