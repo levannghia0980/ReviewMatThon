@@ -30,7 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # CAU HINH REPOSITORY GITHUB
 # (Ban co the thay doi ten User / Repo hoac Branch tai day)
 # ==============================================================================
-GITHUB_USER = "NENGHIA0980"
+GITHUB_USER = "levannghia0980"
 GITHUB_REPO = "ReviewMatThon"
 BRANCH = "main"
 
