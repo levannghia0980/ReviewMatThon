@@ -25,7 +25,8 @@ wheels/
 
 # Frontend
 frontend/node_modules/
-frontend/dist/
+# Keep frontend/dist for end-user client machines without nodejs
+
 
 # Project Temp & Output Data
 temp/
