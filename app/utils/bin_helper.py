@@ -40,6 +40,31 @@ def setup_system_path():
         Path(sys.executable).parent / "Scripts"
     ]
     
+    # 1. Thử lấy FFmpeg từ thư viện Python imageio-ffmpeg nếu có
+    try:
+        import imageio_ffmpeg
+        img_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        if img_ffmpeg and os.path.exists(img_ffmpeg):
+            candidate_dirs.append(Path(img_ffmpeg).parent)
+            
+            # Tự động copy vào tools/ffmpeg.exe nếu tools chưa có
+            tools_ffmpeg = BASE_DIR / "tools" / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg")
+            if not tools_ffmpeg.exists():
+                try:
+                    (BASE_DIR / "tools").mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(img_ffmpeg, tools_ffmpeg)
+                except Exception:
+                    pass
+                    
+            # Cấu hình trực tiếp cho pydub nếu có
+            try:
+                from pydub import AudioSegment
+                AudioSegment.converter = img_ffmpeg
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Thêm winget package dirs nếu có
     local_app_data = os.environ.get("LOCALAPPDATA", "")
     if local_app_data:
@@ -79,7 +104,16 @@ def get_ffmpeg_cmd() -> List[str]:
         if cand.exists():
             return [str(cand)]
             
-    # 2. Kiểm tra shutil.which (PATH)
+    # 2. Kiểm tra imageio-ffmpeg
+    try:
+        import imageio_ffmpeg
+        img_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        if img_ffmpeg and os.path.exists(img_ffmpeg):
+            return [img_ffmpeg]
+    except Exception:
+        pass
+
+    # 3. Kiểm tra shutil.which (PATH)
     found = shutil.which("ffmpeg")
     if found:
         return [found]
