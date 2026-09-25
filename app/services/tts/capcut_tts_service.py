@@ -3,6 +3,7 @@ import io
 import re
 import time
 import json
+import secrets
 import logging
 import requests
 from requests.adapters import HTTPAdapter
@@ -306,8 +307,13 @@ class CapCutTTSService:
 
                 time.sleep(0.15)
             except Exception as exc:
-                logger.warning(f"[CapCut TTS] Thử lần {attempt + 1} thất bại cho câu: {clean_text[:30]}... ({exc})")
-                time.sleep(0.2)
+                err_str = str(exc)
+                if "ExceededQPSQuota" in err_str or "40200011" in err_str:
+                    sleep_time = 0.35 * (attempt + 1) + (secrets.randbelow(30) / 100.0)
+                    time.sleep(sleep_time)
+                else:
+                    logger.warning(f"[CapCut TTS] Thử lần {attempt + 1} thất bại cho câu: {clean_text[:30]}... ({exc})")
+                    time.sleep(0.2)
 
         # Fallback 1: Dự phòng an toàn sang TikTok TTS engine cùng hệ thống ByteDance
         try:
@@ -504,12 +510,12 @@ class CapCutTTSService:
         if not dialogues:
             raise ValueError(f"Project #{project_id} chưa có câu thoại nào!")
 
-        raw_workers = max_workers or getattr(settings, 'TTS_MAX_WORKERS', 128)
+        raw_workers = max_workers or getattr(settings, 'TTS_MAX_WORKERS', 16)
         try:
             num_workers = int(raw_workers)
         except Exception:
-            num_workers = 128
-        num_workers = max(1, min(128, num_workers))
+            num_workers = 16
+        num_workers = max(1, min(20, num_workers))
 
         safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip() or f"project_{project.id}"
         master_voice_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"

@@ -107,7 +107,7 @@ class Settings:
     
     # TTS Voiceover Settings: "capcut" (CapCut Cloud SAMI - Khuyên dùng) | "tiktok" (TikTok Legacy)
     TTS_ENGINE: str = os.getenv("TTS_ENGINE", "capcut")
-    TTS_MAX_WORKERS: int = int(os.getenv("TTS_MAX_WORKERS", "128"))
+    TTS_MAX_WORKERS: int = int(os.getenv("TTS_MAX_WORKERS", "16"))
     CAPCUT_COOKIE: str = os.getenv("CAPCUT_COOKIE", "")
     TIKTOK_SESSION_ID: str = os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
     
