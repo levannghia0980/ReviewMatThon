@@ -27,8 +27,11 @@ def transcribe_media(req: TranscribeRequest):
         else:
             audio_path = src_path
 
+        # Lọc sạch tạp âm trước khi gửi sang CapCut ASR / Whisper
+        clean_audio = AudioExtractorService.get_clean_audio_for_asr(audio_path)
+
         segments, srt_path, txt_path, json_path = WhisperService.transcribe(
-            audio_path=audio_path,
+            audio_path=clean_audio,
             language=req.language,
             model_size=req.model_size,
             clean_text=req.clean_text

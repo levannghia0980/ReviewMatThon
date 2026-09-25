@@ -54,10 +54,17 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             task_manager.add_log(task_id, "[1/5] 🎵 Trích xuất Audio 16kHz PCM WAV...", "cyan")
             audio_path = AudioExtractorService.extract_audio_16k_wav(video_path)
 
+            task_manager.update_task(task_id, step=1, progress=14)
+            task_manager.add_log(task_id, "[1/5] 🎙️ Đang lọc sạch tạp âm & khử ồn nền trước khi gửi CapCut ASR...", "cyan")
+            clean_audio_path = AudioExtractorService.get_clean_audio_for_asr(audio_path)
+            task_manager.add_log(task_id, f"   ✔ Đã làm sạch âm thanh (Vocal Denoise) -> Sẵn sàng bóc tách.", "emerald")
+
+            engine = getattr(settings, "ASR_ENGINE", "capcut").lower()
+            engine_name = "CapCut Cloud STT (ByteDance - Chuẩn từng mili-giây)" if engine == "capcut" else "Groq Whisper Cloud"
             task_manager.update_task(task_id, step=1, progress=18)
-            task_manager.add_log(task_id, "[1/5] 🤖 Whisper AI đang bóc tách lời thoại & timecode...", "cyan")
+            task_manager.add_log(task_id, f"[1/5] 🤖 Đang bóc tách lời thoại & timecode bằng {engine_name}...", "cyan")
             dialogues, srt_path, txt_path, json_path = WhisperService.transcribe(
-                audio_path=audio_path,
+                audio_path=clean_audio_path,
                 language=req.source_language,
                 clean_text=True
             )
@@ -123,7 +130,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 db.commit()
 
                 # Lọc sạch tạp âm RIÊNG cho CapCut ASR để nhận diện chuẩn, không ảnh hưởng đến âm thanh video gốc
+                task_manager.update_task(task_id, step=1, progress=14)
+                task_manager.add_log(task_id, "[1/5] 🎙️ Đang lọc sạch tạp âm & khử ồn nền trước khi gửi CapCut ASR...", "cyan")
                 clean_audio_path = AudioExtractorService.get_clean_audio_for_asr(raw_audio_path)
+                task_manager.add_log(task_id, f"   ✔ Đã làm sạch âm thanh (Vocal Denoise) -> Sẵn sàng bóc tách.", "emerald")
 
                 engine = getattr(settings, "ASR_ENGINE", "capcut").lower()
                 engine_name = "CapCut Cloud STT (ByteDance - Chuẩn từng mili-giây)" if engine == "capcut" else "Groq Whisper Cloud"
