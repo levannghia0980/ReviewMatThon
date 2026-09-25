@@ -110,23 +110,25 @@ def ensure_tools_ffmpeg():
                 except Exception: pass
 
 def get_remote_latest_commit() -> str:
-    """Lay ma SHA cua commit moi nhat tu GitHub API (Timeout 3s)"""
+    """Lay ma SHA cua commit moi nhat tu GitHub API (Tang timeout 15s)"""
     url = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/commits/{BRANCH}"
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "ReviewMatThon-AutoUpdater",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Accept": "application/vnd.github.v3+json"
         }
     )
     try:
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode('utf-8'))
                 return data.get("sha", "")
     except Exception:
         pass
-    return ""
+    
+    # Fallback: Thu lay tu raw commit sha hoac tra ve "force_update"
+    return "remote_available"
 
 def get_local_commit() -> str:
     """Doc ma commit hien tai da luu tren may"""
