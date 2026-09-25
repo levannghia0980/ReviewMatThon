@@ -45,11 +45,69 @@ PROTECTED_PATHS = {
     "output",
     "temp",
     "venv",
-    ".app_version",
-    "1_CAI_DAT_HE_THONG.bat",
-    "2_KHOI_DONG.bat",
-    "TAO_SHORTCUT_DESKTOP.bat"
+    ".app_version"
 }
+
+def ensure_tools_ffmpeg():
+    """Tu dong kiem tra va tai FFmpeg vao tools/ neu may nguoi dung chua co"""
+    tools_dir = BASE_DIR / "tools"
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    
+    ffmpeg_exe = tools_dir / "ffmpeg.exe"
+    ffprobe_exe = tools_dir / "ffprobe.exe"
+    nested_ffmpeg = tools_dir / "ffmpeg" / "bin" / "ffmpeg.exe"
+    
+    # Kiem tra neu da co ffmpeg trong tools hoac trong he thong
+    if ffmpeg_exe.exists() or nested_ffmpeg.exists() or shutil.which("ffmpeg"):
+        return
+        
+    print("  [*] Phat hien thieu bo cong cu FFmpeg tren may nay. Dang tu dong tai ve tools/...")
+    temp_zip = Path(tempfile.gettempdir()) / "ffmpeg_bootstrap.zip"
+    unpack_dir = Path(tempfile.gettempdir()) / "ffmpeg_bootstrap_unpack"
+    
+    urls = [
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    ]
+    
+    downloaded = False
+    for u in urls:
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=40) as resp, open(temp_zip, 'wb') as out:
+                shutil.copyfileobj(resp, out)
+            if temp_zip.exists() and temp_zip.stat().st_size > 1000000:
+                downloaded = True
+                break
+        except Exception:
+            continue
+            
+    if downloaded:
+        try:
+            if unpack_dir.exists():
+                shutil.rmtree(unpack_dir, ignore_errors=True)
+            unpack_dir.mkdir(parents=True, exist_ok=True)
+            
+            with zipfile.ZipFile(temp_zip, 'r') as z:
+                z.extractall(unpack_dir)
+                
+            for root, dirs, files in os.walk(unpack_dir):
+                for f in files:
+                    if f.lower() in ("ffmpeg.exe", "ffprobe.exe"):
+                        src = Path(root) / f
+                        shutil.copy2(src, tools_dir / f)
+                        (tools_dir / "ffmpeg" / "bin").mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, tools_dir / "ffmpeg" / "bin" / f)
+            print("  [✔] Da tu dong cai dat FFmpeg vao tools/ thanh cong!")
+        except Exception as err:
+            print(f"  [!] Khong the giai nen FFmpeg: {err}")
+        finally:
+            if temp_zip.exists():
+                try: temp_zip.unlink()
+                except Exception: pass
+            if unpack_dir.exists():
+                try: shutil.rmtree(unpack_dir, ignore_errors=True)
+                except Exception: pass
 
 def get_remote_latest_commit() -> str:
     """Lay ma SHA cua commit moi nhat tu GitHub API (Timeout 3s)"""
@@ -163,6 +221,12 @@ def check_and_update():
     print("-" * 65)
     print("  ⚡ [AUTO-UPDATE] Dang kiem tra ban cap nhat code tu GitHub...")
     print("-" * 65)
+
+    # 1. Kiem tra va dam bao co du FFmpeg trong tools/
+    try:
+        ensure_tools_ffmpeg()
+    except Exception:
+        pass
 
     latest_sha = get_remote_latest_commit()
     if not latest_sha:

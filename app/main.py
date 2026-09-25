@@ -5,6 +5,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+
+# Tự động nạp PATH cho ffmpeg, ffprobe, yt-dlp trong tools/
+try:
+    from app.utils.bin_helper import setup_system_path
+    setup_system_path()
+except Exception:
+    pass
+
 from app.config import settings
 from app.db.session import init_db
 from app.api.api_v1 import api_router

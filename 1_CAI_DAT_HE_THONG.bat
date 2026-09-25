@@ -88,30 +88,52 @@ if not exist "tools\ffmpeg" mkdir "tools\ffmpeg" >nul 2>&1
 if not exist "tools\ffmpeg\bin" mkdir "tools\ffmpeg\bin" >nul 2>&1
 
 set "HAS_FFMPEG=0"
-ffmpeg -version >nul 2>&1
-if %errorlevel% equ 0 set "HAS_FFMPEG=1"
 if exist "tools\ffmpeg.exe" set "HAS_FFMPEG=1"
 if exist "tools\ffmpeg\ffmpeg.exe" set "HAS_FFMPEG=1"
 if exist "tools\ffmpeg\bin\ffmpeg.exe" set "HAS_FFMPEG=1"
+ffmpeg -version >nul 2>&1
+if %errorlevel% equ 0 set "HAS_FFMPEG=1"
 
 if %HAS_FFMPEG% equ 1 (
     echo   [OK] Da co bo cong cu FFmpeg san sang.
+    goto :FFMPEG_DONE
+)
+
+echo   [*] Chua tim thay FFmpeg. Dang thu cai dat qua WinGet hoac tai truc tiep...
+
+:: Thu cach 1: Cai dat bang winget cua Windows
+winget --version >nul 2>&1
+if %errorlevel% equ 0 (
+    echo   [*] Dang cai FFmpeg bang Microsoft WinGet...
+    winget install --id Gyan.FFmpeg -e --silent --accept-source-agreements --accept-package-agreements >nul 2>&1
+    ffmpeg -version >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo   [OK] Da cai dat FFmpeg qua WinGet thanh cong!
+        goto :FFMPEG_DONE
+    )
+)
+
+:: Thu cach 2: Tai tu Github Release (Nguon on dinh nhat)
+echo   [*] Dang tai bo FFmpeg tu server du phong (Github / Gyan)...
+set "FFMPEG_ZIP=%TEMP%\ffmpeg_package.zip"
+if exist "%FFMPEG_ZIP%" del /f /q "%FFMPEG_ZIP%" >nul 2>&1
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; try { (New-Object Net.WebClient).DownloadFile('https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip', '%FFMPEG_ZIP%') } catch { (New-Object Net.WebClient).DownloadFile('https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip', '%FFMPEG_ZIP%') }"
+
+if exist "%FFMPEG_ZIP%" (
+    echo   [*] Dang giai nen va cau hinh FFmpeg vao thu muc tools...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path '%FFMPEG_ZIP%' -DestinationPath '%TEMP%\ffmpeg_unpack' -Force; Get-ChildItem -Path '%TEMP%\ffmpeg_unpack' -Recurse -Filter 'ffmpeg.exe' | ForEach-Object { Copy-Item -Path $_.FullName -Destination 'tools' -Force; Copy-Item -Path $_.FullName -Destination 'tools\ffmpeg\bin' -Force }; Get-ChildItem -Path '%TEMP%\ffmpeg_unpack' -Recurse -Filter 'ffprobe.exe' | ForEach-Object { Copy-Item -Path $_.FullName -Destination 'tools' -Force; Copy-Item -Path $_.FullName -Destination 'tools\ffmpeg\bin' -Force }"
+    rmdir /s /q "%TEMP%\ffmpeg_unpack" >nul 2>&1
+    del /f /q "%FFMPEG_ZIP%" >nul 2>&1
+)
+
+if exist "tools\ffmpeg.exe" (
+    echo   [OK] Da cau hinh thanh cong FFmpeg vao thu muc tools!
+) else if exist "tools\ffmpeg\bin\ffmpeg.exe" (
+    echo   [OK] Da cau hinh thanh cong FFmpeg vao thu muc tools!
 ) else (
-    echo   [*] Chua tim thay FFmpeg. Dang tu dong tai bo FFmpeg Essentials...
-    set "FFMPEG_ZIP=%TEMP%\ffmpeg_essentials.zip"
-    curl.exe -L -o "%FFMPEG_ZIP%" "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" >nul 2>&1
-    if not exist "%FFMPEG_ZIP%" (
-        powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile '%FFMPEG_ZIP%' -UseBasicParsing"
-    )
-    if exist "%FFMPEG_ZIP%" (
-        echo   [*] Dang giai nen FFmpeg...
-        powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path '%FFMPEG_ZIP%' -DestinationPath '%TEMP%\ffmpeg_unpack' -Force; Get-ChildItem -Path '%TEMP%\ffmpeg_unpack' -Recurse -Filter 'ffmpeg.exe' | ForEach-Object { Copy-Item -Path $_.FullName -Destination 'tools\ffmpeg\bin' -Force; Copy-Item -Path $_.FullName -Destination 'tools' -Force }; Get-ChildItem -Path '%TEMP%\ffmpeg_unpack' -Recurse -Filter 'ffprobe.exe' | ForEach-Object { Copy-Item -Path $_.FullName -Destination 'tools\ffmpeg\bin' -Force; Copy-Item -Path $_.FullName -Destination 'tools' -Force }"
-        rmdir /s /q "%TEMP%\ffmpeg_unpack" >nul 2>&1
-        del /f /q "%FFMPEG_ZIP%" >nul 2>&1
-        echo   [OK] Da cau hinh FFmpeg vao tools thanh cong!
-    ) else (
-        echo   [!] Khong the tai FFmpeg tu dong. He thong se su dung thu vien thay the neu co.
-    )
+    echo   [!] Khong the tai tu dong do ket noi mang.
+    echo   [*] Huong dan: Vui long copy file ffmpeg.exe va ffprobe.exe bo vao thu muc tools/
 )
 
 :FFMPEG_DONE

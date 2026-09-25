@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 $appTempDir = Join-Path $tempDir "ReviewMatThon"
 New-Item -ItemType Directory -Path $appTempDir -Force | Out-Null
 
-$excludeDirs = @("venv", "node_modules", "__pycache__", ".pytest_cache", "scratch", "temp", ".git", ".gemini", ".vscode", ".idea")
+$excludeDirs = @("venv", "node_modules", "__pycache__", ".pytest_cache", "scratch", "temp", ".git", ".gemini", ".vscode", ".idea", "input", "output")
 
 Get-ChildItem -Path $sourceDir | ForEach-Object {
     $itemName = $_.Name
@@ -28,6 +28,11 @@ Get-ChildItem -Path $sourceDir | ForEach-Object {
             Copy-Item -Path $_.FullName -Destination $dest -Force
         }
     }
+}
+
+# Tao thu muc rong chuan cho input va output de nguoi dung san sang su dung
+@("input/videos", "input/audio_raw", "output/transcripts", "output/01_raw_cleaned", "output/02_entities", "output/03_dich_ai_llm", "output/04_post_processed", "output/translations", "output/voiceover", "output/final_videos", "temp") | ForEach-Object {
+    New-Item -ItemType Directory -Path (Join-Path $appTempDir $_) -Force | Out-Null
 }
 
 # Dam bao giu nguyen .env
