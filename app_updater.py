@@ -77,6 +77,14 @@ def ensure_tools_ffmpeg():
     if shutil.which("ffmpeg"):
         return
 
+    urls = [
+        "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    ]
+    temp_zip = Path(tempfile.gettempdir()) / "ffmpeg_dl.zip"
+    unpack_dir = Path(tempfile.gettempdir()) / "ffmpeg_unpack"
+    downloaded = False
+
     print("  [*] Dang tu dong cau hinh bo cong cu FFmpeg...")
     for u in urls:
         try:
@@ -225,17 +233,71 @@ def download_and_apply_update(latest_sha: str) -> bool:
             try: shutil.rmtree(extract_temp_dir, ignore_errors=True)
             except Exception: pass
 
+def is_server_host() -> bool:
+    """Kiem tra xem may hien tai co phai la May Chu Dev (Server Host) hay khong"""
+    env_file = BASE_DIR / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding='utf-8').splitlines():
+                if line.strip().startswith("IS_SERVER_HOST"):
+                    val = line.split("=", 1)[1].strip().lower()
+                    if val in ("true", "1", "yes"):
+                        return True
+        except Exception:
+            pass
+    return (BASE_DIR / ".git").exists() and os.getenv("IS_SERVER_HOST", "").lower() in ("true", "1", "yes")
+
+def server_auto_push():
+    """May chu DEV: Tu dong build frontend va push code moi nhat len GitHub cho nguoi dung"""
+    import subprocess
+    print("  ⚡ [MAY CHU DEV] Phat hien day la MAY CHU PHAT TRIEN (IS_SERVER_HOST=true).")
+    print("  [*] Dang tu dong kiem tra va dong bo (PUSH) code moi len GitHub...")
+    try:
+        # 1. Kiem tra xem co lenh git khong
+        if not shutil.which("git"):
+            print("  [!] Khong tim thay git tren may chu, bo qua tu dong day code.")
+            return
+
+        # 2. Build React Frontend neu co thay doi
+        node_modules = BASE_DIR / "frontend" / "node_modules"
+        if node_modules.exists() and shutil.which("npm"):
+            print("  [*] Dang build React Frontend...")
+            subprocess.run(["npm", "run", "build"], cwd=str(BASE_DIR / "frontend"), shell=True, capture_output=True)
+
+        # 3. Kiem tra git status
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=str(BASE_DIR), capture_output=True, text=True)
+        if st.stdout.strip():
+            print("  [*] Phat hien thay doi ma nguon moi, dang commit & push...")
+            subprocess.run(["git", "add", "-A"], cwd=str(BASE_DIR), capture_output=True)
+            subprocess.run(["git", "commit", "-m", "Auto-update latest code from Dev Host"], cwd=str(BASE_DIR), capture_output=True)
+            push_res = subprocess.run(["git", "push", "origin", "main"], cwd=str(BASE_DIR), capture_output=True, text=True)
+            if push_res.returncode == 0:
+                print("  [✔] DA DAY TOAN BO CODE MOI LEN GITHUB THANH CONG!")
+            else:
+                print(f"  [!] Push chua thanh cong: {push_res.stderr.strip()[:100]}")
+        else:
+            print("  [✔] Code tren May Chu va GitHub da dong bo 100%.")
+    except Exception as e:
+        print(f"  [!] Loi khi tu dong day code: {e}")
+
 def check_and_update():
-    """Ham tong kiem tra va tu dong cap nhat - Duoc goi dau tien khi khoi dong"""
+    """Ham tong kiem tra va dong bo - 1 chieu chuan: May chu chi DAY, May khach chi NHAN"""
     print("-" * 65)
-    print("  ⚡ [AUTO-UPDATE] Dang kiem tra ban cap nhat code tu GitHub...")
+    print("  ⚡ [DONG BO MA NGUON] Kiem tra he thong...")
     print("-" * 65)
 
-    # 1. Kiem tra neu day la may DEV (co .git) thi khong tu dong ghi de code dang sua
-    if (BASE_DIR / ".git").exists() and not os.environ.get("FORCE_PULL_UPDATE"):
-        print("  [⚡] Phat hien MAY CHU DEV (Co .git) -> Giu nguyen code dang phat trien, khong keo de tu GitHub.")
+    # 1. Kiem tra va dam bao co du FFmpeg trong tools/
+    try:
+        ensure_tools_ffmpeg()
+    except Exception:
+        pass
+
+    # 2. Neu day la MAY CHU: TU DONG PUSH LEN GITHUB, KHONG BAO GIO KEO VE
+    if is_server_host():
+        server_auto_push()
         return
 
+    # 3. DOI VOI MAY KHACH (NGUOI DUNG): 100% CHI KEO CODE MOI VE (1 CHIEU)
     latest_sha = get_remote_latest_commit()
     if not latest_sha:
         print("  [i] Khong the ket noi GitHub hoac chua cau hinh Repo. Bo qua cap nhat, tiep tuc chay app.")

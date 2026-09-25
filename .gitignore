@@ -46,6 +46,12 @@ test_*.mp3
 tools/*.exe
 tools/**/*.exe
 
+# Admin/Developer Server Push Scripts (Tuyệt đối không upload cho máy khách)
+*DAY_CODE*.bat
+*PUSH*.bat
+4_DAY_CODE_LEN_GITHUB.bat
+
+
 
 # OS
 Thumbs.db
