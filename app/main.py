@@ -13,6 +13,25 @@ try:
 except Exception:
     pass
 
+# Tắt cảnh báo ConnectionResetError [WinError 10054] vô hại khi trình duyệt ngắt socket stream video
+import sys
+if sys.platform == "win32":
+    try:
+        from asyncio.proactor_events import _ProactorBasePipeTransport
+        _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
+
+        def _silenced_call_connection_lost(self, exc):
+            try:
+                _orig_call_connection_lost(self, exc)
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                pass
+            except Exception:
+                pass
+
+        _ProactorBasePipeTransport._call_connection_lost = _silenced_call_connection_lost
+    except Exception:
+        pass
+
 from app.config import settings
 from app.db.session import init_db
 from app.api.api_v1 import api_router
