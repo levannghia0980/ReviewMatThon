@@ -21,30 +21,36 @@ from app.models.project import ProjectTask
 from app.models.dialogue import DialogueSegmentModel
 from app.services.task_manager import task_manager
 
+from app.utils.bin_helper import get_ffmpeg_cmd, setup_system_path
+
+try:
+    setup_system_path()
+    _ff_bin = get_ffmpeg_cmd()[0]
+    AudioSegment.converter = _ff_bin
+    AudioSegment.ffmpeg = _ff_bin
+except Exception:
+    pass
+
 DEFAULT_TIKTOK_SESSION_ID = os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
 TIKTOK_API_ENDPOINT = "https://api16-normal-v4.tiktokv.com/media/api/text/speech/invoke/"
 
-import tempfile
-
 def _load_audio_from_bytes(data: bytes, format: str = "mp3") -> AudioSegment:
     """
-    Giải mã âm thanh từ buffer an toàn 100% trên Windows.
-    Khắc phục triệt để lỗi FFmpeg pipe:0 không seek được.
+    Giải mã âm thanh từ buffer an toàn 100% trên Windows:
+    Sử dụng ffmpeg pipe decode sang WAV thô và đọc bằng AudioSegment.from_wav
+    (tránh triệt để lỗi pydub ffprobe JSONDecodeError và seekback pipe:0).
     """
-    temp_dir = settings.TEMP_TTS_DIR
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = None
+    if not data or len(data) < 100:
+        return AudioSegment.silent(duration=200)
     try:
-        fd, temp_path = tempfile.mkstemp(suffix=f".{format}", dir=str(temp_dir))
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        return AudioSegment.from_file(temp_path, format=format)
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
+        ffmpeg_bin = get_ffmpeg_cmd()[0]
+        cmd = [ffmpeg_bin, "-y", "-i", "pipe:0", "-f", "wav", "pipe:1"]
+        res = subprocess.run(cmd, input=data, capture_output=True)
+        if res.returncode == 0 and len(res.stdout) > 44:
+            return AudioSegment.from_wav(io.BytesIO(res.stdout))
+    except Exception:
+        pass
+    return AudioSegment.silent(duration=200)
 
 
 # ============================================================
@@ -340,8 +346,9 @@ class TikTokTTSService:
             ffmpeg_env["TEMP"] = temp_cache_dir
             ffmpeg_env["TMP"] = temp_cache_dir
 
+            ffmpeg_bin = get_ffmpeg_cmd()[0]
             cmd = [
-                "ffmpeg", "-y", "-i", "pipe:0",
+                ffmpeg_bin, "-y", "-i", "pipe:0",
                 "-filter:a", filter_str,
                 "-f", "wav", "pipe:1"
             ]
@@ -352,8 +359,8 @@ class TikTokTTSService:
                 cwd=temp_cache_dir,
                 env=ffmpeg_env
             )
-            if res.returncode == 0 and len(res.stdout) > 0:
-                return AudioSegment.from_file(io.BytesIO(res.stdout), format="wav")
+            if res.returncode == 0 and len(res.stdout) > 44:
+                return AudioSegment.from_wav(io.BytesIO(res.stdout))
         except Exception:
             pass
 

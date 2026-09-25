@@ -408,8 +408,9 @@ class CapCutTTSService:
             ffmpeg_env["TEMP"] = temp_cache_dir
             ffmpeg_env["TMP"] = temp_cache_dir
 
+            ffmpeg_bin = get_ffmpeg_cmd()[0]
             cmd = [
-                "ffmpeg", "-y", "-i", "pipe:0",
+                ffmpeg_bin, "-y", "-i", "pipe:0",
                 "-filter:a", filter_str,
                 "-f", "wav", "pipe:1"
             ]
@@ -420,8 +421,8 @@ class CapCutTTSService:
                 cwd=temp_cache_dir,
                 env=ffmpeg_env
             )
-            if res.returncode == 0 and len(res.stdout) > 0:
-                return AudioSegment.from_file(io.BytesIO(res.stdout), format="wav")
+            if res.returncode == 0 and len(res.stdout) > 44:
+                return AudioSegment.from_wav(io.BytesIO(res.stdout))
         except Exception:
             pass
 
