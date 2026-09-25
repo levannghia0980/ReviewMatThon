@@ -231,11 +231,10 @@ def check_and_update():
     print("  ⚡ [AUTO-UPDATE] Dang kiem tra ban cap nhat code tu GitHub...")
     print("-" * 65)
 
-    # 1. Kiem tra va dam bao co du FFmpeg trong tools/
-    try:
-        ensure_tools_ffmpeg()
-    except Exception:
-        pass
+    # 1. Kiem tra neu day la may DEV (co .git) thi khong tu dong ghi de code dang sua
+    if (BASE_DIR / ".git").exists() and not os.environ.get("FORCE_PULL_UPDATE"):
+        print("  [⚡] Phat hien MAY CHU DEV (Co .git) -> Giu nguyen code dang phat trien, khong keo de tu GitHub.")
+        return
 
     latest_sha = get_remote_latest_commit()
     if not latest_sha:

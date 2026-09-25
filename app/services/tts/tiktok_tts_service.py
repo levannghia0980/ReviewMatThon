@@ -24,6 +24,29 @@ from app.services.task_manager import task_manager
 DEFAULT_TIKTOK_SESSION_ID = os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
 TIKTOK_API_ENDPOINT = "https://api16-normal-v4.tiktokv.com/media/api/text/speech/invoke/"
 
+import tempfile
+
+def _load_audio_from_bytes(data: bytes, format: str = "mp3") -> AudioSegment:
+    """
+    Giải mã âm thanh từ buffer an toàn 100% trên Windows.
+    Khắc phục triệt để lỗi FFmpeg pipe:0 không seek được.
+    """
+    temp_dir = settings.TEMP_TTS_DIR
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(suffix=f".{format}", dir=str(temp_dir))
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return AudioSegment.from_file(temp_path, format=format)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
 # ============================================================
 # BẢNG TỪ ĐIỂN PHÁT ÂM CHO THUẬT NGỮ TU TIÊN / XIANXIA
 # TikTok TTS thường đọc sai các từ Hán-Việt không dấu hoặc
@@ -215,7 +238,7 @@ class TikTokTTSService:
                     data = res.json()
                     if data.get("status_code") == 0 and "data" in data and "v_str" in data["data"]:
                         audio_bytes = base64.b64decode(data["data"]["v_str"])
-                        seg = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                        seg = _load_audio_from_bytes(audio_bytes, format="mp3")
                         seg = cls.trim_audio_silence(seg)
                         if len(seg) > 100:
                             _AUDIO_CACHE[cache_key] = seg
@@ -233,7 +256,7 @@ class TikTokTTSService:
                     data = res.json()
                     if data.get("status_code") == 0 and "data" in data and "v_str" in data["data"]:
                         audio_bytes = base64.b64decode(data["data"]["v_str"])
-                        fallback_seg = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+                        fallback_seg = _load_audio_from_bytes(audio_bytes, format="mp3")
                         return cls.trim_audio_silence(fallback_seg)
             except Exception:
                 pass

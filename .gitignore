@@ -42,6 +42,11 @@ test_*.mp3
 # Sensitive Keys (Keep template only)
 .env
 
+# Binary Tools (Tự động trích xuất từ imageio-ffmpeg)
+tools/*.exe
+tools/**/*.exe
+
+
 # OS
 Thumbs.db
 ehthumbs.db
