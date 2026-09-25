@@ -22,6 +22,16 @@ from app.models.project import ProjectTask
 from app.models.dialogue import DialogueSegmentModel
 from app.services.task_manager import task_manager
 from app.services.capcut_tts_api import CapCutClient, DeviceConfig
+from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd, setup_system_path
+
+# Đảm bảo pydub luôn trỏ chính xác vào file ffmpeg.exe tuyệt đối
+try:
+    setup_system_path()
+    _ff_bin = get_ffmpeg_cmd()[0]
+    AudioSegment.converter = _ff_bin
+    AudioSegment.ffmpeg = _ff_bin
+except Exception:
+    pass
 
 logger = logging.getLogger(__name__)
 
