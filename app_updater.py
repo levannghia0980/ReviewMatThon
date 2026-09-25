@@ -57,20 +57,27 @@ def ensure_tools_ffmpeg():
     ffprobe_exe = tools_dir / "ffprobe.exe"
     nested_ffmpeg = tools_dir / "ffmpeg" / "bin" / "ffmpeg.exe"
     
-    # Kiem tra neu da co ffmpeg trong tools hoac trong he thong
-    if ffmpeg_exe.exists() or nested_ffmpeg.exists() or shutil.which("ffmpeg"):
+    # 1. Kiem tra neu da co ffmpeg trong tools hoac trong he thong
+    if ffmpeg_exe.exists() or nested_ffmpeg.exists():
         return
         
-    print("  [*] Phat hien thieu bo cong cu FFmpeg tren may nay. Dang tu dong tai ve tools/...")
-    temp_zip = Path(tempfile.gettempdir()) / "ffmpeg_bootstrap.zip"
-    unpack_dir = Path(tempfile.gettempdir()) / "ffmpeg_bootstrap_unpack"
-    
-    urls = [
-        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-    ]
-    
-    downloaded = False
+    # 2. Uu tien trich xuat ngay tu imageio-ffmpeg co san trong venv (toc do 0.01s, khong can mang)
+    try:
+        import imageio_ffmpeg
+        img_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        if img_ffmpeg and os.path.exists(img_ffmpeg):
+            shutil.copy2(img_ffmpeg, ffmpeg_exe)
+            (tools_dir / "ffmpeg" / "bin").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(img_ffmpeg, nested_ffmpeg)
+            print("  [✔] Da trich xuat FFmpeg tu imageio-ffmpeg sang tools/ thanh cong!")
+            return
+    except Exception:
+        pass
+        
+    if shutil.which("ffmpeg"):
+        return
+
+    print("  [*] Dang tu dong cau hinh bo cong cu FFmpeg...")
     for u in urls:
         try:
             req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0"})
