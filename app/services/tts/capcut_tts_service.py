@@ -233,8 +233,20 @@ class CapCutTTSService:
                     time.sleep(0.15)
                     continue
 
-                raw_payload = tasks[0].get("payload", "{}")
-                payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+                raw_payload = tasks[0].get("payload") or "{}"
+                if isinstance(raw_payload, str):
+                    raw_payload = raw_payload.strip()
+                    if not raw_payload:
+                        time.sleep(0.2)
+                        continue
+                    try:
+                        payload = json.loads(raw_payload)
+                    except Exception:
+                        time.sleep(0.2)
+                        continue
+                else:
+                    payload = raw_payload or {}
+
                 subs = payload.get("audio_subtitles") or []
                 if not subs:
                     time.sleep(0.15)
@@ -257,25 +269,17 @@ class CapCutTTSService:
                 time.sleep(0.15)
             except Exception as exc:
                 logger.warning(f"[CapCut TTS] Thử lần {attempt + 1} thất bại cho câu: {clean_text[:30]}... ({exc})")
-                time.sleep(0.15)
+                time.sleep(0.2)
 
-        # Fallback an toàn sang giọng chuẩn BV074_streaming nếu sub-voice nghẽn
-        if voice_code != "BV074_streaming":
-            try:
-                dev = DeviceConfig.create_random()
-                client = CapCutClient(device=dev, session=_GLOBAL_SESSION, cookie=user_cookie)
-                res = client.generate_speech([clean_text], voice="BV074_streaming", timeout=12.0)
-                tasks = (res.get("data") or {}).get("tasks") or []
-                if tasks:
-                    payload = json.loads(tasks[0].get("payload", "{}"))
-                    subs = payload.get("audio_subtitles") or []
-                    if subs and subs[0].get("speech_url"):
-                        dl_res = _GLOBAL_SESSION.get(subs[0]["speech_url"], timeout=10)
-                        if dl_res.status_code == 200:
-                            fb_seg = AudioSegment.from_file(io.BytesIO(dl_res.content), format="mp3")
-                            return cls.trim_audio_silence(fb_seg)
-            except Exception:
-                pass
+        # Fallback 1: Dự phòng an toàn sang TikTok TTS engine cùng hệ thống ByteDance
+        try:
+            from app.services.tts.tiktok_tts_service import TikTokTTSService
+            tik_seg = TikTokTTSService.synthesize_single_chunk(clean_text, voice_code=voice_code)
+            if len(tik_seg) > 100:
+                _AUDIO_CACHE[cache_key] = tik_seg
+                return tik_seg
+        except Exception:
+            pass
 
         return AudioSegment.silent(duration=400)
 
