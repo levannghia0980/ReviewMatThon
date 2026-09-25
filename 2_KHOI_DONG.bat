@@ -22,7 +22,7 @@ if %errorlevel% neq 0 (
 venv\Scripts\python.exe app_updater.py
 
 :: 4. Chay ung dung
-cls
+echo.
 echo ==============================================================================
 echo        STUDIO REVIEW MAT THAN - HE THONG DANG KHOI CHAY
 echo ==============================================================================
