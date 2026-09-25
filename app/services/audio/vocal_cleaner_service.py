@@ -34,23 +34,39 @@ class VocalCleanerService:
 
         worker_code = """
 import sys
+import os
+import warnings
+warnings.filterwarnings('ignore')
 import torch
 from pathlib import Path
-from df.enhance import init_df, enhance, load_audio, save_audio
+
+# Đảm bảo PATH có ffmpeg
+tools_path = sys.argv[3]
+if tools_path and os.path.exists(tools_path):
+    os.environ["PATH"] = tools_path + os.pathsep + os.environ.get("PATH", "")
 
 src = Path(sys.argv[1])
 dst = Path(sys.argv[2])
-model, df_state, _ = init_df()
-model.eval()
-audio, _ = load_audio(str(src), sr=df_state.sr())
-with torch.no_grad():
-    enhanced = enhance(model, df_state, audio)
-save_audio(str(dst), enhanced, df_state.sr())
+
+try:
+    from df.enhance import init_df, enhance, load_audio, save_audio
+    model, df_state, _ = init_df()
+    model.eval()
+    audio, _ = load_audio(str(src), sr=df_state.sr())
+    with torch.no_grad():
+        enhanced = enhance(model, df_state, audio)
+    save_audio(str(dst), enhanced, df_state.sr())
+except Exception as err:
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 """
         try:
-            logger.info(f"[VocalCleaner] Đang nạp DeepFilterNet3 trên GPU để khử nhiễu: {src.name}...")
+            from app.utils.bin_helper import BASE_DIR
+            tools_dir = str(BASE_DIR / "tools")
+            logger.info(f"[VocalCleaner] Đang nạp DeepFilterNet3 để khử nhiễu: {src.name}...")
             res = subprocess.run(
-                [sys.executable, "-c", worker_code, str(src), str(dst)],
+                [sys.executable, "-c", worker_code, str(src), str(dst), tools_dir],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -58,13 +74,13 @@ save_audio(str(dst), enhanced, df_state.sr())
                 timeout=600
             )
             if res.returncode == 0 and dst.exists() and dst.stat().st_size > 1000:
-                logger.info(f"[VocalCleaner] Khử nhiễu thành công -> {dst.name}. Đã giải phóng 100% GPU VRAM.")
+                logger.info(f"[VocalCleaner] Khử nhiễu thành công -> {dst.name}. Đã giải phóng GPU VRAM.")
                 return str(dst)
             else:
-                logger.warning(f"[VocalCleaner] Subprocess lỗi ({res.stderr[:200]}), dùng lại file gốc.")
+                logger.info(f"[VocalCleaner] DeepFilterNet3 bỏ qua ({res.stderr.strip()[:100]}), tiếp tục dùng audio gốc chuẩn.")
                 return str(src)
         except Exception as e:
-            logger.warning(f"[VocalCleaner] Không thể chạy subprocess ({e}), dùng lại file gốc: {src.name}")
+            logger.info(f"[VocalCleaner] Dùng audio gốc: {src.name}")
             return str(src)
 
 
