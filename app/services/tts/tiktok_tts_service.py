@@ -542,6 +542,64 @@ class TikTokTTSService:
                     completed_count += 1
 
         # =====================================================================
+        # PHA 1.5: LÔ THỬ LẠI CÁC CÂU LỖI (ƯU TIÊN TUẦN TỰ TỪ CÂU 1 -> CÂU CUỐI)
+        # =====================================================================
+        failed_dialogues = [
+            d for d in dialogues 
+            if d.id not in raw_results_map or raw_results_map[d.id] is None or len(raw_results_map[d.id]) < 200
+        ]
+        failed_dialogues.sort(key=lambda x: x.index)
+
+        if failed_dialogues:
+            task_manager.add_log(
+                task_id, 
+                f"⚠️ Có {len(failed_dialogues)} câu thoại chưa có âm thanh tiếng Việt, đang đưa vào Lô Thử Lại (Ưu tiên từ câu #{failed_dialogues[0].index} -> #{failed_dialogues[-1].index})...", 
+                "amber"
+            )
+            for d_fail in failed_dialogues:
+                if task_manager.is_cancelled(task_id):
+                    break
+                text_fail = (d_fail.translated_text or d_fail.clean_text or d_fail.original_text or "").strip()
+                if not text_fail:
+                    continue
+                text_fail = re.sub(r'[\.\,\!\?\…\:\;\—\s]+$', '', text_fail).strip()
+                
+                retry_audio = None
+                for r_att in range(2):
+                    time.sleep(0.25)
+                    retry_audio = cls.synthesize_sentence(
+                        text=text_fail,
+                        voice_code=voice_code,
+                        session_id=session_id,
+                        apply_mastering=apply_mastering,
+                        playback_speed=playback_speed
+                    )
+                    if retry_audio and len(retry_audio) >= 200:
+                        break
+                
+                # Fallback sang giọng Nữ Hương nếu giọng chính nghẽn
+                if (not retry_audio or len(retry_audio) < 200) and voice_code != "vi_female_huong":
+                    time.sleep(0.2)
+                    retry_audio = cls.synthesize_sentence(
+                        text=text_fail,
+                        voice_code="vi_female_huong",
+                        session_id=session_id,
+                        apply_mastering=apply_mastering,
+                        playback_speed=playback_speed
+                    )
+
+                if retry_audio and len(retry_audio) >= 200:
+                    raw_results_map[d_fail.id] = retry_audio
+                    task_manager.add_log(task_id, f"   ✔ [Lô Thử Lại] Đã tạo thành công câu #{d_fail.index}", "emerald")
+
+        # KIỂM TRA CHẶN LỌT TIẾNG TRUNG:
+        valid_voices = sum(1 for d in dialogues if d.id in raw_results_map and raw_results_map[d.id] and len(raw_results_map[d.id]) >= 200)
+        if valid_voices == 0:
+            raise RuntimeError(f"Tạo lồng tiếng tiếng Việt thất bại hoàn toàn (0/{total_count} câu)! Vui lòng kiểm tra Cookie hoặc kết nối mạng TikTok.")
+        elif valid_voices < int(total_count * 0.5):
+            raise RuntimeError(f"Chỉ tạo được {valid_voices}/{total_count} câu tiếng Việt (tỷ lệ lỗi quá cao). Đã dừng để tránh xuất video giữ tiếng Trung gốc.")
+
+        # =====================================================================
         # PHA 2: TÍNH TOÁN CO GIÃN VỪA KHÍT THỜI LƯỢNG GỐC VÀ DÁN VÀO MASTER
         # =====================================================================
         task_manager.add_log(task_id, f"🎯 [Pha 2/2] Đang tính toán co giãn từng câu vừa khít thời lượng gốc (Bắt đầu đúng start, không vượt quá end)...", "cyan")

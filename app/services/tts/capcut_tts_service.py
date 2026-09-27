@@ -584,11 +584,69 @@ class CapCutTTSService:
                 except Exception as ex:
                     logger.error(f"[CapCut TTS Worker Error] {ex}")
 
+        # =====================================================================
+        # PHA 1.5: LÔ THỬ LẠI CÁC CÂU LỖI (ƯU TIÊN TUẦN TỰ TỪ CÂU 1 -> CÂU CUỐI)
+        # =====================================================================
+        failed_dialogues = [
+            d for d in dialogues 
+            if d.id not in raw_results_map or raw_results_map[d.id] is None or len(raw_results_map[d.id]) < 150
+        ]
+        failed_dialogues.sort(key=lambda x: x.index)
+
+        if failed_dialogues:
+            task_manager.add_log(
+                task_id, 
+                f"⚠️ Có {len(failed_dialogues)} câu thoại chưa sinh được giọng CapCut, đang xếp vào Lô Thử Lại (Ưu tiên câu #{failed_dialogues[0].index} -> #{failed_dialogues[-1].index})...", 
+                "amber"
+            )
+            for d_fail in failed_dialogues:
+                if task_manager.is_cancelled(task_id):
+                    break
+                text_fail = (d_fail.translated_text or d_fail.clean_text or d_fail.original_text or "").strip()
+                if not text_fail:
+                    continue
+                text_fail = re.sub(r'[\.\,\!\?\…\:\;\—\s]+$', '', text_fail).strip()
+
+                retry_seg = None
+                # Thử lại CapCut
+                for r_att in range(2):
+                    time.sleep(0.3)
+                    retry_seg = cls.synthesize_sentence(
+                        text=text_fail,
+                        voice_code=voice_code,
+                        cookie=session_id,
+                        apply_mastering=apply_mastering,
+                        playback_speed=playback_speed
+                    )
+                    if retry_seg and len(retry_seg) >= 150:
+                        break
+
+                # Nếu CapCut vẫn lỗi, lập tức fallback sang TikTok TTS cho câu này
+                if not retry_seg or len(retry_seg) < 150:
+                    try:
+                        from app.services.tts.tiktok_tts_service import TikTokTTSService
+                        time.sleep(0.2)
+                        retry_seg = TikTokTTSService.synthesize_sentence(
+                            text=text_fail,
+                            voice_code=voice_code,
+                            session_id=session_id,
+                            apply_mastering=apply_mastering,
+                            playback_speed=playback_speed
+                        )
+                    except Exception:
+                        pass
+
+                if retry_seg and len(retry_seg) >= 150:
+                    raw_results_map[d_fail.id] = retry_seg
+                    task_manager.add_log(task_id, f"   ✔ [Lô Thử Lại] Đã tạo thành công câu #{d_fail.index}", "emerald")
+
         valid_count = len(raw_results_map)
-        task_manager.add_log(task_id, f"✔ Hoàn tất tải âm thanh thô: {valid_count}/{total_count} câu thoại hợp lệ.", "emerald")
+        task_manager.add_log(task_id, f"✔ Hoàn tất tải âm thanh tiếng Việt: {valid_count}/{total_count} câu thoại hợp lệ.", "emerald")
 
         if valid_count == 0:
-            raise RuntimeError("Không tải được câu thoại nào từ CapCut TTS!")
+            raise RuntimeError("Không tải được câu thoại tiếng Việt nào từ CapCut / TikTok TTS! Vui lòng kiểm tra Cookie / mạng.")
+        elif valid_count < int(total_count * 0.5):
+            raise RuntimeError(f"Chỉ tạo được {valid_count}/{total_count} câu tiếng Việt. Dừng để chống lọt tiếng Trung gốc.")
 
         # =====================================================================
         # PHA 2: KHỚP TRỰC TIẾP VÀO TIMELINE GỐC & CO GIÃN THÍCH ỨNG THEO TỪNG CÂU

@@ -340,8 +340,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             f_video = executor.submit(_video_worker)
             concurrent.futures.wait([f_audio, f_video])
 
-        if audio_res_container.get("error"):
-            task_manager.add_log(task_id, f"⚠️ Cảnh báo âm thanh: {audio_res_container['error']}", "amber")
+        if audio_res_container.get("error") or not audio_res_container.get("audio_path") or not os.path.exists(audio_res_container.get("audio_path")):
+            err_details = audio_res_container.get("error") or "Không tìm thấy file âm thanh tiếng Việt hoàn chỉnh"
+            raise RuntimeError(f"Lỗi tạo giọng lồng tiếng tiếng Việt: {err_details}. Đã chặn tiến trình để không xuất video giữ tiếng Trung gốc.")
+
         if video_res_container.get("error"):
             raise RuntimeError(f"Lỗi Render Video GPU: {video_res_container['error']}")
 
@@ -349,7 +351,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         task_manager.update_task(task_id, step=4, progress=92)
         task_manager.add_log(task_id, "[4/4] ⚡ Hợp nhất luồng Hình Ảnh GPU & Audio lồng tiếng (Stream Copy 0.5s)...", "cyan")
 
-        audio_src = audio_res_container.get("audio_path", project.video_path)
+        audio_src = audio_res_container.get("audio_path")
         mux_ok = VideoComposerService.mux_final_video(
             visual_video_path=str(temp_visual_video),
             audio_source_path=audio_src,

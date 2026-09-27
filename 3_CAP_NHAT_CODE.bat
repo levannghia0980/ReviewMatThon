@@ -9,14 +9,16 @@ echo ===========================================================================
 echo.
 
 if not exist "venv\Scripts\python.exe" (
-    echo [*] Dang chay cap nhat bang Python...
-    python app_updater.py
+    echo [*] Dang chay cap nhat bang Python he thong...
+    python app_updater.py --force
 ) else (
-    venv\Scripts\python.exe app_updater.py
+    echo [*] Dang chay cap nhat qua moi truong venv...
+    venv\Scripts\python.exe app_updater.py --force
 )
 
 echo.
 echo ==============================================================================
-echo [OK] Hoan tat kiem tra dong bo! Ban co the chay '2_KHOI_DONG.bat' ngay.
+echo [OK] Hoan tat dong bo ma nguon moi nhat! Ban co the chay '2_KHOI_DONG.bat'.
 echo ==============================================================================
 pause
+
