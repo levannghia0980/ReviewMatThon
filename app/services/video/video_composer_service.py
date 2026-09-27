@@ -281,8 +281,8 @@ class VideoComposerService:
         task_manager.add_log(task_id, f"   • Bộ Mã Hóa Render: {vcodec} ({encoder_desc})", "cyan")
 
         hwaccel_args = []
-        if vcodec in ("h264_nvenc", "h264_amf", "h264_mf"):
-            hwaccel_args = ["-hwaccel", "dxva2"]
+        # if vcodec in ("h264_nvenc", "h264_amf", "h264_mf"):
+        #     hwaccel_args = ["-hwaccel", "dxva2"]
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         cmd = [
@@ -450,8 +450,8 @@ class VideoComposerService:
         # Hardware decode: dxva2 (AMD/Intel/NVIDIA Windows) giải mã nhanh hơn CPU
         # Lưu ý: filter (crop, subtitles) vẫn chạy CPU, nên dùng hwaccel + output sw
         hwaccel_args = []
-        if vcodec in ("h264_nvenc", "h264_amf", "h264_mf"):
-            hwaccel_args = ["-hwaccel", "dxva2"]
+        # if vcodec in ("h264_nvenc", "h264_amf", "h264_mf"):
+        #     hwaccel_args = ["-hwaccel", "dxva2"] # Removed for better stability with CPU filters
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         cmd = [
