@@ -3,7 +3,7 @@ import {
   BookOpen, Sparkles, Save, Download, Search, 
   RefreshCw, CheckCircle2, AlertTriangle, Play, FileText, 
   Terminal, ArrowLeft, Clock, Film, Trash2, Edit3, AlignLeft, Columns,
-  ChevronRight, Layers, Bookmark, Check
+  ChevronRight, Layers, Bookmark, Check, Volume2
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
 
@@ -23,10 +23,17 @@ export default function DialogueLibraryView() {
   // AIREAD Translation Engine Settings
   const [genre, setGenre] = useState(DEFAULT_GENRE);
   const [batchSize, setBatchSize] = useState(500); // Default large batch (Mỗi lô = 1 chương lớn)
+  
+  // Translation Task State
   const [isTranslating, setIsTranslating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [taskId, setTaskId] = useState(null);
   const [logs, setLogs] = useState([]);
+  
+  // STT Extraction Task State
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [extractTaskId, setExtractTaskId] = useState(null);
+
 
   useEffect(() => {
     loadProjects();
@@ -175,11 +182,11 @@ export default function DialogueLibraryView() {
             setDialogues(updatedItems);
           }
 
-          if (data.status === 'completed') {
+          if (['completed', 'DONE', 'success', 'SUCCESS'].includes(data.status)) {
             setIsTranslating(false);
             clearInterval(interval);
             loadProjects();
-          } else if (data.status === 'failed') {
+          } else if (data.status === 'failed' || data.status === 'FAILED') {
             setIsTranslating(false);
             clearInterval(interval);
             alert(`Lỗi khi dịch: ${data.error}`);
@@ -191,6 +198,64 @@ export default function DialogueLibraryView() {
     }
     return () => clearInterval(interval);
   }, [isTranslating, taskId, selectedProject]);
+
+  // Poll STT Extraction Task
+  useEffect(() => {
+    let interval = null;
+    if (isExtracting && extractTaskId) {
+      interval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/v1/pipeline/status/${extractTaskId}`);
+          if (!res.ok) return;
+          const data = await res.json();
+          setProgress(data.progress || 0);
+          if (data.logs) setLogs(data.logs);
+
+          if (['completed', 'DONE', 'success', 'SUCCESS'].includes(data.status)) {
+            setIsExtracting(false);
+            clearInterval(interval);
+            if (selectedProject) {
+              const updatedItems = await fetchAllDialogues(selectedProject.id);
+              setDialogues(updatedItems);
+            }
+            loadProjects();
+          } else if (data.status === 'failed' || data.status === 'FAILED') {
+            setIsExtracting(false);
+            clearInterval(interval);
+            alert(`Lỗi khi bóc thoại: ${data.error}`);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }, 2000);
+    }
+    return () => clearInterval(interval);
+  }, [isExtracting, extractTaskId, selectedProject]);
+
+  const handleExtractSTT = async () => {
+    if (!selectedProject) return;
+    setIsExtracting(true);
+    setProgress(5);
+    setLogs([]);
+
+    try {
+      const res = await fetch('/api/v1/pipeline/extract-stt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: selectedProject.id, source_language: selectedProject.source_language || 'zh' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setExtractTaskId(data.task_id);
+      } else {
+        setIsExtracting(false);
+        alert('Lỗi khởi chạy tiến trình bóc thoại');
+      }
+    } catch (e) {
+      setIsExtracting(false);
+      console.error(e);
+    }
+  };
 
   const handleStartTranslate = async () => {
     if (!selectedProject) return;
@@ -618,6 +683,37 @@ export default function DialogueLibraryView() {
           <Sparkles size={18} color="#7c3aed" /> Bảng Dịch Thuật AIREAD
         </div>
 
+        {/* Extraction Status Card */}
+        <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', background: 'var(--bg-sub)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-sub)' }}>Trạng thái Lời Thoại:</span>
+            {dialogues && dialogues.length > 0 ? (
+              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--emerald)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <CheckCircle2 size={14} /> Đã lấy ({dialogues.length} câu)
+              </span>
+            ) : (
+              <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--rose)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <AlertTriangle size={14} /> Chưa lấy
+              </span>
+            )}
+          </div>
+          
+          {(!dialogues || dialogues.length === 0) && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleExtractSTT}
+              disabled={isExtracting}
+              style={{ width: '100%', padding: '10px', fontSize: '12.5px', fontWeight: 700 }}
+            >
+              {isExtracting ? (
+                <><RefreshCw size={14} className="animate-spin" /> Đang bóc tách ({progress}%)...</>
+              ) : (
+                <><Volume2 size={14} /> Lấy Thoại Tự Động (AI STT)</>
+              )}
+            </button>
+          )}
+        </div>
+
         {/* Translation Settings Card */}
         <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div>
@@ -634,22 +730,6 @@ export default function DialogueLibraryView() {
                   {g.icon} {g.name}
                 </option>
               ))}
-            </select>
-          </div>
-
-          <div>
-            <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-sub)', display: 'block', marginBottom: '4px' }}>
-              Kích thước lô dịch (1 Lô = 1 Chương):
-            </label>
-            <select
-              value={batchSize}
-              onChange={(e) => setBatchSize(parseInt(e.target.value, 10))}
-              style={{ width: '100%', padding: '8px 10px', fontSize: '12.5px' }}
-            >
-              <option value={250}>250 câu / lô (~22k token - Gửi 5-6 chương/lần)</option>
-              <option value={350}>350 câu / lô (Tối đa ~25k token)</option>
-              <option value={150}>150 câu / lô (~12k token)</option>
-              <option value={80}>80 câu / lô (Lô nhỏ)</option>
             </select>
           </div>
 

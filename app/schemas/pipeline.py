@@ -7,6 +7,7 @@ class IngestPipelineRequest(BaseModel):
     quality: str = Field(default="480p", description="480p, 720p hoặc 1080p")
     source_language: str = Field(default="zh", description="Ngôn ngữ gốc của video: zh (Trung), ja (Nhật), vi, en")
     clean_text: bool = Field(default=True, description="Tự động lọc từ đệm và chuẩn hóa text")
+    extract_sub: bool = Field(default=False, description="Có bóc tách phụ đề hay chỉ tải video thuần")
 
 class FullAutoPipelineRequest(BaseModel):
     url: Optional[str] = Field(default=None, description="URL video Bilibili/YouTube (để trống nếu truyền project_id)")
@@ -66,3 +67,8 @@ class TaskStatusResponse(BaseModel):
 
 
 
+
+
+class ExtractSTTRequest(BaseModel):
+    project_id: int
+    source_language: str = "zh"

@@ -159,7 +159,7 @@ export default function MainStudioView({ onNavigateTab }) {
     } catch (e) {}
   };
 
-  const loadProjects = async () => {
+  const loadProjects = async (selectId = null) => {
     try {
       const res = await fetch(`/api/v1/projects/?page=1&page_size=100&_t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
@@ -168,6 +168,10 @@ export default function MainStudioView({ onNavigateTab }) {
         setProjects(items);
         if (items.length > 0) {
           setSelectedProject(prev => {
+            if (selectId) {
+              const matched = items.find(p => p.id === selectId);
+              if (matched) return matched;
+            }
             if (!prev) return items[0];
             const updated = items.find(p => p.id === prev.id);
             return updated || prev;
@@ -195,9 +199,13 @@ export default function MainStudioView({ onNavigateTab }) {
           if (data.status === 'completed') {
             setIsRunning(false);
             setResult(data.result);
-            setVideoViewMode('final');
+            if (data.result?.final_video_path) {
+              setVideoViewMode('final');
+            } else {
+              setVideoViewMode('raw');
+            }
             clearInterval(interval);
-            loadProjects();
+            loadProjects(data.result?.project_id);
             window.dispatchEvent(new CustomEvent('video-projects-updated'));
           } else if (data.status === 'failed') {
             setIsRunning(false);
@@ -439,7 +447,8 @@ export default function MainStudioView({ onNavigateTab }) {
         body: JSON.stringify({
           url: url.trim(),
           quality: downloadQuality,
-          source_language: 'zh'
+          source_language: 'zh',
+          extract_sub: false
         })
       });
 

@@ -179,21 +179,6 @@ export default function DialogueModal({ isOpen, onClose, projectId, projectTitle
                 ))}
               </select>
             </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--cyan)' }}>Lô Gửi:</span>
-              <select
-                value={batchSize}
-                onChange={(e) => setBatchSize(parseInt(e.target.value, 10))}
-                disabled={isTranslating}
-                style={{ padding: '6px 10px', fontSize: '12px', background: 'rgba(0,0,0,0.4)', borderRadius: '6px' }}
-              >
-                <option value={20}>20 câu / lô (Nhanh & Kiểm soát)</option>
-                <option value={50}>50 câu / lô (Cân bằng khuyên dùng)</option>
-                <option value={100}>100 câu / lô (Lô lớn mượt mạch)</option>
-                <option value={200}>200 câu / lô (Siêu tốc tối đa)</option>
-              </select>
-            </div>
           </div>
 
           <button

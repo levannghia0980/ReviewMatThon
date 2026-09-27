@@ -78,7 +78,7 @@ export default function SettingsTab() {
         const localGroq = localStorage.getItem('saved_groq_key') || '';
         const localOpenRouter = localStorage.getItem('saved_openrouter_key') || '';
 
-        const finalGemini = data.gemini_api_key || localGemini || '';
+        const finalGemini = data.gemini_api_key || (localGemini.startsWith('gsk_') ? '' : localGemini) || '';
         const finalGroq = data.groq_api_key || localGroq || '';
         const finalOpenRouter = data.openrouter_api_key || localOpenRouter || '';
 
@@ -86,7 +86,7 @@ export default function SettingsTab() {
         setGeminiModel(data.gemini_model || 'gemini-3.1-flash-lite');
         setGroqKey(finalGroq);
         setGroqModel(data.groq_model || 'whisper-large-v3');
-        setAsrEngine(data.asr_engine || 'groq');
+        setAsrEngine(data.asr_engine || 'capcut');
         setWhisperSize(data.whisper_model_size || 'base');
         setOpenrouterKey(finalOpenRouter);
         setTranslationMaxChars(data.translation_max_chars || 50000);
@@ -105,7 +105,7 @@ export default function SettingsTab() {
       // Fallback lấy từ localStorage nếu mất kết nối server
       const localGemini = localStorage.getItem('saved_gemini_key') || '';
       const localGroq = localStorage.getItem('saved_groq_key') || '';
-      if (localGemini) setGeminiKey(localGemini);
+      if (localGemini && !localGemini.startsWith('gsk_')) setGeminiKey(localGemini);
       if (localGroq) setGroqKey(localGroq);
     } finally {
       setLoading(false);

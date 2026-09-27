@@ -14,7 +14,8 @@ from app.schemas.pipeline import (
     FullAutoPipelineRequest,
     IngestPipelineResponse,
     AsyncTaskResponse,
-    TaskStatusResponse
+    TaskStatusResponse,
+    ExtractSTTRequest
 )
 from app.schemas.transcript import DialogueSegment
 from app.services.downloader_service import DownloaderService
@@ -411,7 +412,65 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
             quality=req.quality
         )
         task_manager.add_log(task_id, f"✔ Video đã tải xong: {info['title']}", "emerald")
-        
+
+        # Nếu không yêu cầu tách sub (khi bấm Tải Về ở giao diện, tách sub sẽ làm ở bước Bắt đầu)
+        if not req.extract_sub:
+            task_manager.update_task(task_id, step=2, progress=90)
+            task_manager.add_log(task_id, "💾 Ghi nhận video vào CSDL dự án...", "cyan")
+
+            project = db.query(ProjectTask).filter(
+                (ProjectTask.video_id == info["id"]) | (ProjectTask.source_url == req.url)
+            ).first()
+
+            if not project:
+                project = ProjectTask(
+                    video_id=info["id"],
+                    title=info["title"],
+                    source_url=req.url,
+                    duration=info.get("duration", 0.0),
+                    status="DOWNLOADED",
+                    source_language=req.source_language,
+                    video_path=video_path,
+                    audio_path=None,
+                    srt_path=None,
+                    txt_path=None,
+                    json_path=None
+                )
+                db.add(project)
+            else:
+                project.video_path = video_path
+                project.status = "DOWNLOADED"
+                if not project.title:
+                    project.title = info["title"]
+                if not project.duration:
+                    project.duration = info.get("duration", 0.0)
+
+            db.commit()
+            db.refresh(project)
+
+            result_data = {
+                "status": "success",
+                "message": f"Tải video hoàn tất! Video đã sẵn sàng trong danh sách.",
+                "project_id": project.id,
+                "video_id": info["id"],
+                "title": info["title"],
+                "video_path": video_path,
+                "duration": info.get("duration", 0.0),
+                "total_dialogues": 0
+            }
+
+            task_manager.add_log(task_id, f"✔ HOÀN TẤT TẢI VIDEO: {info['title']}", "emerald")
+            task_manager.add_log(task_id, f"   Trạng thái: MỚI TẢI (0 câu). Tách phụ đề sẽ được thực hiện khi nhấn Bắt đầu.", "emerald")
+            task_manager.update_task(
+                task_id,
+                status="completed",
+                step=2,
+                progress=100,
+                message="Tải video thành công!",
+                result=result_data
+            )
+            return
+
         # Bước 2: Tách Audio 16kHz
         task_manager.update_task(task_id, step=2, progress=30)
         task_manager.add_log(task_id, f"[2/4] 🎵 Đang trích xuất Audio 16kHz PCM WAV qua FFmpeg (input/audio_raw)...", "cyan")
@@ -592,3 +651,88 @@ def cleanup_chunks_endpoint(video_id: str):
     """Xóa toàn bộ các chunk mp3 trong thư mục segments để chuẩn bị cho lần tạo mới hoàn toàn"""
     TikTokTTSService.cleanup_project_audio_chunks(video_id)
     return {"status": "success", "message": f"Đã dọn dẹp sạch sẽ các chunk tạm của video {video_id}."}
+
+def _run_extract_stt_worker(task_id: str, req: ExtractSTTRequest):
+    db = SessionLocal()
+    try:
+        task_manager.update_task(task_id, status="running", step=1, progress=10)
+        project = db.query(ProjectTask).filter(ProjectTask.id == req.project_id).first()
+        if not project:
+            raise ValueError(f"Không tìm thấy Project #{req.project_id}")
+            
+        task_manager.add_log(task_id, f"[1/2] 🎵 Đang xử lý Audio từ project: {project.title}", "cyan")
+        
+        # Đảm bảo có audio path hợp lệ
+        audio_path = project.audio_path
+        if not audio_path or not os.path.exists(audio_path):
+            if project.video_path and os.path.exists(project.video_path):
+                task_manager.add_log(task_id, f"🎵 Trích xuất Audio 16kHz PCM WAV từ video...", "cyan")
+                audio_path = AudioExtractorService.extract_audio_16k_wav(project.video_path)
+                project.audio_path = audio_path
+                db.commit()
+            else:
+                raise ValueError("Không tìm thấy file Video hoặc Audio gốc của dự án này.")
+
+        task_manager.update_task(task_id, step=1, progress=30)
+        task_manager.add_log(task_id, f"[1/2] 🎙️ Đang lọc sạch tạp âm trước khi STT...", "cyan")
+        clean_audio_path = AudioExtractorService.get_clean_audio_for_asr(audio_path)
+        
+        engine = getattr(settings, "ASR_ENGINE", "capcut").lower()
+        engine_name = "CapCut Cloud STT" if engine == "capcut" else "Groq Whisper"
+        task_manager.update_task(task_id, step=2, progress=50)
+        task_manager.add_log(task_id, f"[2/2] 🤖 Đang bóc tách lời thoại bằng {engine_name}...", "cyan")
+        
+        dialogues, srt_path, txt_path, json_path = WhisperService.transcribe(
+            audio_path=clean_audio_path,
+            language=req.source_language,
+            clean_text=True
+        )
+        task_manager.add_log(task_id, f"✔ Đã bóc tách {len(dialogues)} câu thoại.", "emerald")
+        
+        project.srt_path = srt_path
+        project.txt_path = txt_path
+        project.json_path = json_path
+        project.status = "TRANSCRIBED"
+        
+        # Xoá các câu thoại cũ nếu có (an toàn)
+        db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete()
+        
+        for d in dialogues:
+            db.add(DialogueSegmentModel(
+                task_id=project.id,
+                index=d.id,
+                start_time=d.start,
+                end_time=d.end,
+                duration=d.duration,
+                original_text=d.text,
+                clean_text=d.clean_text,
+                confidence=d.confidence,
+                status="RAW"
+            ))
+        
+        db.commit()
+        
+        task_manager.update_task(
+            task_id,
+            status="completed",
+            step=2,
+            progress=100,
+            message="Bóc tách lời thoại thành công!",
+            result={"project_id": project.id, "total_dialogues": len(dialogues)}
+        )
+    except Exception as e:
+        db.rollback()
+        err_msg = str(e)
+        task_manager.add_log(task_id, f"❌ LỖI TÁCH THOẠI: {err_msg}", "rose")
+        task_manager.update_task(task_id, status="failed", error=err_msg, message=f"Lỗi: {err_msg}")
+    finally:
+        db.close()
+
+
+@router.post("/extract-stt", response_model=AsyncTaskResponse, summary="Bóc tách thoại riêng biệt cho project đã tải")
+def extract_stt_async(req: ExtractSTTRequest):
+    task_id = f"task_stt_{uuid.uuid4().hex[:10]}"
+    task_manager.create_task(task_id, meta={"project_id": req.project_id})
+    worker_thread = threading.Thread(target=_run_extract_stt_worker, args=(task_id, req), daemon=True)
+    worker_thread.start()
+    return AsyncTaskResponse(task_id=task_id, status="processing", message="Quy trình bóc thoại đã chạy ngầm.")
