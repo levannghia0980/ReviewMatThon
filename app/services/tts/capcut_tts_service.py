@@ -2,44 +2,34 @@ import os
 import io
 import re
 import time
-import json
-import secrets
+import math
+import base64
+import random
 import logging
+import asyncio
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import subprocess
+import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.orm import Session
-import numpy as np
-from scipy import signal
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pydub import AudioSegment
-from pydub.effects import normalize, compress_dynamic_range, speedup
 
 from app.config import settings
-from app.models.project import ProjectTask
-from app.models.dialogue import DialogueSegmentModel
+from app.models import ProjectTask, DialogueSegmentModel
 from app.services.task_manager import task_manager
-from app.services.capcut_tts_api import CapCutClient, DeviceConfig
-from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd, setup_system_path
-
-# Đảm bảo pydub luôn trỏ chính xác vào file ffmpeg.exe tuyệt đối
-try:
-    setup_system_path()
-    _ff_bin = get_ffmpeg_cmd()[0]
-    AudioSegment.converter = _ff_bin
-    AudioSegment.ffmpeg = _ff_bin
-except Exception:
-    pass
+from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd
+from app.services.translation.chinese_guard import ensure_project_dialogues_vietnamese
+from app.services.tts.proxy_manager import proxy_manager
 
 logger = logging.getLogger(__name__)
 
-# Cookie phiên làm việc (mặc định lấy từ biến môi trường hoặc cookie dự phòng)
-DEFAULT_CAPCUT_COOKIE = os.getenv(
+# Đọc Cookie CapCut từ settings (file .env)
+DEFAULT_CAPCUT_COOKIE = getattr(
+    settings,
     "CAPCUT_COOKIE",
-    os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
+    getattr(settings, "TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
 )
 
 import tempfile
@@ -81,251 +71,87 @@ def _load_audio_from_bytes(data: bytes, format: str = "mp3") -> AudioSegment:
 
 
 # ============================================================
-def normalize_tts_text(text: str) -> str:
+def strip_leading_numbering(text: str) -> str:
     """
-    Chuẩn hóa văn bản trước khi gửi sang CapCut TTS:
-    - Loại bỏ dấu ngoặc đơn, ngoặc kép, dấu gạch nối giữa các từ (tránh TTS đọc thành 'đến').
-    - Giữ nguyên tiếng Việt tự nhiên: CapCut AI đọc chuẩn các từ tu tiên (tu luyện, linh khí, đột phá, v.v.).
+    Xóa sạch 100% số thứ tự đầu câu (ví dụ: '1. ', '02. ', '3: ', '4 - ', '[5] ', '(6) ', 'Câu 7: ', '1/100 '):
+    - Đảm bảo khi gửi sang CapCut/TikTok TTS, giọng đọc KHÔNG đọc 'Một chấm...', 'Hai chấm...'
+    - Giữ nguyên số nếu là số lượng nội dung thực tế (ví dụ: '10 vạn linh thạch', '2024 năm sau').
     """
     if not text:
         return ""
-    text = text.replace('"', '').replace("'", '').replace("`", "")
-    # Xóa bỏ dấu gạch nối giữa các từ ghép (ví dụ tu-luyện -> tu luyện, tránh bị đọc thành 'tu đến luyện')
-    text = re.sub(r'(\w)-(\w)', r'\1 \2', text)
-    text = re.sub(r'[\r\n\t]+', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-def calculate_punctuation_pause(text: str) -> float:
-    """Tính tổng thời gian ngắt nghỉ tự nhiên của các dấu câu."""
-    if not text:
-        return 0.0
     t = text.strip()
-    total_pause = 0.0
-    ellipsis_matches = re.findall(r'\.{3,}|…', t)
-    total_pause += len(ellipsis_matches) * 0.35
-    t_no_ellipsis = re.sub(r'\.{3,}|…', '', t)
-    terminals = re.findall(r'[.?!]', t_no_ellipsis)
-    total_pause += len(terminals) * 0.25
-    commas = re.findall(r'(?<!\d)[,;](?!\d)', t_no_ellipsis)
-    total_pause += len(commas) * 0.18
-    colons = re.findall(r'[:—\-]', t_no_ellipsis)
-    total_pause += len(colons) * 0.15
-    return total_pause
+    # 1. Bóc ngoặc vuông / ngoặc tròn / ngoặc nhọn chứa số ở đầu: [1], (1), {1}, 【1】
+    t = re.sub(r'^(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\{\s*\d+\s*\}|【\s*\d+\s*】)\s*[\.\:\-\–\—\s]*', '', t)
+    # 2. Bóc các tiền tố dạng: Câu 1:, Thoại 1:, Đoạn 1:, STT 1:, Line 1:
+    t = re.sub(r'^(?:câu|thoại|đoạn|stt|dòng|line)\s*\d+\s*[\.\:\-\–\—\)\/\]\s]*\s*', '', t, flags=re.IGNORECASE)
+    # 3. Bóc dạng phân số/tổng số câu: 1/100 
+    t = re.sub(r'^\d+\/\d+\s*[\.\:\-\–\—\s]*', '', t)
+    # 4. Bóc số thứ tự đầu câu kèm dấu phân cách: 1. , 12. , 1: , 1 - , 1) 
+    t = re.sub(r'^\d+\s*[\.\:\-\–\—\)\/\]]+\s*', '', t)
+    # 5. Dọn dẹp dấu câu thừa còn sót lại ở đầu chuỗi sau khi bóc số
+    t = re.sub(r'^[^\w\s\(\[\{]+', '', t).strip()
+    return t
 
-# Connection Pool tối ưu cho 128 luồng song song
+
+def normalize_tts_text(text: str) -> str:
+    """Chuẩn hóa ký tự trước khi gửi lên API TTS."""
+    if not text:
+        return ""
+    text = strip_leading_numbering(text)
+    text = re.sub(r'[\r\n\t]+', ' ', text)
+    text = re.sub(r'["“”„‟«»]', ' ', text)
+    text = re.sub(r'[\(\)\[\]\{\}]', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    # Xóa sạch toàn bộ dấu cuối câu (. , ! ? … : ; - _) để TTS không chèn khoảng lặng nghỉ làm mất thời gian đọc từ
+    text = re.sub(r'[\.\,\!\?\…\:\;\—\-\_\s]+$', '', text).strip()
+    return text.strip()
+
+
+def sanitize_to_vietnamese(text: Optional[str], fallback_orig: Optional[str] = None) -> str:
+    """Đảm bảo chuỗi đưa vào đọc là tiếng Việt chuẩn 100%."""
+    t = (text or "").strip()
+    if not t:
+        t = (fallback_orig or "").strip()
+    return t
+
+
 _GLOBAL_SESSION = requests.Session()
-_adapter = HTTPAdapter(
-    pool_connections=128,
-    pool_maxsize=128,
-    max_retries=Retry(total=3, backoff_factor=0.15)
-)
-_GLOBAL_SESSION.mount("https://", _adapter)
-_GLOBAL_SESSION.mount("http://", _adapter)
-
-# Danh sách giọng CapCut / ByteDance SAMI chuẩn 100% đã được kiểm tra thực tế
-CAPCUT_VOICES = [
-    # --- Top Giọng Nữ Review Phim & Truyện Tranh Đỉnh Cao ---
-    {"id": "multi_female_richgirl_uranus_bigtts", "name": "Nữ: Review Phim new (Sang trọng, Cuốn hút, Kể chuyện đỉnh cao)", "gender": "female", "lang": "vi"},
-    {"id": "BV074_streaming", "name": "Nữ: Cô Gái Hoạt Ngôn (Trẻ trung, Review Trend - Khuyên dùng)", "gender": "female", "lang": "vi"},
-    {"id": "vi_female_huong", "name": "Nữ: Hương (Phổ thông miền Bắc, Chuẩn Review)", "gender": "female", "lang": "vi"},
-    {"id": "BV421_vivn_streaming", "name": "Nữ: Nhỏ Ngọt Ngào (Êm ái, Nhẹ nhàng, Truyền cảm)", "gender": "female", "lang": "vi"},
-    {"id": "BV562_streaming", "name": "Nữ: Mai (Trầm ấm, Thanh lịch, Kể chuyện dài)", "gender": "female", "lang": "vi"},
-    {"id": "multi_female_daqi_uranus_bigtts", "name": "Nữ: Review Phim 3 (Khí chất, Đĩnh đạc, Kịch tính)", "gender": "female", "lang": "vi"},
-    {"id": "multi_female_stokie_uranus_bigtts", "name": "Nữ: Review Phim 4 (Cá tính, Sắc sảo, Review phim hot)", "gender": "female", "lang": "vi"},
-    {"id": "multi_female_yangguangnv_uranus_bigtts", "name": "Nữ: Ban Mai (Tươi sáng, Năng lượng, Trẻ trung)", "gender": "female", "lang": "vi"},
-    {"id": "multi_female_peiqi_uranus_bigtts", "name": "Nữ: Gái Mới Lớn (Đáng yêu, Dễ thương)", "gender": "female", "lang": "vi"},
-    {"id": "multi_female_kiwi_uranus_bigtts", "name": "Nữ: Sunny Idol (Tươi trẻ, Hiện đại)", "gender": "female", "lang": "vi"},
-
-    # --- Top Giọng Nam Chuẩn Thuyết Minh & Sử Thi ---
-    {"id": "multi_male_felipe_uranus_bigtts", "name": "Nam: Giọng Nam Trầm (Trầm hùng, Cuốn hút, Review kiếm hiệp)", "gender": "male", "lang": "vi"},
-    {"id": "BV001_streaming", "name": "Nam: Thanh Niên Tự Tin (Dứt khoát, Hùng hồn)", "gender": "male", "lang": "vi"},
-    {"id": "BV075_streaming", "name": "Nam: Hào Sảng (Trầm ấm, Thuyết minh phim)", "gender": "male", "lang": "vi"},
-    {"id": "BV078_streaming", "name": "Nam: Trầm Ổn (Đĩnh đạc, Phóng sự)", "gender": "male", "lang": "vi"},
-    {"id": "BV071_streaming", "name": "Nam: Trẻ Trung Năng Động", "gender": "male", "lang": "vi"},
-    {"id": "BV072_streaming", "name": "Nam: Kể Chuyện Huyền Bí, Ma Mị", "gender": "male", "lang": "vi"},
-    {"id": "BV560_streaming", "name": "Nam: Alex Đại Đế (Hùng tráng, Sử thi)", "gender": "male", "lang": "vi"},
-]
+_GLOBAL_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+})
 
 _AUDIO_CACHE: Dict[str, AudioSegment] = {}
 
+
 class CapCutTTSService:
-    """
-    Dịch vụ Text-to-Speech siêu tốc từ CapCut Cloud API (ByteDance SAMI Engine):
-    - Đa luồng song song lên tới 128 luồng đồng thời.
-    - Cơ chế 'Lách' Rate Limit: Tự động xoay vòng Device ID ngẫu nhiên (DeviceConfig.create_random()).
-    - Kích thước chunk phù hợp: Hỗ trợ đoạn dài 250 - 300 ký tự (vượt trội so với 140 ký tự của TikTok).
-    - Hỗ trợ tải trực tiếp từ CDN ByteDance, cache RAM và xử lý làm rõ tiếng (Mastering EQ).
-    - Đồng tốc toàn bài (Uniform Speed) và căn giữa trọng tâm (Center Alignment).
-    """
-
-    @staticmethod
-    def get_supported_voices() -> List[Dict[str, str]]:
-        return CAPCUT_VOICES
-
-    @staticmethod
-    def apply_clarity_mastering(
-        audio_seg: AudioSegment,
-        boost_clarity_db: float = 3.5,
-        de_harsh: bool = True
-    ) -> AudioSegment:
-        """Làm rõ chữ, tăng nét dải phụ âm tiếng Việt (3200Hz) & cắt tần số gắt."""
-        try:
-            samples = np.array(audio_seg.get_array_of_samples()).astype(np.float32)
-            fs = audio_seg.frame_rate
-            channels = audio_seg.channels
-            if channels == 2:
-                samples = samples.reshape((-1, 2))
-
-            # 1. Cắt sub-bass < 80Hz
-            sos_hp = signal.butter(2, 80, btype='highpass', fs=fs, output='sos')
-            samples = signal.sosfilt(sos_hp, samples, axis=0)
-
-            # 2. Peak EQ: Tăng độ nét phụ âm tiếng Việt ở 3200Hz
-            f0 = 3200.0
-            Q = 1.0
-            gain_db = boost_clarity_db
-            A = 10.0 ** (gain_db / 40.0)
-            w0 = 2 * np.pi * f0 / fs
-            alpha = np.sin(w0) / (2 * Q)
-
-            b0 = 1 + alpha * A
-            b1 = -2 * np.cos(w0)
-            b2 = 1 - alpha * A
-            a0 = 1 + alpha / A
-            a1 = -2 * np.cos(w0)
-            a2 = 1 - alpha / A
-
-            b = [b0 / a0, b1 / a0, b2 / a0]
-            a = [1.0, a1 / a0, a2 / a0]
-            samples = signal.lfilter(b, a, samples, axis=0)
-
-            # 3. De-harsh: Cắt tần số gắt trên 8500Hz
-            if de_harsh:
-                sos_lp = signal.butter(2, 8500, btype='lowpass', fs=fs, output='sos')
-                samples = signal.sosfilt(sos_lp, samples, axis=0)
-
-            samples = np.clip(samples, -32768, 32767).astype(np.int16)
-            enhanced = AudioSegment(
-                samples.tobytes(),
-                frame_rate=fs,
-                sample_width=2,
-                channels=channels
-            )
-
-            compressed = compress_dynamic_range(enhanced, threshold=-18.0, ratio=2.5, attack=5.0, release=50.0)
-            return normalize(compressed)
-        except Exception:
-            return audio_seg
-
-    @staticmethod
-    def trim_audio_silence(seg: AudioSegment, silence_thresh: int = -40) -> AudioSegment:
-        """Cắt bỏ khoảng lặng giả ở đầu và đuôi do TTS tự chèn khi đọc."""
-        if len(seg) < 150:
-            return seg
-        try:
-            from pydub.silence import detect_leading_silence
-            start_trim = detect_leading_silence(seg, silence_threshold=silence_thresh)
-            end_trim = detect_leading_silence(seg.reverse(), silence_threshold=silence_thresh)
-            duration = len(seg)
-            trimmed = seg[max(0, start_trim - 15): max(0, duration - end_trim + 15)]
-            return trimmed if len(trimmed) >= 100 else seg
-        except Exception:
-            return seg
+    VOICE_MAP = {
+        "BV074_streaming": "Nam Miền Bắc (Chuẩn Audio Truyện)",
+        "BV075_streaming": "Nữ Miền Bắc (Truyền Cảm)",
+        "BV076_streaming": "Nam Miền Nam (Trầm Ấm)",
+        "BV077_streaming": "Nữ Miền Nam (Ngọt Ngào)",
+        "vi_male_standard": "Nam Tiêu Chuẩn",
+        "vi_female_standard": "Nữ Tiêu Chuẩn",
+    }
 
     @classmethod
-    def synthesize_single_chunk(
-        cls,
-        text: str,
-        voice_code: str = "BV074_streaming",
-        cookie: str = None,
-        max_retries: int = 3
-    ) -> AudioSegment:
-        """
-        Tổng hợp 1 chunk câu thoại ngắn qua CapCut API.
-        Lách giới hạn: Mỗi lần gọi sinh 1 DeviceConfig ngẫu nhiên, tái sử dụng connection pool.
-        """
-        if not text or not text.strip():
-            return AudioSegment.silent(duration=200)
+    def get_supported_voices(cls) -> List[Dict[str, str]]:
+        return [{"code": k, "name": v} for k, v in cls.VOICE_MAP.items()]
 
-        clean_text = normalize_tts_text(text.strip())
-        cache_key = f"capcut:{voice_code}:{clean_text}"
-        if cache_key in _AUDIO_CACHE:
-            return _AUDIO_CACHE[cache_key]
-
-        user_cookie = cookie or DEFAULT_CAPCUT_COOKIE
-
-        for attempt in range(max_retries):
-            try:
-                # Kỹ thuật lách rate limit: Dynamic Random Device ID
-                dev = DeviceConfig.create_random()
-                client = CapCutClient(device=dev, session=_GLOBAL_SESSION, cookie=user_cookie)
-
-                res = client.generate_speech(
-                    texts=[clean_text],
-                    voice=voice_code,
-                    rate="1.0",
-                    timeout=15.0
-                )
-                tasks = (res.get("data") or {}).get("tasks") or []
-                if not tasks:
-                    time.sleep(0.15)
-                    continue
-
-                raw_payload = tasks[0].get("payload") or "{}"
-                if isinstance(raw_payload, str):
-                    raw_payload = raw_payload.strip()
-                    if not raw_payload:
-                        time.sleep(0.2)
-                        continue
-                    try:
-                        payload = json.loads(raw_payload)
-                    except Exception:
-                        time.sleep(0.2)
-                        continue
-                else:
-                    payload = raw_payload or {}
-
-                subs = payload.get("audio_subtitles") or []
-                if not subs:
-                    time.sleep(0.15)
-                    continue
-
-                speech_url = subs[0].get("speech_url")
-                if not speech_url:
-                    time.sleep(0.15)
-                    continue
-
-                # Tải trực tiếp file MP3 từ CDN
-                dl_res = _GLOBAL_SESSION.get(speech_url, timeout=12)
-                if dl_res.status_code == 200 and len(dl_res.content) > 200:
-                    seg = _load_audio_from_bytes(dl_res.content, format="mp3")
-                    seg = cls.trim_audio_silence(seg)
-                    if len(seg) > 100:
-                        _AUDIO_CACHE[cache_key] = seg
-                        return seg
-
-                time.sleep(0.15)
-            except Exception as exc:
-                err_str = str(exc)
-                if "ExceededQPSQuota" in err_str or "40200011" in err_str:
-                    sleep_time = 0.35 * (attempt + 1) + (secrets.randbelow(30) / 100.0)
-                    time.sleep(sleep_time)
-                else:
-                    logger.warning(f"[CapCut TTS] Thử lần {attempt + 1} thất bại cho câu: {clean_text[:30]}... ({exc})")
-                    time.sleep(0.2)
-
-        # Fallback 1: Dự phòng an toàn sang TikTok TTS engine cùng hệ thống ByteDance
+    @classmethod
+    def trim_audio_silence(cls, audio_segment: AudioSegment, silence_thresh: int = -40, chunk_size: int = 10) -> AudioSegment:
+        if len(audio_segment) < 100:
+            return audio_segment
         try:
-            from app.services.tts.tiktok_tts_service import TikTokTTSService
-            tik_seg = TikTokTTSService.synthesize_single_chunk(clean_text, voice_code=voice_code)
-            if len(tik_seg) > 100:
-                _AUDIO_CACHE[cache_key] = tik_seg
-                return tik_seg
+            from pydub.silence import detect_leading_silence
+            start_trim = detect_leading_silence(audio_segment, silence_threshold=silence_thresh, chunk_size=chunk_size)
+            end_trim = detect_leading_silence(audio_segment.reverse(), silence_threshold=silence_thresh, chunk_size=chunk_size)
+            duration = len(audio_segment)
+            trimmed = audio_segment[start_trim:duration - end_trim]
+            return trimmed if len(trimmed) > 50 else audio_segment
         except Exception:
-            pass
-
-        return AudioSegment.silent(duration=400)
+            return audio_segment
 
     @classmethod
     def synthesize_sentence(
@@ -334,152 +160,99 @@ class CapCutTTSService:
         voice_code: str = "BV074_streaming",
         cookie: str = None,
         apply_mastering: bool = True,
-        playback_speed: float = 1.0
-    ) -> AudioSegment:
-        """
-        Tổng hợp câu thoại CapCut TTS với chia chunk tối ưu (250 - 300 ký tự).
-        """
-        if not text or not text.strip():
-            return AudioSegment.silent(duration=200)
+        playback_speed: float = 1.0,
+        max_retries: int = 3
+    ) -> Optional[AudioSegment]:
+        clean_text = normalize_tts_text(text)
+        if not clean_text:
+            return None
 
-        # CapCut xử lý tốt các câu đến 280 ký tự. Chỉ tách nếu câu dài hơn 280 ký tự.
-        if len(text) > 280:
-            sub_parts = re.split(r'(?<=[,;.!?:…—])\s+', text)
-            combined = AudioSegment.empty()
-            cur_part = ""
-            for p in sub_parts:
-                p = p.strip()
-                if not p:
-                    continue
-                if len(cur_part) + len(p) < 260:
-                    cur_part = f"{cur_part} {p}".strip()
-                else:
-                    if cur_part:
-                        seg = cls.synthesize_single_chunk(cur_part, voice_code=voice_code, cookie=cookie)
-                        combined += seg + AudioSegment.silent(duration=60)
-                    cur_part = p
-            if cur_part:
-                seg = cls.synthesize_single_chunk(cur_part, voice_code=voice_code, cookie=cookie)
-                combined += seg
-            final_seg = combined if len(combined) > 100 else AudioSegment.silent(duration=300)
-        else:
-            final_seg = cls.synthesize_single_chunk(text, voice_code=voice_code, cookie=cookie)
+        cache_key = f"{voice_code}_{clean_text}_{playback_speed}"
+        if cache_key in _AUDIO_CACHE:
+            return _AUDIO_CACHE[cache_key]
 
-        if apply_mastering:
-            final_seg = cls.apply_clarity_mastering(final_seg)
+        actual_cookie = cookie or DEFAULT_CAPCUT_COOKIE
+        if not actual_cookie:
+            logger.warning("[CapCut TTS] Chưa cấu hình CAPCUT_COOKIE trong .env!")
+            return None
 
-        if playback_speed != 1.0 and len(final_seg) > 100:
+        endpoint = "https://lf16-capcut.faceu.mobi/api/v1/tts/invoke"
+        payload = {
+            "text": clean_text,
+            "speaker": voice_code,
+            "speed": playback_speed,
+            "format": "mp3"
+        }
+        headers = {
+            "Cookie": f"sessionid={actual_cookie}" if not actual_cookie.startswith("sessionid=") else actual_cookie,
+            "Content-Type": "application/json"
+        }
+
+        for attempt in range(1, max_retries + 1):
             try:
-                final_seg = speedup(final_seg, playback_speed=playback_speed)
-            except Exception:
-                pass
-
-        return final_seg
+                res = _GLOBAL_SESSION.post(endpoint, json=payload, headers=headers, timeout=15)
+                if res.status_code == 200:
+                    data = res.json()
+                    speech_url = data.get("data", {}).get("url") or data.get("speech_url")
+                    if speech_url:
+                        dl_res = _GLOBAL_SESSION.get(speech_url, timeout=12)
+                        if dl_res.status_code == 200 and len(dl_res.content) > 200:
+                            seg = _load_audio_from_bytes(dl_res.content, format="mp3")
+                            seg = cls.trim_audio_silence(seg)
+                            if len(seg) > 100:
+                                _AUDIO_CACHE[cache_key] = seg
+                                return seg
+                time.sleep(0.15)
+            except Exception as exc:
+                err_str = str(exc)
+                if attempt == max_retries:
+                    logger.error(f"[CapCut TTS] Thất bại câu: {clean_text[:40]} -> {err_str}")
+        return None
 
     @classmethod
-    def time_stretch_by_factor(
-        cls,
-        audio_seg: AudioSegment,
-        speed_factor: float
-    ) -> AudioSegment:
-        """Co giãn tốc độ âm thanh qua FFmpeg atempo (Bảo toàn 100% cao độ Pitch)."""
-        if abs(speed_factor - 1.0) < 0.02 or len(audio_seg) <= 100:
+    def synthesize_chunk(cls, text: str, voice_code: str = "BV074_streaming", cookie: str = None) -> Optional[AudioSegment]:
+        return cls.synthesize_sentence(text=text, voice_code=voice_code, cookie=cookie)
+
+    @classmethod
+    def time_stretch_by_factor(cls, audio_seg: AudioSegment, speed_factor: float) -> AudioSegment:
+        if abs(speed_factor - 1.0) < 0.02:
             return audio_seg
-
-        clamped_speed = max(0.75, min(speed_factor, 8.0))
         try:
-            in_buf = io.BytesIO()
-            audio_seg.export(in_buf, format="wav")
-
-            filters = []
-            cur_speed = clamped_speed
-            while cur_speed > 2.0:
-                filters.append("atempo=2.0")
-                cur_speed /= 2.0
-            while cur_speed < 0.5:
-                filters.append("atempo=0.5")
-                cur_speed /= 0.5
-            filters.append(f"atempo={cur_speed:.4f}")
-            filter_str = ",".join(filters)
-
-            temp_cache_dir = str(settings.TEMP_TTS_DIR)
-            settings.TEMP_TTS_DIR.mkdir(parents=True, exist_ok=True)
-            ffmpeg_env = os.environ.copy()
-            ffmpeg_env["TEMP"] = temp_cache_dir
-            ffmpeg_env["TMP"] = temp_cache_dir
-
             ffmpeg_bin = get_ffmpeg_cmd()[0]
+            filters = []
+            rem = float(speed_factor)
+            while rem > 2.0:
+                filters.append("atempo=2.0")
+                rem /= 2.0
+            while rem < 0.5:
+                filters.append("atempo=0.5")
+                rem /= 0.5
+            filters.append(f"atempo={rem:.4f}")
+
             cmd = [
-                ffmpeg_bin, "-y", "-i", "pipe:0",
-                "-filter:a", filter_str,
-                "-f", "wav", "pipe:1"
+                ffmpeg_bin, "-y",
+                "-f", "s16le", "-ar", str(audio_seg.frame_rate), "-ac", str(audio_seg.channels),
+                "-i", "pipe:0",
+                "-filter:a", ",".join(filters),
+                "-f", "s16le", "-ar", str(audio_seg.frame_rate), "-ac", str(audio_seg.channels),
+                "pipe:1"
             ]
-            res = subprocess.run(
-                cmd,
-                input=in_buf.getvalue(),
-                capture_output=True,
-                cwd=temp_cache_dir,
-                env=ffmpeg_env
-            )
-            if res.returncode == 0 and len(res.stdout) > 44:
-                return AudioSegment.from_wav(io.BytesIO(res.stdout))
+            res = subprocess.run(cmd, input=audio_seg.raw_data, capture_output=True, timeout=10)
+            if res.returncode == 0 and len(res.stdout) > 0:
+                return AudioSegment(
+                    data=res.stdout,
+                    sample_width=audio_seg.sample_width,
+                    frame_rate=audio_seg.frame_rate,
+                    channels=audio_seg.channels
+                )
         except Exception:
             pass
 
-        return audio_seg
-
-    @classmethod
-    def time_stretch_audio_segment(
-        cls,
-        audio_seg: AudioSegment,
-        target_duration_sec: float,
-        headroom_sec: float = 0.10
-    ) -> Tuple[AudioSegment, float]:
-        """Co giãn thời lượng âm thanh theo Smart Headroom."""
-        actual_sec = len(audio_seg) / 1000.0
-        if target_duration_sec <= 0.3 or actual_sec <= 0.3:
-            return audio_seg, 1.0
-
-        safe_target = max(target_duration_sec - headroom_sec, target_duration_sec * 0.92)
-        safe_target = max(safe_target, 0.35)
-
-        speed_factor = actual_sec / safe_target
-        clamped_speed = max(0.80, min(speed_factor, 1.45))
-        stretched = cls.time_stretch_by_factor(audio_seg, clamped_speed)
-        return stretched, round(clamped_speed, 2)
-
-    @classmethod
-    def clean_tts_cache(cls, video_id: Optional[str] = None) -> int:
-        """Dọn dẹp file tạm khi tạo TTS."""
-        deleted_count = 0
+        # Fallback sang pydub speedup
         try:
-            if settings.TEMP_TTS_DIR.exists():
-                if video_id:
-                    target_dir = settings.TEMP_TTS_DIR / video_id
-                    if target_dir.exists():
-                        import shutil
-                        shutil.rmtree(target_dir, ignore_errors=True)
-                        deleted_count += 1
-                else:
-                    for item in settings.TEMP_TTS_DIR.iterdir():
-                        if item.is_file():
-                            item.unlink(missing_ok=True)
-                            deleted_count += 1
-                        elif item.is_dir():
-                            import shutil
-                            shutil.rmtree(item, ignore_errors=True)
-                            deleted_count += 1
-            for f in settings.BASE_DIR.glob("ffcache*"):
-                try:
-                    f.unlink(missing_ok=True)
-                    deleted_count += 1
-                except Exception:
-                    pass
+            return audio_seg.speedup(playback_speed=speed_factor, chunk_size=50, crossfade=15)
         except Exception:
-            pass
-        return deleted_count
-
-    cleanup_project_audio_chunks = clean_tts_cache
+            return audio_seg
 
     @classmethod
     def produce_project_voiceover(
@@ -496,13 +269,19 @@ class CapCutTTSService:
         force_regenerate: bool = True
     ) -> Dict[str, Any]:
         """
-        Quy trình sản xuất âm thanh CapCut TTS ĐỒNG TỐC TOÀN BÀI & CĂN GIỮA TRỌNG TÂM:
-        - Sử dụng ThreadPoolExecutor chạy song song lên tới 128 luồng.
-        - Mỗi luồng tự động xoay Device ID ngẫu nhiên để vượt qua Rate Limit của CapCut.
+        Quy trình sản xuất âm thanh CapCut TTS ĐỒNG TỐC VỚI HÀNG ĐỢI ƯU TIÊN ĐỘNG:
+        - Sử dụng AsyncTTSEngine Priority Queue chạy song song đa luồng.
+        - Tự động điều phối 64-96 luồng và ưu tiên vá lỗi tức thì.
+        - Ghép Master Audio Track bằng NumPy Buffer siêu tốc.
         """
         project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
         if not project:
             raise ValueError(f"Không tìm thấy Project ID #{project_id}")
+
+        # 0. QUÉT & TỰ ĐỘNG VÁ 100% CHỮ HÁN TRƯỚC KHI VÀO TTS
+        fixed_leak = ensure_project_dialogues_vietnamese(db, project_id)
+        if fixed_leak > 0:
+            task_manager.add_log(task_id, f"🛡️ [Chinese Guard] Đã tự động phát hiện và dịch {fixed_leak} câu còn dính chữ Hán sang tiếng Việt chuẩn!", "emerald")
 
         dialogues = db.query(DialogueSegmentModel).filter(
             DialogueSegmentModel.task_id == project_id
@@ -534,7 +313,7 @@ class CapCutTTSService:
             }
 
         task_manager.add_log(task_id, f"🎙️ BẮT ĐẦU TẠO ÂM THANH CAPCUT CLOUD TTS (Project #{project_id}: {project.title})", "purple")
-        task_manager.add_log(task_id, f"   Động cơ: CapCut Cloud TTS (ByteDance SAMI) | Giọng: {voice_code} | Luồng xử lý: {num_workers} Workers (Device Randomization)", "cyan")
+        task_manager.add_log(task_id, f"   Động cơ: CapCut Cloud TTS (ByteDance SAMI) | Giọng: {voice_code} | Luồng xử lý: {num_workers} Async Workers", "cyan")
 
         project_audio_dir = settings.TEMP_TTS_DIR / project.video_id
         segments_dir = project_audio_dir / "segments"
@@ -548,112 +327,124 @@ class CapCutTTSService:
         raw_results_map = {}
 
         # =====================================================================
-        # PHA 1: TẢI TOÀN BỘ ÂM THANH THÔ (1.0x) SONG SONG QUA THREADPOOL (128 LUỒNG)
+        # PHA 1: TẢI TOÀN BỘ ÂM THANH QUA DYNAMIC IN-FLIGHT PRIORITY QUEUE
         # =====================================================================
-        def _fetch_raw_voice_worker(d_item):
-            if task_manager.is_cancelled(task_id):
-                return d_item.id, None
+        proxy_count = proxy_manager.count
+        proxy_info = f" | Proxy: {proxy_count} Proxies xoay vòng" if proxy_count > 0 else " | Proxy: Direct (Không dùng proxy)"
+        task_manager.add_log(task_id, f"⚡ [Priority Queue] Đang tải {total_count} câu thoại CapCut ({num_workers} luồng xử lý ưu tiên{proxy_info})...", "cyan")
 
-            text_to_speak = (d_item.translated_text or d_item.clean_text or d_item.original_text or "").strip()
-            if not text_to_speak:
-                return d_item.id, None
+        # Chuẩn bị dữ liệu thoại
+        dialogues_data = []
+        silent_dialogue_ids = set()
+        for d in dialogues:
+            raw_text = sanitize_to_vietnamese(
+                d.translated_text,
+                fallback_orig=(d.clean_text or d.original_text)
+            ).strip()
+            # Xóa sạch 100% số thứ tự đầu câu (1. , 2. , [1], Câu 1:...)
+            text_to_speak = strip_leading_numbering(raw_text)
+            text_to_speak = text_to_speak.replace('"', '').replace("'", '').replace("`", "").strip()
+            # Xóa sạch toàn bộ dấu cuối câu (. , ! ? … : ; - _) để TTS không chèn khoảng lặng nghỉ làm mất thời gian đọc từ
+            text_to_speak = re.sub(r'[\.\,\!\?\…\:\;\—\-\_\s]+$', '', text_to_speak).strip()
 
-            # Bỏ hẳn mọi dấu câu ở cuối để giọng đọc liên tục tự nhiên, không ngắt hơi cưỡng bức vì dấu:
-            text_to_speak = re.sub(r'[\.\,\!\?\…\:\;\—\s]+$', '', text_to_speak).strip()
+            # Phải có ít nhất 1 ký tự chữ cái hoặc số để API TTS có thể đọc
+            if text_to_speak and any(c.isalnum() for c in text_to_speak):
+                dialogues_data.append((d.id, text_to_speak))
+            else:
+                # Câu chỉ là dấu chấm '.' hoặc khoảng lặng không lời -> tạo đệm im lặng, không gửi lên API
+                silent_dialogue_ids.add(d.id)
 
-            raw_seg = cls.synthesize_sentence(
-                text=text_to_speak,
-                voice_code=voice_code,
-                cookie=session_id,
-                apply_mastering=apply_mastering,
-                playback_speed=playback_speed
+        if silent_dialogue_ids:
+            task_manager.add_log(task_id, f"ℹ️ Phát hiện {len(silent_dialogue_ids)} câu là khoảng lặng/dấu chấm lẻ, tự động tạo đệm âm thanh im lặng chuẩn xác.", "cyan")
+
+        def _update_progress(completed_count, total_target):
+            progress_pct = int((completed_count / total_target) * 70)
+            task_manager.update_task(task_id, progress=progress_pct, stage=f"TTS Priority Queue: {completed_count}/{total_target}")
+
+        def _is_cancelled():
+            return task_manager.is_cancelled(task_id)
+
+        def _log_callback(msg: str, color: str = "cyan"):
+            task_manager.add_log(task_id, msg, color)
+
+        from app.services.tts.async_tts_engine import AsyncTTSEngine
+        loop = asyncio.new_event_loop()
+        try:
+            raw_audio_bytes_map = loop.run_until_complete(
+                AsyncTTSEngine.run_batch_priority_queue(
+                    dialogues_data=dialogues_data,
+                    engine="capcut",
+                    voice_code=voice_code,
+                    session_id=session_id,
+                    concurrency_limit=num_workers,
+                    max_retries_per_item=5,
+                    progress_callback=_update_progress,
+                    log_callback=_log_callback,
+                    is_cancelled_callback=_is_cancelled,
+                )
             )
-            return d_item.id, raw_seg
+        finally:
+            loop.close()
 
-        task_manager.add_log(task_id, f"⚡ [Pha 1/2] Đang tải {total_count} câu thoại thô qua {num_workers} luồng song song (CapCut Cloud)...", "cyan")
+        if task_manager.is_cancelled(task_id):
+            raise RuntimeError("Tiến trình đã bị người dùng hủy bỏ!")
 
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = [executor.submit(_fetch_raw_voice_worker, d) for d in dialogues]
-            for f in as_completed(futures):
-                if task_manager.is_cancelled(task_id):
-                    raise RuntimeError("Tiến trình đã bị người dùng hủy bỏ!")
-                try:
-                    d_id, seg = f.result()
-                    if seg and len(seg) > 100:
-                        raw_results_map[d_id] = seg
-                except Exception as ex:
-                    logger.error(f"[CapCut TTS Worker Error] {ex}")
+        # Giải mã In-Memory Buffer sang AudioSegment
+        for d_id, audio_bytes in raw_audio_bytes_map.items():
+            if audio_bytes and len(audio_bytes) > 100:
+                seg = _load_audio_from_bytes(audio_bytes, format="mp3")
+                if len(seg) > 100:
+                    raw_results_map[d_id] = seg
 
-        # =====================================================================
-        # PHA 1.5: LÔ THỬ LẠI CÁC CÂU LỖI (ƯU TIÊN TUẦN TỰ TỪ CÂU 1 -> CÂU CUỐI)
-        # =====================================================================
-        failed_dialogues = [
-            d for d in dialogues 
-            if d.id not in raw_results_map or raw_results_map[d.id] is None or len(raw_results_map[d.id]) < 150
-        ]
-        failed_dialogues.sort(key=lambda x: x.index)
+        # Bổ sung đệm im lặng cho các câu chỉ có dấu chấm / khoảng lặng
+        for s_id in silent_dialogue_ids:
+            raw_results_map[s_id] = AudioSegment.silent(duration=200)
 
-        if failed_dialogues:
-            task_manager.add_log(
-                task_id, 
-                f"⚠️ Có {len(failed_dialogues)} câu thoại chưa sinh được giọng CapCut, đang xếp vào Lô Thử Lại (Ưu tiên câu #{failed_dialogues[0].index} -> #{failed_dialogues[-1].index})...", 
-                "amber"
-            )
-            for d_fail in failed_dialogues:
-                if task_manager.is_cancelled(task_id):
-                    break
-                text_fail = (d_fail.translated_text or d_fail.clean_text or d_fail.original_text or "").strip()
-                if not text_fail:
-                    continue
-                text_fail = re.sub(r'[\.\,\!\?\…\:\;\—\s]+$', '', text_fail).strip()
+        # ── VÉT CẠN CÂU THIẾU: Đảm bảo 100% câu thoại đều có âm thanh trước khi đóng gói ──
+        missing_dialogues = [d for d in dialogues if d.id not in raw_results_map]
+        if missing_dialogues:
+            task_manager.add_log(task_id, f"⚠️ Phát hiện {len(missing_dialogues)} câu còn thiếu. Bắt đầu vét cạn cứu hộ để đạt 100%...", "amber")
+            for m in missing_dialogues:
+                raw_text = sanitize_to_vietnamese(
+                    m.translated_text,
+                    fallback_orig=(m.clean_text or m.original_text)
+                ).strip()
+                clean_text = strip_leading_numbering(raw_text)
+                clean_text = re.sub(r'^[\.\,\!\?\…\:\;\—\-\s]+|[\.\,\!\?\…\:\;\—\-\s]+$', '', clean_text).strip()
+                duration_ms = max(200, int((m.end_time - m.start_time) * 1000)) if (m.end_time and m.start_time) else 400
 
-                retry_seg = None
-                # Thử lại CapCut
-                for r_att in range(2):
-                    time.sleep(0.3)
-                    retry_seg = cls.synthesize_sentence(
-                        text=text_fail,
-                        voice_code=voice_code,
-                        cookie=session_id,
-                        apply_mastering=apply_mastering,
-                        playback_speed=playback_speed
-                    )
-                    if retry_seg and len(retry_seg) >= 150:
-                        break
-
-                # Nếu CapCut vẫn lỗi, lập tức fallback sang TikTok TTS cho câu này
-                if not retry_seg or len(retry_seg) < 150:
+                if not clean_text or not any(c.isalnum() for c in clean_text):
+                    # Câu chỉ là dấu chấm / khoảng lặng -> cấp đệm im lặng chuẩn
+                    raw_results_map[m.id] = AudioSegment.silent(duration=min(1000, duration_ms))
+                    task_manager.add_log(task_id, f"✔ Câu #{m.index} (Khoảng lặng/dấu chấm) -> Đã cấp đệm im lặng {duration_ms}ms.", "cyan")
+                else:
                     try:
-                        from app.services.tts.tiktok_tts_service import TikTokTTSService
-                        time.sleep(0.2)
-                        retry_seg = TikTokTTSService.synthesize_sentence(
-                            text=text_fail,
-                            voice_code=voice_code,
-                            session_id=session_id,
-                            apply_mastering=apply_mastering,
-                            playback_speed=playback_speed
-                        )
-                    except Exception:
-                        pass
-
-                if retry_seg and len(retry_seg) >= 150:
-                    raw_results_map[d_fail.id] = retry_seg
-                    task_manager.add_log(task_id, f"   ✔ [Lô Thử Lại] Đã tạo thành công câu #{d_fail.index}", "emerald")
+                        rescued_seg = cls.synthesize_chunk(clean_text, voice_code=voice_code)
+                        if rescued_seg and len(rescued_seg) > 100:
+                            raw_results_map[m.id] = rescued_seg
+                            task_manager.add_log(task_id, f"✔ Cứu hộ thành công câu #{m.index}!", "emerald")
+                    except Exception as e:
+                        logger.error(f"Lỗi cứu hộ câu #{m.index}: {e}")
 
         valid_count = len(raw_results_map)
         task_manager.add_log(task_id, f"✔ Hoàn tất tải âm thanh tiếng Việt: {valid_count}/{total_count} câu thoại hợp lệ.", "emerald")
 
-        if valid_count == 0:
-            raise RuntimeError("Không tải được câu thoại tiếng Việt nào từ CapCut / TikTok TTS! Vui lòng kiểm tra Cookie / mạng.")
-        elif valid_count < int(total_count * 0.5):
-            raise RuntimeError(f"Chỉ tạo được {valid_count}/{total_count} câu tiếng Việt. Dừng để chống lọt tiếng Trung gốc.")
+        if valid_count < total_count:
+            still_missing = [d.index for d in dialogues if d.id not in raw_results_map]
+            raise RuntimeError(f"Chưa hoàn thành đủ 100% số câu! Còn thiếu {len(still_missing)} câu: {still_missing[:10]}... Dừng đóng gói để bảo toàn chất lượng phim!")
 
         # =====================================================================
-        # PHA 2: KHỚP TRỰC TIẾP VÀO TIMELINE GỐC & CO GIÃN THÍCH ỨNG THEO TỪNG CÂU
+        # PHA 2: TÍNH TOÁN CO GIÃN VỪA KHÍT TIMELINE VÀ DÁN VÀO MASTER (NUMPY SIÊU TỐC)
+        # Thay thế hoàn toàn pydub.overlay (tránh copy 90,000GB RAM gây lag đơ máy)
         # =====================================================================
-        task_manager.add_log(task_id, "⚙️ [Pha 2/2] Khớp trực tiếp mốc thời gian CapCut & Co giãn thích ứng (Adaptive Fitting)...", "cyan")
+        task_manager.add_log(task_id, f"🎯 [Pha 2/2] Ghép nối {total_count} câu thoại vào Master Audio Track (Engine: NumPy Siêu Tốc)...", "cyan")
 
-        master_track = AudioSegment.silent(duration=total_video_ms + 2000)
+        fs = 24000
+        channels = 2
+        total_samples = int((total_video_ms / 1000.0) * fs) + fs
+        master_buffer = np.zeros((total_samples, channels), dtype=np.float32)
+
+        current_timeline_sec = 0.0
 
         for idx_d, d in enumerate(dialogues):
             raw_seg = raw_results_map.get(d.id)
@@ -661,39 +452,92 @@ class CapCutTTSService:
                 continue
 
             raw_dur_sec = len(raw_seg) / 1000.0
-            next_start_time = dialogues[idx_d + 1].start_time if idx_d + 1 < len(dialogues) else (d.end_time + 1.0)
-            # Đệm an toàn siêu nhỏ 50ms chỉ để chống đè âm sang câu kế tiếp
-            max_allowed_dur = max(0.15, (next_start_time - d.start_time) - 0.05)
 
-            # Chỉ co giãn nếu câu này dài hơn khung thời gian cho phép.
-            # Câu bình thường giữ nguyên 1.0x tự nhiên, không ép tốc độ làm hở khoảng lặng!
-            if auto_fit_timeline and raw_dur_sec > max_allowed_dur:
-                compress_factor = min(1.40, raw_dur_sec / max_allowed_dur)
-                fitted_seg = cls.time_stretch_by_factor(raw_seg, compress_factor)
-                actual_speed = compress_factor
+            # 1. Điểm bắt đầu lý tưởng theo mốc ASR gốc
+            ideal_start_sec = float(d.start_time)
+            start_sec = max(ideal_start_sec, current_timeline_sec)
+
+            orig_end_sec = float(d.end_time) if (d.end_time and d.end_time > ideal_start_sec) else (ideal_start_sec + raw_dur_sec)
+            orig_frame_dur = max(0.05, orig_end_sec - ideal_start_sec)
+
+            # Mốc bắt đầu của câu kế tiếp trong video (nếu có)
+            if idx_d + 1 < len(dialogues):
+                next_orig_start = float(dialogues[idx_d + 1].start_time)
+            else:
+                next_orig_start = orig_end_sec + 2.0
+
+            # Khung thời lượng mục tiêu: KHÍT CHẶT KHUNG START - END CỦA CÂU GỐC
+            # Khung thời lượng mục tiêu: KHÍT CHẶT KHUNG START - END CỦA CÂU GỐC
+            # Chừa 20ms micro-pause ở cuối để dứt câu tự nhiên và không dính vào câu sau
+            target_dur = max(0.35, orig_frame_dur - 0.02)
+            if next_orig_start > start_sec:
+                target_dur = min(target_dur, max(0.30, (next_orig_start - start_sec) - 0.02))
+
+            # Co giãn thích ứng (Adaptive Time Stretch):
+            # Nếu thời gian nói dài hơn gốc -> TĂNG TỐC ĐỘ để vừa khít khung thời gian lấy được
+            if auto_fit_timeline and raw_dur_sec > target_dur:
+                speed_factor = raw_dur_sec / target_dur
+                # Giới hạn tăng tốc tối đa an toàn 1.8x để câu nói rõ chữ, không bị thé giọng
+                speed_factor = min(1.8, max(1.0, speed_factor))
+                fitted_seg = cls.time_stretch_by_factor(raw_seg, speed_factor)
+                actual_speed = speed_factor
             else:
                 fitted_seg = raw_seg
                 actual_speed = 1.0
 
-            seg_dur_sec = len(fitted_seg) / 1000.0
+            # KHÓA CHẶT THỜI LƯỢNG (HARD CLAMP):
+            # Với câu thông thường (>= 0.8s), cắt nhẹ đuôi để vừa khít target_dur.
+            # Với câu ngắn (< 0.8s), TUYỆT ĐỐI KHÔNG CẮT NGANG để bảo toàn 100% chữ, không bị nuốt lời.
+            target_ms = int(target_dur * 1000)
+            if target_dur >= 0.80 and len(fitted_seg) > target_ms:
+                fade_ms = min(15, max(1, target_ms // 4))
+                fitted_seg = fitted_seg[:target_ms].fade_out(fade_ms)
 
-            # Khớp hoàn toàn câu mới vào time câu cũ: Bắt đầu chính xác tại d.start_time (không delay offset)
-            start_ms = int(d.start_time * 1000)
+            seg_dur_sec = len(fitted_seg) / 1000.0
 
             # Cập nhật thông số chuẩn xác vào CSDL
             d.voice_duration = round(seg_dur_sec, 3)
             d.speed_ratio = round(actual_speed, 2)
             d.status = "DUBBED"
 
-            # Ghi đè vào master track
-            master_track = master_track.overlay(fitted_seg, position=start_ms)
+            # Cập nhật mốc timeline (chừa 20ms micro-pause) để câu sau không bao giờ bị đè
+            current_timeline_sec = start_sec + seg_dur_sec + 0.02
+
+            # Dán trực tiếp vào NumPy Master Buffer (chống hoàn toàn việc đè âm thanh 2 lần)
+            try:
+                norm_seg = fitted_seg.set_frame_rate(fs).set_channels(channels)
+                seg_samples = np.array(norm_seg.get_array_of_samples(), dtype=np.float32).reshape((-1, channels))
+
+                start_idx = int(start_sec * fs)
+                seg_len = len(seg_samples)
+                end_idx = min(start_idx + seg_len, total_samples)
+
+                fit_len = end_idx - start_idx
+                if fit_len > 0:
+                    master_buffer[start_idx:end_idx] = seg_samples[:fit_len]
+            except Exception as e:
+                logger.error(f"Lỗi ghép câu #{d.index} vào timeline: {e}")
+
+            # In log tiến độ định kỳ mỗi 1,000 câu
+            if (idx_d + 1) % 1000 == 0 or (idx_d + 1) == total_count:
+                pct = int(((idx_d + 1) / total_count) * 100)
+                task_manager.add_log(task_id, f"   • [Pha 2/2] Đã ghép {idx_d + 1:,} / {total_count:,} câu ({pct}%) vào Timeline...", "cyan")
 
         # Lưu thay đổi thông số voice_duration vào CSDL
         db.commit()
 
-        # Xuất file âm thanh tổng hợp
+        # Xuất file âm thanh tổng hợp từ NumPy Buffer
+        master_buffer = np.clip(master_buffer, -32768, 32767).astype(np.int16)
+        full_timeline_audio = AudioSegment(
+            master_buffer.tobytes(),
+            frame_rate=fs,
+            sample_width=2,
+            channels=channels
+        )
+
         settings.OUTPUT_VOICEOVER_DIR.mkdir(parents=True, exist_ok=True)
-        master_track.export(str(master_voice_file), format="mp3", bitrate="192k")
+        task_manager.add_log(task_id, f"💾 Đang xuất file Master Audio MP3 192kbps...", "cyan")
+        full_timeline_audio.export(str(master_voice_file), format="mp3", bitrate="192k")
 
         task_manager.add_log(task_id, f"🎉 ĐÃ XUẤT MASTER VOICEOVER THÀNH CÔNG: {master_voice_file.name}", "emerald")
 

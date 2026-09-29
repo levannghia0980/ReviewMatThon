@@ -28,13 +28,27 @@ class TaskManager:
     @classmethod
     def add_log(cls, task_id: str, text: str, log_type: str = "cyan"):
         with cls._lock:
+            current_time = time.strftime("%H:%M:%S")
             if task_id in cls._tasks:
                 cls._tasks[task_id]["logs"].append({
-                    "time": time.strftime("%H:%M:%S"),
+                    "time": current_time,
                     "text": text,
                     "type": log_type
                 })
                 cls._tasks[task_id]["updated_at"] = time.time()
+            # In trực tiếp ra console terminal để người dùng theo dõi
+            try:
+                print(f"[{current_time}] {text}", flush=True)
+            except UnicodeEncodeError:
+                try:
+                    safe_text = text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+                    import sys
+                    sys.stdout.buffer.write(f"[{current_time}] {safe_text}\n".encode("utf-8", errors="replace"))
+                    sys.stdout.buffer.flush()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     @classmethod
     def update_task(cls, task_id: str, **kwargs):

@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import asyncio
 from pathlib import Path
@@ -222,22 +223,119 @@ class TranslationPipelineService:
             task_manager.add_log(task_id, "   ✔ Bản dịch sạch 100%, không rò rỉ bất kỳ chữ Hán nào!", "emerald")
 
         # =====================================================================
+        # GIAI ĐOẠN 5.5: GỘP VẾ BỔ TRỢ THEO DẤU PHẨY (SAFE SMART COMMA MERGER)
+        # Tự động gộp vế câu bổ trợ kết thúc bằng dấu phẩy ',' vào câu sau
+        # Start lấy từ đầu câu trước, End lấy ở cuối câu sau, giảm tổng số câu
+        # Có chốt an toàn: max 3 câu gộp, max duration 6.0s, gap <= 0.40s
+        # =====================================================================
+        INTRO_CONNECTIVES = {
+            "lúc này", "đúng lúc này", "đúng lúc ấy", "nghe vậy", "nghe thấy vậy", "nghe được lời này",
+            "nói đoạn", "nói xong", "hôm sau", "ngày hôm sau", "một lát sau", "vừa dứt lời", "trời ơi",
+            "than ôi", "nhìn thấy cảnh này", "thấy vậy", "sau đó", "bỗng nhiên", "đột nhiên", "ngay sau đó",
+            "khi này", "thời khắc này", "chỉ thấy", "nhưng đúng lúc này", "ngay lúc này", "vừa quay đầu",
+            "chớp mắt một cái", "ngay tại lúc này"
+        }
+
+        def _is_dependent_clause(text: str) -> bool:
+            t = text.strip()
+            # 1. Kết thúc bằng dấu phẩy do LLM nhận diện cùng 1 người nói chưa hết ý
+            if t.endswith(",") or t.endswith("，"):
+                return True
+            # 2. Hoặc là trạng ngữ/thán từ mở đầu kinh điển (kể cả khi LLM lỡ đóng dấu chấm)
+            clean_t = re.sub(r'[\.\,\!\?\…\s]+$', '', t).strip().lower()
+            if clean_t in INTRO_CONNECTIVES:
+                return True
+            return False
+
+        merged_segments = []
+        i = 0
+        n = len(translated_segments)
+
+        while i < n:
+            curr = translated_segments[i]
+            curr_text = (curr.translated_text or "").strip()
+            curr_orig = (curr.clean_text or curr.text or "").strip()
+            curr_start = curr.start
+            curr_end = curr.end
+            chain_count = 1
+
+            # Làm sạch nếu vô tình dính lỗi '.,'
+            if curr_text.endswith(".,"):
+                curr_text = curr_text[:-2].strip() + ","
+
+            while i + 1 < n:
+                next_seg = translated_segments[i + 1]
+                next_text = (next_seg.translated_text or "").strip()
+                next_orig = (next_seg.clean_text or next_seg.text or "").strip()
+                gap = next_seg.start - curr_end
+
+                # Điều kiện gộp an toàn:
+                # 1. Câu hiện tại là vế bổ trợ (kết thúc dấu phẩy hoặc thuộc cụm mở đầu)
+                # 2. Khoảng cách thời gian gần khít (gap <= 0.40s)
+                # 3. Chuỗi gộp không quá 3 câu
+                # 4. Tổng thời lượng gộp không vượt quá 6.0s
+                if (_is_dependent_clause(curr_text) and 
+                    gap <= 0.40 and 
+                    chain_count < 3 and 
+                    (next_seg.end - curr_start) <= 6.0):
+
+                    # Nếu đang là dấu chấm thì chuyển thành dấu phẩy
+                    curr_text = re.sub(r'[\.\,\s]+$', '', curr_text).strip() + ","
+                    clean_next_text = next_text[0].lower() + next_text[1:] if len(next_text) > 1 else next_text.lower()
+                    curr_text = f"{curr_text} {clean_next_text}".strip()
+                    curr_orig = f"{curr_orig}，{next_orig}".strip()
+                    curr_end = next_seg.end
+                    chain_count += 1
+                    i += 1
+                else:
+                    break
+
+            # Chuẩn hóa dấu cuối: nếu còn dấu phẩy ở đuôi câu kết thì đổi thành dấu chấm
+            if curr_text.endswith(",") or curr_text.endswith("，"):
+                curr_text = curr_text.rstrip(",，").strip() + "."
+
+            curr.translated_text = curr_text
+            curr.start = curr_start
+            curr.end = curr_end
+            curr.duration = round(curr_end - curr_start, 3)
+            curr.clean_text = curr_orig
+            merged_segments.append(curr)
+            i += 1
+
+        if len(merged_segments) < len(translated_segments):
+            merged_count = len(translated_segments) - len(merged_segments)
+            task_manager.add_log(task_id, f"   ✨ [Smart Comma Merger] Đã tự động gộp {merged_count} vế câu bổ trợ kết thúc bằng dấu phẩy! (Tổng câu: {len(translated_segments)} ➔ {len(merged_segments)})", "emerald")
+            for new_idx, s in enumerate(merged_segments, 1):
+                s.id = new_idx
+            translated_segments = merged_segments
+
+        # =====================================================================
         # LƯU TRỮ VÀ XUẤT CÁC FILE THÀNH PHẨM (output/translations/)
         # =====================================================================
         task_manager.update_task(task_id, progress=95)
         task_manager.add_log(task_id, "💾 Đang lưu dữ liệu vào SQLite Database và xuất file kịch bản...", "cyan")
 
-        # Cập nhật SQLite
-        for s in translated_segments:
-            diag_db = db.query(DialogueSegmentModel).filter(
-                DialogueSegmentModel.task_id == project.id,
-                DialogueSegmentModel.index == s.id
-            ).first()
-            if diag_db:
-                diag_db.translated_text = s.translated_text
-                diag_db.status = "TRANSLATED"
+        # Cập nhật SQLite sạch sẽ với danh sách câu chuẩn
+        proj_id = project.id
+        proj_video_id = project.video_id
+        db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == proj_id).delete(synchronize_session=False)
+        db.commit()
 
-        project.status = "TRANSLATED"
+        for s in translated_segments:
+            db.add(DialogueSegmentModel(
+                task_id=proj_id,
+                index=s.id,
+                start_time=s.start,
+                end_time=s.end,
+                duration=s.duration,
+                original_text=s.text,
+                clean_text=s.clean_text,
+                translated_text=s.translated_text,
+                confidence=s.confidence,
+                status="TRANSLATED"
+            ))
+
+        db.query(ProjectTask).filter(ProjectTask.id == proj_id).update({"status": "TRANSLATED"})
         db.commit()
 
         # Xuất File SRT Tiếng Việt
@@ -245,13 +343,13 @@ class TranslationPipelineService:
         for s in translated_segments:
             srt_lines.append(f"{s.id}\n{format_timestamp(s.start)} --> {format_timestamp(s.end)}\n{s.translated_text}\n")
 
-        srt_path = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_{re_clean_name}_vi.srt"
+        srt_path = settings.OUTPUT_TRANSCRIPTS_DIR / f"{proj_video_id}_{re_clean_name}_vi.srt"
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(srt_lines))
 
         # Xuất File TXT Tiếng Việt hoàn chỉnh
         txt_lines = [s.translated_text for s in translated_segments if s.translated_text]
-        txt_path = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_{re_clean_name}_vi.txt"
+        txt_path = settings.OUTPUT_TRANSCRIPTS_DIR / f"{proj_video_id}_{re_clean_name}_vi.txt"
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(txt_lines))
 

@@ -48,7 +48,8 @@ class CapCutASRService:
             duration_ms=duration_ms,
             language=lang_code,
             translation_language="vi-VN",
-            use_translation=use_translation
+            use_translation=use_translation,
+            words_per_line=30
         )
 
         tasks = (stt_res.get("data") or {}).get("tasks") or []
@@ -89,6 +90,8 @@ class CapCutASRService:
 
             start_sec = round((w_start_ms / 1000.0) + time_offset, 3)
             end_sec = round((w_end_ms / 1000.0) + time_offset, 3)
+            if end_sec <= start_sec:
+                end_sec = round(start_sec + 0.3, 3)
             dur_sec = round(end_sec - start_sec, 3)
 
             text = u.get("text", "").strip()
@@ -140,12 +143,17 @@ class CapCutASRService:
                 time_offset=time_offset
             )
             
-            for seg in chunk_segments:
-                # Kỹ thuật Nối Dây (Overlap Stitching): 
-                # Bỏ qua các câu thoại bị lặp lại ở phần đầu của chunk mới
-                if seg.start > last_end_time:
+            if chunk_idx == 0:
+                # Chunk đầu tiên: Lấy trọn vẹn 100% câu thoại, không bao giờ lọc bỏ câu trùng mốc thời gian nối tiếp
+                for seg in chunk_segments:
                     all_raw_segments.append(seg)
                     last_end_time = max(last_end_time, seg.end)
+            else:
+                # Từ chunk thứ 2 trở đi (có vùng overlap 60s): Chỉ bỏ qua câu đã xuất hiện trọn vẹn ở chunk trước
+                for seg in chunk_segments:
+                    if seg.start >= (last_end_time - 0.2):
+                        all_raw_segments.append(seg)
+                        last_end_time = max(last_end_time, seg.end)
 
         lang_code = "zh-CN" if language in ("zh", "zh-CN") else language
         is_chinese = "zh" in lang_code.lower()

@@ -27,34 +27,31 @@ def _run_tts_worker(task_id: str, req: TTSProjectRequest):
         engine = getattr(settings, "TTS_ENGINE", "capcut").lower()
 
         if engine in ("capcut", "capcut_cloud"):
-            try:
-                task_manager.add_log(task_id, "🚀 Kích hoạt CapCut Cloud SAMI TTS Engine (128 Workers Concurrent)...", "cyan")
-                CapCutTTSService.produce_project_voiceover(
-                    task_id=task_id,
-                    project_id=req.project_id,
-                    db=db,
-                    voice_code=req.voice_code,
-                    session_id=req.session_id,
-                    apply_mastering=req.apply_mastering,
-                    playback_speed=req.playback_speed,
-                    auto_fit_timeline=req.auto_fit_timeline,
-                    max_workers=settings.TTS_MAX_WORKERS or 128
-                )
-                return
-            except Exception as cap_err:
-                task_manager.add_log(task_id, f"⚠️ CapCut TTS gặp sự cố ({cap_err}), tự động fallback sang TikTok TTS...", "amber")
-
-        TikTokTTSService.produce_project_voiceover(
-            task_id=task_id,
-            project_id=req.project_id,
-            db=db,
-            voice_code=req.voice_code,
-            session_id=req.session_id,
-            apply_mastering=req.apply_mastering,
-            playback_speed=req.playback_speed,
-            auto_fit_timeline=req.auto_fit_timeline,
-            max_workers=settings.TTS_MAX_WORKERS or 128
-        )
+            task_manager.add_log(task_id, f"🚀 Kích hoạt CapCut Cloud SAMI TTS Engine ({settings.TTS_MAX_WORKERS or 96} Workers Concurrent)...", "cyan")
+            CapCutTTSService.produce_project_voiceover(
+                task_id=task_id,
+                project_id=req.project_id,
+                db=db,
+                voice_code=req.voice_code,
+                session_id=req.session_id,
+                apply_mastering=req.apply_mastering,
+                playback_speed=req.playback_speed,
+                auto_fit_timeline=req.auto_fit_timeline,
+                max_workers=settings.TTS_MAX_WORKERS or 96
+            )
+        else:
+            task_manager.add_log(task_id, f"🚀 Kích hoạt TikTok TTS Engine ({settings.TTS_MAX_WORKERS or 96} Workers Concurrent)...", "cyan")
+            TikTokTTSService.produce_project_voiceover(
+                task_id=task_id,
+                project_id=req.project_id,
+                db=db,
+                voice_code=req.voice_code,
+                session_id=req.session_id,
+                apply_mastering=req.apply_mastering,
+                playback_speed=req.playback_speed,
+                auto_fit_timeline=req.auto_fit_timeline,
+                max_workers=settings.TTS_MAX_WORKERS or 96
+            )
     except Exception as e:
         db.rollback()
         err_msg = str(e)

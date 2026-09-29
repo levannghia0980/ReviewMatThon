@@ -143,8 +143,8 @@ class VideoComposerService:
             DialogueSegment(
                 id=d.index,
                 start=d.start_time,
-                end=round(d.start_time + (d.voice_duration if d.voice_duration and d.voice_duration > 0 else d.duration), 3),
-                duration=round(d.voice_duration if d.voice_duration and d.voice_duration > 0 else d.duration, 3),
+                end=d.end_time if (d.end_time and d.end_time > d.start_time) else round(d.start_time + d.duration, 3),
+                duration=round((d.end_time - d.start_time) if (d.end_time and d.end_time > d.start_time) else d.duration, 3),
                 text=d.original_text,
                 clean_text=d.clean_text or d.original_text,
                 translated_text=d.translated_text or d.clean_text or d.original_text,
@@ -186,9 +186,9 @@ class VideoComposerService:
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=segments,
-                    bgm_volume_when_speaking=0.04,
-                    bgm_volume_normal=1.00,
-                    voiceover_volume=1.35
+                    bgm_volume_when_speaking=0.03,
+                    bgm_volume_normal=0.70,
+                    voiceover_volume=1.05
                 )
                 audio_source = str(mixed_path)
                 task_manager.add_log(task_id, "   ✔ Đã hòa trộn BGM & giọng Việt thành công.", "emerald")

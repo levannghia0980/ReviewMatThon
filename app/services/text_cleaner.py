@@ -45,18 +45,9 @@ class TextCleanerService:
             raw_text = seg.text.strip()
             clean_txt = TextCleanerService.clean_text_string(raw_text, is_chinese=is_chinese)
             
-            # Lọc bỏ các phân đoạn chỉ toàn tiếng thở / tạp âm không có chữ hoặc thời lượng quá bé (< 0.2s)
+            # Chỉ bỏ qua nếu thực sự không có chữ nào
             if not clean_txt or len(clean_txt) == 0:
                 continue
-            if seg.duration < 0.2 and len(clean_txt) <= 1:
-                continue
-
-            # Lọc bỏ các phân đoạn ảo giác rác do tiếng ồn SFX/đất rung (như chữ tiếng Anh lạc loài 'ES', 'HTTP' chen vào câu tiếng Trung)
-            if is_chinese:
-                has_stray_english = re.search(r"[a-zA-Z]{2,}", clean_txt)
-                if has_stray_english and seg.duration <= 3.5:
-                    # Rác ảo giác từ tiếng ồn -> DROP để trả lại khoảng lặng tự nhiên (silence gap) cho video
-                    continue
 
             # Chặn đứng vòng lặp ảo giác (Anti-Hallucination Loop Breaker)
             norm_check = re.sub(r"[^\w\u4e00-\u9fff]", "", clean_txt)

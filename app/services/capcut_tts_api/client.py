@@ -213,6 +213,7 @@ class CapCutClient:
         language: str = "zh-CN",
         translation_language: str = "vi-VN",
         use_translation: bool = False,
+        words_per_line: int = 30,
     ) -> Tuple[str, Dict[str, str], str]:
         """
         Build URL, headers, and body string for creating a new STT task.
@@ -225,13 +226,13 @@ class CapCutClient:
             "scenario": "video_editor",
         }
         cap_json = {
-            "adjust_endtime": 200,
+            "adjust_endtime": 0,
             "audio": audio_vid,
             "audio_type": "vid",
             "caption_type": 0,
             "client_request_id": str(uuid.uuid4()),
             "duration": int(duration_ms),
-            "enable_cache": True,
+            "enable_cache": False,
             "enter_from": "asr",
             "language": language,
             "max_lines": 1,
@@ -242,7 +243,7 @@ class CapCutClient:
             ],
             "translation_language": translation_language,
             "use_translation": bool(use_translation),
-            "words_per_line": 15,
+            "words_per_line": int(words_per_line),
         }
         body = {
             "bind_id": str(uuid.uuid4()).upper(),
@@ -401,6 +402,7 @@ class CapCutClient:
         language: str = "zh-CN",
         translation_language: str = "vi-VN",
         use_translation: bool = False,
+        words_per_line: int = 30,
     ) -> Dict[str, Any]:
         """
         Submit Speech-to-Text task using pre-uploaded media vid and md5.
@@ -408,7 +410,7 @@ class CapCutClient:
         if self.session is None:
             raise CapCutError("The 'requests' package is required. Run 'pip install requests'.")
         url, headers, body_text = self.build_stt_new_request(
-            audio_vid, audio_md5, duration_ms, language, translation_language, use_translation
+            audio_vid, audio_md5, duration_ms, language, translation_language, use_translation, words_per_line
         )
         resp = self.session.post(url, headers=headers, data=body_text.encode("utf-8"), timeout=60)
         return _checked_json_response(resp, "create_stt_task")

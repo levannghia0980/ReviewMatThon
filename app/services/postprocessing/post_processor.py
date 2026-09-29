@@ -102,6 +102,12 @@ class PostProcessor:
         # Loại bỏ các thẻ XML hoặc dấu ngoặc thẻ câu còn sót
         text = re.sub(r'<\s*/?\s*s(?:\s+id=[\'"]?\d+[\'"]?)?\s*>', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\[#\d+\]', '', text).strip()
+        # Xóa sạch 100% số thứ tự đầu câu (1. , 02. , [1], Câu 1:...)
+        text = re.sub(r'^(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\{\s*\d+\s*\}|【\s*\d+\s*】)\s*[\.\:\-\–\—\s]*', '', text)
+        text = re.sub(r'^(?:câu|thoại|đoạn|stt|dòng|line)\s*\d+\s*[\.\:\-\–\—\)\/\]\s]*\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'^\d+\/\d+\s*[\.\:\-\–\—\s]*', '', text)
+        text = re.sub(r'^\d+\s*[\.\:\-\–\—\)\/\]]+\s*', '', text)
+        text = re.sub(r'^[^\w\s\(\[\{]+', '', text).strip()
         # Chuẩn hóa khoảng trắng
         text = re.sub(r'\s+', ' ', text)
         

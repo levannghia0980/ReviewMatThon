@@ -138,6 +138,24 @@ class Settings:
     ASSETS_DICT_DIR: Path = ASSETS_DICT_DIR
 
     @classmethod
+    def reload_from_env(cls):
+        """Đọc lại toàn bộ cấu hình từ file .env vào runtime settings và os.environ ngay lập tức"""
+        if not cls.ENV_PATH.exists():
+            return
+        int_fields = {"TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS"}
+        with open(cls.ENV_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    val = int(v) if k in int_fields or (isinstance(v, str) and v.isdigit()) else v
+                    setattr(cls, k, val)
+                    if 'settings' in globals():
+                        setattr(globals()['settings'], k, val)
+                    os.environ[k] = v
+
+    @classmethod
     def save_to_env(cls, updates: dict):
         """Lưu cấu hình mới vào file .env và cập nhật biến runtime"""
         env_dict = {}
@@ -162,5 +180,7 @@ class Settings:
         with open(cls.ENV_PATH, "w", encoding="utf-8") as f:
             for k, v in sorted(env_dict.items()):
                 f.write(f"{k}={v}\n")
+        
+        cls.reload_from_env()
 
 settings = Settings()

@@ -86,12 +86,19 @@ def setup_system_path():
             
     os.environ["PATH"] = os.pathsep.join(paths)
 
-# Chạy cấu hình PATH ngay khi load module
+# Chạy cấu hình PATH 1 lần duy nhất khi load module
 setup_system_path()
 
+# ─── Cache kết quả để không gọi lại setup_system_path() mỗi lần ────────────
+_FFMPEG_BIN_CACHE: Optional[str] = None
+_FFPROBE_BIN_CACHE: Optional[str] = None
+
 def get_ffmpeg_cmd() -> List[str]:
-    """Trả về lệnh gọi FFmpeg chắc chắn hoạt động"""
-    setup_system_path()
+    """Trả về lệnh gọi FFmpeg chắc chắn hoạt động. Cache kết quả sau lần đầu."""
+    global _FFMPEG_BIN_CACHE
+    if _FFMPEG_BIN_CACHE:
+        return [_FFMPEG_BIN_CACHE]
+
     bin_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
     
     # 1. Kiểm tra tools folder trong project
@@ -102,33 +109,41 @@ def get_ffmpeg_cmd() -> List[str]:
         BASE_DIR / "tools" / "bin" / bin_name
     ]:
         if cand.exists():
-            return [str(cand)]
+            _FFMPEG_BIN_CACHE = str(cand)
+            return [_FFMPEG_BIN_CACHE]
             
     # 2. Kiểm tra imageio-ffmpeg
     try:
         import imageio_ffmpeg
         img_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
         if img_ffmpeg and os.path.exists(img_ffmpeg):
-            return [img_ffmpeg]
+            _FFMPEG_BIN_CACHE = img_ffmpeg
+            return [_FFMPEG_BIN_CACHE]
     except Exception:
         pass
 
     # 3. Kiểm tra shutil.which (PATH)
     found = shutil.which("ffmpeg")
     if found:
-        return [found]
+        _FFMPEG_BIN_CACHE = found
+        return [_FFMPEG_BIN_CACHE]
         
-    # 3. Kiểm tra WinGet packages
+    # 4. Kiểm tra WinGet packages
     winget_bin = _find_winget_package_binary(bin_name)
     if winget_bin:
-        return [winget_bin]
+        _FFMPEG_BIN_CACHE = winget_bin
+        return [_FFMPEG_BIN_CACHE]
         
     # Fallback mặc định
-    return ["ffmpeg"]
+    _FFMPEG_BIN_CACHE = "ffmpeg"
+    return [_FFMPEG_BIN_CACHE]
 
 def get_ffprobe_cmd() -> List[str]:
-    """Trả về lệnh gọi FFprobe chắc chắn hoạt động"""
-    setup_system_path()
+    """Trả về lệnh gọi FFprobe chắc chắn hoạt động. Cache kết quả sau lần đầu."""
+    global _FFPROBE_BIN_CACHE
+    if _FFPROBE_BIN_CACHE:
+        return [_FFPROBE_BIN_CACHE]
+
     bin_name = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
     
     for cand in [
@@ -138,21 +153,23 @@ def get_ffprobe_cmd() -> List[str]:
         BASE_DIR / "tools" / "bin" / bin_name
     ]:
         if cand.exists():
-            return [str(cand)]
+            _FFPROBE_BIN_CACHE = str(cand)
+            return [_FFPROBE_BIN_CACHE]
             
     found = shutil.which("ffprobe")
     if found:
-        return [found]
+        _FFPROBE_BIN_CACHE = found
+        return [_FFPROBE_BIN_CACHE]
         
     winget_bin = _find_winget_package_binary(bin_name)
     if winget_bin:
-        return [winget_bin]
+        _FFPROBE_BIN_CACHE = winget_bin
+        return [_FFPROBE_BIN_CACHE]
         
     return ["ffprobe"]
 
 def get_ytdlp_cmd() -> List[str]:
     """Trả về lệnh gọi yt-dlp chắc chắn hoạt động (kể cả qua module python)"""
-    setup_system_path()
     bin_name = "yt-dlp.exe" if sys.platform == "win32" else "yt-dlp"
     
     # 1. Kiểm tra trong tools/
@@ -181,7 +198,6 @@ def get_ytdlp_cmd() -> List[str]:
 
 def get_aria2c_cmd() -> Optional[List[str]]:
     """Trả về lệnh gọi aria2c nếu có, hoặc None nếu chưa cài"""
-    setup_system_path()
     bin_name = "aria2c.exe" if sys.platform == "win32" else "aria2c"
     
     for cand in [

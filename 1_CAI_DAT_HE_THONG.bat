@@ -195,6 +195,7 @@ echo.
 :: ------------------------------------------------------------------------------
 echo [5/6] Dang cai dat toan bo goi phu thuoc tu requirements.txt...
 pip install -r requirements.txt
+python -c "import hashlib, pathlib; p = pathlib.Path('requirements.txt'); pathlib.Path('.pip_hash').write_text(hashlib.md5(p.read_bytes()).hexdigest(), encoding='utf-8') if p.exists() else None" >nul 2>&1
 
 echo.
 :: ------------------------------------------------------------------------------

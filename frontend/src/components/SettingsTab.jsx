@@ -73,40 +73,23 @@ export default function SettingsTab() {
       if (res.ok) {
         const data = await res.json();
         
-        // Đồng bộ 2 chiều với LocalStorage để chống mất Key vĩnh viễn
-        const localGemini = localStorage.getItem('saved_gemini_key') || '';
-        const localGroq = localStorage.getItem('saved_groq_key') || '';
-        const localOpenRouter = localStorage.getItem('saved_openrouter_key') || '';
-
-        const finalGemini = data.gemini_api_key || (localGemini.startsWith('gsk_') ? '' : localGemini) || '';
-        const finalGroq = data.groq_api_key || localGroq || '';
-        const finalOpenRouter = data.openrouter_api_key || localOpenRouter || '';
-
-        setGeminiKey(finalGemini);
+        // Đọc trực tiếp từ file .env qua API máy chủ (Nguồn chuẩn duy nhất, không dùng localStorage đè bậy)
+        setGeminiKey(data.gemini_api_key || '');
         setGeminiModel(data.gemini_model || 'gemini-3.1-flash-lite');
-        setGroqKey(finalGroq);
+        setGroqKey(data.groq_api_key || '');
         setGroqModel(data.groq_model || 'whisper-large-v3');
         setAsrEngine(data.asr_engine || 'capcut');
         setWhisperSize(data.whisper_model_size || 'base');
-        setOpenrouterKey(finalOpenRouter);
+        setOpenrouterKey(data.openrouter_api_key || '');
         setTranslationMaxChars(data.translation_max_chars || 50000);
-        setTranslationBatchSize(data.translation_batch_size || 300);
-        setTtsThreads(data.tts_threads || 128);
+        setTranslationBatchSize(data.translation_batch_size || 500);
+        setTtsThreads(data.tts_threads || 96);
         setTtsEngine(data.tts_engine || 'capcut');
         setCapcutCookie(data.capcut_cookie || '');
         setTiktokSessionId(data.tiktok_session_id || '410bfa37bdc185e1c6da82e1afb48409');
-
-        if (finalGemini) localStorage.setItem('saved_gemini_key', finalGemini);
-        if (finalGroq) localStorage.setItem('saved_groq_key', finalGroq);
-        if (finalOpenRouter) localStorage.setItem('saved_openrouter_key', finalOpenRouter);
       }
     } catch (err) {
       console.error('Lỗi khi tải cài đặt:', err);
-      // Fallback lấy từ localStorage nếu mất kết nối server
-      const localGemini = localStorage.getItem('saved_gemini_key') || '';
-      const localGroq = localStorage.getItem('saved_groq_key') || '';
-      if (localGemini && !localGemini.startsWith('gsk_')) setGeminiKey(localGemini);
-      if (localGroq) setGroqKey(localGroq);
     } finally {
       setLoading(false);
     }

@@ -36,12 +36,17 @@ database/*.db
 database/*.db-journal
 database/*.db-wal
 database/*.db-shm
+*.db
+*.sqlite
+proxies.txt
 scratch/
 test_*.mp3
 *.log
 
 # Sensitive Keys (Keep template only)
 .env
+.pip_hash
+.app_version
 
 # Binary Tools (Tự động trích xuất từ imageio-ffmpeg)
 tools/*.exe

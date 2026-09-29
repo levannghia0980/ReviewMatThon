@@ -5,6 +5,18 @@ import time
 import httpx
 from typing import Dict, Any, Optional
 
+import logging
+logger = logging.getLogger("llm_client")
+
+def _safe_add_log(msg: str, level: str = "info"):
+    """Ghi log an toàn ra logger hệ thống (tránh lỗi import không tồn tại)"""
+    if level == "warning":
+        logger.warning(msg)
+    elif level == "error":
+        logger.error(msg)
+    else:
+        logger.info(msg)
+
 DEFAULT_SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -34,13 +46,6 @@ async def post_gemini_with_retry(
 
     if payload is not None and "safetySettings" not in payload:
         payload["safetySettings"] = DEFAULT_SAFETY_SETTINGS
-
-    def _safe_add_log(msg: str, level: str = "info"):
-        try:
-            from app.api.translation_router import add_system_log
-            add_system_log(msg, level)
-        except Exception:
-            pass
 
     last_exception = None
     for attempt in range(1, max_retries + 1):
@@ -107,6 +112,21 @@ async def post_gemini_with_retry(
             wait_s = min(4.0 * attempt + 3.0, 25.0)
             m_match = re.search(r"/models/([^:]+):", url)
             model_name = m_match.group(1) if m_match else "Gemini"
+
+            # Tự động chuyển model dự phòng nếu model hiện tại bị Google chặn quá tải
+            if attempt >= 2:
+                fallback_map = {
+                    "gemini-3.1-flash-lite": "gemini-3.5-flash-lite",
+                    "gemini-3.5-flash-lite": "gemini-3.1-flash-lite",
+                    "gemini-3.8-flash": "gemini-3.5-flash",
+                }
+                if model_name in fallback_map:
+                    alt_model = fallback_map[model_name]
+                    url = url.replace(model_name, alt_model)
+                    log_fb = f"🔄 [Tự Động Đổi Model] {model_name} quá tải 503, tự động chuyển sang {alt_model} để không gián đoạn dịch thuật..."
+                    print(log_fb)
+                    _safe_add_log(log_fb, "info")
+
             log_503 = f"⚠️ [LLM 503 Server Busy] Google AI Studio đang quá tải ({model_name} High Demand). Đang chờ {wait_s:.0f}s để thử lại ({attempt}/{max_retries})..."
             try:
                 print(log_503)
@@ -139,13 +159,6 @@ async def post_openrouter_with_retry(
     - Tự đọc retry_after_seconds từ response 429 và chờ đúng thời gian yêu cầu.
     - Retry tối đa max_retries lần cho các lỗi mạng và 429.
     """
-    def _safe_add_log(msg: str, level: str = "info"):
-        try:
-            from app.api.translation_router import add_system_log
-            add_system_log(msg, level)
-        except Exception:
-            pass
-
     for attempt in range(1, max_retries + 1):
         try:
             resp = await client.post(url, headers=headers, json=payload)
@@ -204,13 +217,6 @@ async def post_grok_local_with_retry(
     Gửi request tới Grok Web Automation Server (cổng 8020) với auto-retry và xử lý thân thiện.
     Trả về dict kết quả hoặc ném ngoại lệ rõ ràng nếu server chưa bật.
     """
-    def _safe_add_log(msg: str, level: str = "info"):
-        try:
-            from app.api.translation_router import add_system_log
-            add_system_log(msg, level)
-        except Exception:
-            pass
-
     last_err = None
     for attempt in range(1, max_retries + 1):
         try:

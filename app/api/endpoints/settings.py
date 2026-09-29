@@ -37,6 +37,7 @@ def mask_key(key: str) -> str:
 
 @router.get("", summary="Lấy cấu hình hiện tại của hệ thống")
 def get_settings():
+    settings.reload_from_env()
     return {
         "asr_engine": settings.ASR_ENGINE,
         "groq_api_key": settings.GROQ_API_KEY,

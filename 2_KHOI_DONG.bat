@@ -18,10 +18,7 @@ if %errorlevel% neq 0 (
     pip install -r requirements.txt
 )
 
-:: 3. Kiem tra va tu dong cap nhat ma nguon moi tu GitHub (Neu co mang)
-venv\Scripts\python.exe app_updater.py
-
-:: 4. Chay ung dung
+:: 3. Chay ung dung
 echo.
 echo ==============================================================================
 echo        STUDIO REVIEW MAT THAN - HE THONG DANG KHOI CHAY

@@ -84,6 +84,18 @@ def main():
 
     try:
         import uvicorn
+        import logging
+
+        class CleanConsoleFilter(logging.Filter):
+            """Lọc bỏ các request polling liên tục để console luôn hiển thị rõ log nghiệp vụ."""
+            def filter(self, record: logging.LogRecord) -> bool:
+                msg = record.getMessage()
+                # Ẩn các request polling nền của React UI
+                if any(k in msg for k in ["/api/v1/pipeline/status/", "/assets/", "/favicon.ico", "/api/v1/settings", "/api/health"]):
+                    return False
+                return True
+
+        logging.getLogger("uvicorn.access").addFilter(CleanConsoleFilter())
     except ImportError:
         print("[!] Đang cài đặt thư viện uvicorn còn thiếu...")
         import subprocess

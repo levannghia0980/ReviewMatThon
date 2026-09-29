@@ -89,12 +89,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         events = []
         for s in segments:
             text = (getattr(s, 'translated_text', '') or s.clean_text or s.text or "").strip()
+            # Xóa sạch 100% số thứ tự đầu câu (1. , 02. , [1], Câu 1:...)
+            text = re.sub(r'^(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\{\s*\d+\s*\}|【\s*\d+\s*】)\s*[\.\:\-\–\—\s]*', '', text)
+            text = re.sub(r'^(?:câu|thoại|đoạn|stt|dòng|line)\s*\d+\s*[\.\:\-\–\—\)\/\]\s]*\s*', '', text, flags=re.IGNORECASE)
+            text = re.sub(r'^\d+\/\d+\s*[\.\:\-\–\—\s]*', '', text)
+            text = re.sub(r'^\d+\s*[\.\:\-\–\—\)\/\]]+\s*', '', text)
+            text = re.sub(r'^[^\w\s\(\[\{]+', '', text).strip()
             if not text:
                 continue
 
+            effective_end = max(s.end, s.start + 0.3)
             start_ts = format_ass_time(s.start)
-            end_ts = format_ass_time(s.end)
-            dur = max(s.end - s.start, 0.5)
+            end_ts = format_ass_time(effective_end)
+            dur = max(effective_end - s.start, 0.5)
 
             karaoke_text = cls.generate_word_karaoke_tags(text, dur)
             line = f"Dialogue: 0,{start_ts},{end_ts},KaraokeSub,,0,0,0,,{karaoke_text}"

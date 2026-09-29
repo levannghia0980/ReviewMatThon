@@ -219,11 +219,47 @@ def smart_merge_env():
 
 
 # ==============================================================================
-# [MỚI] SMART PIP INSTALL - HASH-BASED, CHỈ CÀI KHI CẦN
+# [MỚI] SMART PIP INSTALL - HASH-BASED VÀ OFFLINE VERIFICATION
 # ==============================================================================
+def check_requirements_offline(req_file: Path) -> tuple[bool, list]:
+    """
+    Kiểm tra nhanh offline (<0.05s) xem các thư viện trong requirements.txt đã có trong môi trường chưa.
+    Không tốn mạng, không bị timeout hay treo máy.
+    """
+    if not req_file.exists():
+        return True, []
+    try:
+        import importlib.metadata
+        import re
+        missing = []
+        for line in req_file.read_text(encoding='utf-8', errors='replace').splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            pkg_spec = re.split(r'[<>=!~;]', line)[0].strip()
+            pkg_name = re.sub(r'\[.*\]', '', pkg_spec).strip()
+            if not pkg_name:
+                continue
+            pkg_canonical = re.sub(r'[-_.]+', '-', pkg_name).lower()
+            found = False
+            for name in (pkg_name, pkg_canonical, pkg_canonical.replace('-', '_')):
+                try:
+                    importlib.metadata.version(name)
+                    found = True
+                    break
+                except Exception:
+                    pass
+            if not found:
+                missing.append(pkg_name)
+        return (len(missing) == 0), missing
+    except Exception:
+        return False, []
+
+
 def smart_pip_install(force_reinstall: bool = False):
     """
-    Chỉ chạy pip install khi requirements.txt thực sự thay đổi (MD5 hash).
+    Chỉ chạy pip install khi requirements.txt thực sự thay đổi (MD5 hash)
+    hoặc khi phát hiện thiếu thư viện thực tế.
     Tránh việc chờ pip mỗi lần khởi động.
     """
     req_file = BASE_DIR / "requirements.txt"
@@ -243,14 +279,33 @@ def smart_pip_install(force_reinstall: bool = False):
         except Exception:
             pass
 
-    if not force_reinstall and current_hash == saved_hash:
+    # 1. Nếu hash trùng khớp và không ép buộc cài lại -> Đã đủ 100%
+    if not force_reinstall and current_hash and current_hash == saved_hash:
         LOG.info("  [✔] Thư viện Python đã đầy đủ và cập nhật.")
         return
 
-    LOG.info("  [*] Phát hiện thư viện mới/thay đổi → Đang cài đặt...")
+    # 2. Nếu chưa có file hash hoặc hash khác: kiểm tra offline cực nhanh xem thư viện đã có trong máy chưa
+    if not force_reinstall:
+        all_installed, missing = check_requirements_offline(req_file)
+        if all_installed:
+            try:
+                PIP_HASH_FILE.write_text(current_hash, encoding='utf-8')
+            except Exception:
+                pass
+            LOG.info("  [✔] Thư viện Python đã đầy đủ và cập nhật.")
+            return
+
+    # 3. Chỉ khi thực sự thiếu thư viện hoặc có cờ --force mới gọi pip install
+    all_installed, missing = check_requirements_offline(req_file)
+    if missing:
+        sample_missing = ", ".join(missing[:3]) + ("..." if len(missing) > 3 else "")
+        LOG.info(f"  [*] Phát hiện thiếu {len(missing)} thư viện ({sample_missing}) → Đang cài đặt...")
+    else:
+        LOG.info("  [*] Đang cài đặt/cập nhật thư viện từ requirements.txt...")
+
     try:
         result = subprocess.run(
-            [str(pip_exe), "install", "-r", str(req_file), "--quiet"],
+            [str(pip_exe), "install", "-r", str(req_file), "--no-warn-script-location"],
             cwd=str(BASE_DIR),
             capture_output=True, text=True,
             timeout=180, encoding='utf-8'
@@ -406,30 +461,71 @@ def save_local_commit(sha: str):
 # ==============================================================================
 # CẬP NHẬT QUA GIT
 # ==============================================================================
-def update_via_git() -> bool:
+def update_via_git() -> tuple[bool, bool]:
+    """
+    Cập nhật qua Git. Trả về: (thành_công: bool, có_thay_đổi: bool)
+    """
     if not (BASE_DIR / ".git").exists():
-        return False
+        return False, False
     if not shutil.which("git"):
-        return False
+        return False, False
 
     LOG.info("  [*] Đang kiểm tra và đồng bộ qua Git...")
     try:
-        subprocess.run(["git", "fetch", "origin", BRANCH], cwd=str(BASE_DIR), capture_output=True, timeout=20)
-        subprocess.run(["git", "reset", "--hard", f"origin/{BRANCH}"], cwd=str(BASE_DIR), capture_output=True, timeout=20)
+        head_before = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+
+        fetch_res = subprocess.run(
+            ["git", "fetch", "origin", BRANCH],
+            cwd=str(BASE_DIR), capture_output=True, timeout=20
+        )
+        if fetch_res.returncode != 0:
+            LOG.warning("  [!] Không thể kết nối Git remote để fetch.")
+            return False, False
+
+        remote_head = subprocess.run(
+            ["git", "rev-parse", f"origin/{BRANCH}"],
+            cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+
+        if head_before and remote_head and head_before == remote_head:
+            LOG.info("  [✔] Mã nguồn Git đã ở phiên bản mới nhất.")
+            return True, False
+
+        # Kiểm tra xem có thay đổi cục bộ chưa commit không
+        status_res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10
+        )
+        has_local_changes = bool(status_res.stdout.strip())
+        if has_local_changes:
+            LOG.info("  [*] Phát hiện mã nguồn cục bộ đang được chỉnh sửa. Tự động bảo vệ (git stash)...")
+            subprocess.run(["git", "stash", "save", "Auto-stash-before-update"], cwd=str(BASE_DIR), capture_output=True, timeout=15)
+
+        # Tiến hành pull cập nhật
         res = subprocess.run(
-            ["git", "pull", "origin", BRANCH],
+            ["git", "pull", "--rebase=false", "origin", BRANCH],
             cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30, encoding='utf-8'
         )
+
+        if has_local_changes:
+            # Khôi phục lại các file đang sửa dở của máy chủ/dev
+            LOG.info("  [*] Đang khôi phục lại các thay đổi cục bộ của máy chủ (git stash pop)...")
+            subprocess.run(["git", "stash", "pop"], cwd=str(BASE_DIR), capture_output=True, timeout=15)
+
         if res.returncode == 0:
-            LOG.info("  [✔] Đã đồng bộ mã nguồn qua Git thành công!")
+            LOG.info("  [✔] Đã cập nhật mã nguồn mới qua Git thành công!")
             for bat in BASE_DIR.glob("*.bat"):
                 fix_batch_file_crlf(bat)
-            return True
+            return True, True
         else:
-            LOG.warning(f"  [!] Git pull báo: {res.stderr.strip()[:120]}")
+            LOG.warning("  [!] Git pull có xung đột với code cục bộ. BẢO TOÀN NGUYÊN VẸN MÃ NGUỒN CỦA MÁY CHỦ, không reset!")
+            return False, False
     except Exception as e:
         LOG.info(f"  [!] Git gặp lỗi ({e}), chuyển sang ZIP...")
-    return False
+    return False, False
 
 
 # ==============================================================================
@@ -525,8 +621,10 @@ def check_and_update(force: bool = False):
     code_updated = False
 
     # 2. Thử qua Git trước (nhanh nhất nếu có Git)
-    if update_via_git():
-        code_updated = True
+    git_ok, git_has_changes = update_via_git()
+    if git_ok:
+        if git_has_changes:
+            code_updated = True
     else:
         # 3. Kiểm tra phiên bản → tải ZIP nếu lạc hậu hoặc force
         remote_sha = get_remote_latest_commit()
@@ -543,10 +641,10 @@ def check_and_update(force: bool = False):
                 else:
                     LOG.warning("  [i] Giu nguyen phien ban hien tai de tiep tuc su dung.")
 
-    # 4. Smart pip install — chỉ cài khi requirements.txt thay đổi
-    smart_pip_install(force_reinstall=code_updated)
+    # 4. Smart pip install — chỉ cài khi requirements.txt thay đổi (hoặc người dùng yêu cầu force)
+    smart_pip_install(force_reinstall=force)
 
-    # 5. Post-update hook + dọn __pycache__ (chỉ khi code được cập nhật)
+    # 5. Post-update hook + dọn __pycache__ (chỉ khi code thực sự được cập nhật)
     if code_updated:
         run_post_update_hook()
         clear_pycache(BASE_DIR)

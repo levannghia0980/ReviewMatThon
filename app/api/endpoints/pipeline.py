@@ -256,23 +256,18 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             try:
                 # TTS (force_regenerate=True để dọn sạch chunk cũ và tạo mới)
                 engine = getattr(settings, "TTS_ENGINE", "capcut").lower()
-                tts_res = None
                 if engine in ("capcut", "capcut_cloud"):
-                    try:
-                        tts_res = CapCutTTSService.produce_project_voiceover(
-                            task_id=task_id,
-                            project_id=project_id,
-                            db=db_audio,
-                            voice_code=req.voice_code,
-                            apply_mastering=True,
-                            auto_fit_timeline=True,
-                            max_workers=settings.TTS_MAX_WORKERS or 128,
-                            force_regenerate=True
-                        )
-                    except Exception as cap_err:
-                        task_manager.add_log(task_id, f"⚠️ CapCut TTS gặp sự cố ({cap_err}), tự động fallback sang TikTok TTS...", "amber")
-
-                if not tts_res:
+                    tts_res = CapCutTTSService.produce_project_voiceover(
+                        task_id=task_id,
+                        project_id=project_id,
+                        db=db_audio,
+                        voice_code=req.voice_code,
+                        apply_mastering=True,
+                        auto_fit_timeline=True,
+                        max_workers=settings.TTS_MAX_WORKERS or 96,
+                        force_regenerate=True
+                    )
+                else:
                     tts_res = TikTokTTSService.produce_project_voiceover(
                         task_id=task_id,
                         project_id=project_id,
@@ -280,7 +275,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         voice_code=req.voice_code,
                         apply_mastering=True,
                         auto_fit_timeline=True,
-                        max_workers=settings.TTS_MAX_WORKERS or 128,
+                        max_workers=settings.TTS_MAX_WORKERS or 96,
                         force_regenerate=True
                     )
                 voiceover_file = tts_res.get("audio_path") or tts_res.get("master_voice_path")
@@ -293,9 +288,9 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         voiceover_mp3=str(voiceover_file),
                         output_mixed_audio=str(mixed_audio_file),
                         dialogue_segments=segments,
-                        bgm_volume_when_speaking=0.04,
-                        bgm_volume_normal=1.00,
-                        voiceover_volume=1.35
+                        bgm_volume_when_speaking=0.03,
+                        bgm_volume_normal=0.70,
+                        voiceover_volume=1.05
                     )
                     audio_res_container["audio_path"] = str(mixed_path)
                     audio_res_container["success"] = True
