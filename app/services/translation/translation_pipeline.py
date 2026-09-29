@@ -321,6 +321,11 @@ class TranslationPipelineService:
         db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == proj_id).delete(synchronize_session=False)
         db.commit()
 
+        # Dọn sạch các DialogueSegmentModel cũ khỏi Identity Map của Session để tránh SAWarning xung đột khóa chính
+        for obj in list(db.identity_map.values()):
+            if isinstance(obj, DialogueSegmentModel):
+                db.expunge(obj)
+
         for s in translated_segments:
             db.add(DialogueSegmentModel(
                 task_id=proj_id,
@@ -358,7 +363,7 @@ class TranslationPipelineService:
 
         return {
             "status": "SUCCESS",
-            "project_id": project.id,
+            "project_id": proj_id,
             "total_segments": len(translated_segments),
             "total_entities": len(accumulated_entities),
             "srt_path": str(srt_path),
