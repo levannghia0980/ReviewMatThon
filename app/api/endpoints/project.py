@@ -489,6 +489,10 @@ def reset_project(project_id: int, db: Session = Depends(get_db)):
 
     # 3. Xóa toàn bộ câu thoại (DialogueSegmentModel) liên quan đến project này
     db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project_id).delete(synchronize_session=False)
+    db.commit()
+    for obj in list(db.identity_map.values()):
+        if isinstance(obj, DialogueSegmentModel):
+            db.expunge(obj)
 
     # 4. Đưa trạng thái ProjectTask về lúc mới tải xong (DOWNLOADED)
     project.status = "DOWNLOADED"

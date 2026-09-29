@@ -692,7 +692,11 @@ def _run_extract_stt_worker(task_id: str, req: ExtractSTTRequest):
         project.status = "TRANSCRIBED"
         
         # Xoá các câu thoại cũ nếu có (an toàn)
-        db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete()
+        db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete(synchronize_session=False)
+        db.commit()
+        for obj in list(db.identity_map.values()):
+            if isinstance(obj, DialogueSegmentModel):
+                db.expunge(obj)
         
         for d in dialogues:
             db.add(DialogueSegmentModel(
