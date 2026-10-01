@@ -48,28 +48,6 @@ class VideoComposerService:
         except Exception:
             pass
 
-        # Test Intel QuickSync (Intel Core/Xe)
-        try:
-            test_qsv = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_qsv", "-f", "null", "-"],
-                capture_output=True, text=True, errors="replace", timeout=3
-            )
-            if test_qsv.returncode == 0:
-                return "h264_qsv", "veryfast", "Intel GPU QuickSync"
-        except Exception:
-            pass
-
-        # Test Windows Media Foundation (Hỗ trợ hầu hết GPU trên Windows)
-        try:
-            test_mf = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_mf", "-f", "null", "-"],
-                capture_output=True, text=True, errors="replace", timeout=3
-            )
-            if test_mf.returncode == 0:
-                return "h264_mf", "none", "Windows GPU Media Foundation"
-        except Exception:
-            pass
-
         return "libx264", "ultrafast", "CPU Đa Luồng Ultrafast"
 
     @staticmethod
@@ -193,8 +171,6 @@ class VideoComposerService:
         if not project:
             raise ValueError(f"Không tìm thấy Project ID #{project_id}")
 
-        safe_title = re.sub(r'[\\/*?:"<>|]', "", project.title or "").replace(" ", "_")
-
         if not project.video_path or not os.path.exists(project.video_path):
             raise FileNotFoundError(f"Không tìm thấy file video gốc: {project.video_path}")
 
@@ -205,7 +181,7 @@ class VideoComposerService:
         if not dialogues_db:
             raise ValueError(f"Project #{project_id} chưa có câu thoại nào!")
 
-        task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
+        task_manager.add_log(task_id, f"�        task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
 
         vw, vh = cls.get_video_resolution(project.video_path)
         if has_mask:
@@ -234,9 +210,15 @@ class VideoComposerService:
             else:
                 font_sz = 20
 
-
-        # Tính margin_v theo % chiều cao khung hình render (render_h)
-        # Nếu margin_v <= 100: tính theo % (ví dụ: 15% -> round(render_h * 0.15))
+        # Cao độ phụ đề tính theo % chiều cao KHUNG GỐC (vh) — khớp với những gì user thấy
+        if margin_v and margin_v > 0:
+            if margin_v <= 100:
+                actual_margin_v = max(4, int(round(vh * (margin_v / 100.0))))
+            else:
+                actual_margin_v = margin_v
+        else:
+            actual_margin_v = max(8, int(round(vh * 0.022))) actual_margin_v = max(8, int(round(vh * 0.022)))etup của người dùng:
+        # Nếu margin_v <= 100: tính theo % chiều cao khung hình render (ví dụ: 15% -> round(render_h * 0.15))
         # Nếu margin_v > 100: giá trị pixel trực tiếp
         if margin_v and margin_v > 0:
             if margin_v <= 100:
@@ -294,7 +276,7 @@ class VideoComposerService:
                     original_video_or_audio=project.video_path,
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
-                    dialogue_segments=segments,
+                    dialogue_segments=dialogue_segments if 'dialogue_segments' in locals() else segments,
                     bgm_volume_when_speaking=0.03,
                     bgm_volume_normal=0.70,
                     voiceover_volume=1.05
@@ -332,15 +314,10 @@ class VideoComposerService:
         task_manager.add_log(task_id, "[4/4] 🚀 Đang Render Video 1-Pass Hardware Acceleration...", "cyan")
 
         # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg
-        # Tránh lỗi ký tự (Unicode path) bằng cách dùng đường dẫn tương đối
-        try:
-            ass_rel = os.path.relpath(str(ass_file), start=str(settings.BASE_DIR))
-            # FFmpeg subtitles filter: escape single quotes and backslashes
-            ass_escaped = ass_rel.replace("\\", "/").replace("'", "\\'")
-        except ValueError:
-            # Nếu khác ổ đĩa, dùng đường dẫn tuyệt đối và escape ':'
-            ass_abs = str(Path(ass_file).resolve())
-            ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+        # Trên Windows: phải escape dấu ':' trong ổ đĩa (C: -> C\:)
+        ass_abs = str(Path(ass_file).resolve())
+        # FFmpeg subtitles filter trên Windows dùng forward slash và escape ':'
+        ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:")
 
         filter_chains = []
         last_v = "0:v"
@@ -357,6 +334,8 @@ class VideoComposerService:
         else:
             task_manager.add_log(task_id, "   • Burn sub vào khung gốc → Không crop", "cyan")
 
+        # C. Đảm bảo kích thước chẵn tuyệt đối
+        filter_chains.append(f"[{last_v}]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
 
         # D. Thêm Logo nhỏ gọn sát góc (không bị ảnh hưởng bởi crop)
         logo_inputs = []
@@ -388,7 +367,9 @@ class VideoComposerService:
             filter_chains.append(f"[{last_v}]{drawtext_filter}[v_watermark]")
             last_v = "v_watermark"
 
-        filter_chains.append(f"[{last_v}]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
+        # D. Burn Phụ Đề Karaoke ASS & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
+        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
+        filter_chains.append("[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
 
         full_filter_complex = ";".join(filter_chains)
 
@@ -434,7 +415,7 @@ class VideoComposerService:
             str(output_video_path)
         ])
 
-        process = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(settings.BASE_DIR))
+        process = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if process.returncode != 0 or not output_video_path.exists():
             # Fallback sang CPU Ultrafast nếu filter phức tạp gặp sự cố
             task_manager.add_log(task_id, f"   ⚠️ Chuyển sang chế độ CPU Ultrafast...", "amber")
@@ -457,7 +438,7 @@ class VideoComposerService:
                 "-shortest",
                 str(output_video_path)
             ]
-            subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(settings.BASE_DIR))
+            subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
         # Cập nhật CSDL
         project.final_video_path = str(output_video_path)
@@ -519,12 +500,10 @@ class VideoComposerService:
         logo_inputs = []  # Không dùng logo trong render_visual_stream
 
         # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg
-        try:
-            ass_rel = os.path.relpath(str(ass_file_path), start=str(settings.BASE_DIR))
-            ass_escaped = ass_rel.replace("\\", "/").replace("'", "\\'")
-        except ValueError:
-            ass_abs = str(Path(ass_file_path).resolve())
-            ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+        # Trên Windows: phải escape dấu ':' trong ổ đĩa (C: -> C\:)
+        ass_abs = str(Path(ass_file_path).resolve())
+        # FFmpeg subtitles filter trên Windows dùng forward slash và escape ':'
+        ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:")
 
         filter_chains = []
         last_v = "0:v"
@@ -547,7 +526,7 @@ class VideoComposerService:
 
         # Subtitle Karaoke & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
         filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
-        filter_chains.append(f"[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
+        filter_chains.append("[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
         full_filter_complex = ";".join(filter_chains)
 
 
@@ -590,8 +569,7 @@ class VideoComposerService:
             stderr=subprocess.PIPE,
             universal_newlines=True,
             encoding="utf-8",
-            errors="replace",
-            cwd=str(settings.BASE_DIR)
+            errors="replace"
         )
 
         last_progress_time = 0.0
@@ -649,8 +627,7 @@ class VideoComposerService:
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
                 encoding="utf-8",
-                errors="replace",
-                cwd=str(settings.BASE_DIR)
+                errors="replace"
             )
             last_fb_time = 0.0
             if fallback_proc.stderr:
