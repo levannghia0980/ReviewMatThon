@@ -405,7 +405,6 @@ class VideoComposerService:
         ffmpeg_cmd = get_ffmpeg_cmd()
         cmd = [
             *ffmpeg_cmd, "-y",
-            "-probesize", "10M", "-analyzeduration", "0",
             *hwaccel_args,
             "-i", str(project.video_path),
             "-i", str(audio_source),
@@ -562,7 +561,6 @@ class VideoComposerService:
         ffmpeg_cmd = get_ffmpeg_cmd()
         cmd = [
             *ffmpeg_cmd, "-y",
-            "-probesize", "10M", "-analyzeduration", "0",
             *hwaccel_args,
             "-i", str(video_input_path),
             *logo_inputs,
@@ -628,14 +626,13 @@ class VideoComposerService:
         process.wait()
         out_p = Path(output_temp_video)
         if process.returncode != 0 or not out_p.exists() or out_p.stat().st_size < 1000:
-            err_summary = "".join(stderr_tail[-10:])
-            print(f"[RenderVisualStream] Lỗi encode ({vcodec}), tự động chuyển CPU Ultrafast: {err_summary[-400:]}")
+            err_summary = "".join(stderr_tail[-20:])
+            print(f"[RenderVisualStream] Lỗi encode ({vcodec}), tự động chuyển CPU Ultrafast:\n{err_summary}")
             if task_id:
                 task_manager.add_log(task_id, f"   ⚠️ Chuyển sang bộ mã hóa CPU Đa Luồng Ultrafast an toàn...", "amber")
             clean_part = full_filter_complex
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
-                "-probesize", "10M", "-analyzeduration", "0",
                 "-i", str(video_input_path),
                 *logo_inputs,
                 "-threads", "0",
@@ -683,9 +680,10 @@ class VideoComposerService:
             fallback_proc.wait()
             
             if fallback_proc.returncode != 0:
-                fb_err_summary = "".join(fb_stderr_tail[-10:])
+                fb_err_summary = "".join(fb_stderr_tail[-25:])
+                print(f"❌ LỖI FFMPEG FULL LOG:\n{fb_err_summary}")
                 if task_id:
-                    task_manager.add_log(task_id, f"❌ Lỗi CPU Fallback: {fb_err_summary[-400:]}", "rose")
+                    task_manager.add_log(task_id, f"❌ Lỗi CPU Fallback: Xem chi tiết trong Terminal (Log FFmpeg)", "rose")
 
         return out_p.exists() and out_p.stat().st_size > 1000
 
