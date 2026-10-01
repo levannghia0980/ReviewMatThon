@@ -425,14 +425,16 @@ class VideoComposerService:
         else:
             cmd.extend(["-b:v", "4000k"])
 
+        pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
         cmd.extend([
-            "-pix_fmt", "yuv420p",
+            "-pix_fmt", pix_fmt,
             "-movflags", "+faststart",
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
             str(output_video_path)
         ])
+
 
         process = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(settings.BASE_DIR))
         if process.returncode != 0 or not output_video_path.exists():
@@ -578,8 +580,9 @@ class VideoComposerService:
         else:
             cmd.extend(["-b:v", "4000k"])
 
+        pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
         cmd.extend([
-            "-pix_fmt", "yuv420p",
+            "-pix_fmt", pix_fmt,
             str(output_temp_video)
         ])
 
