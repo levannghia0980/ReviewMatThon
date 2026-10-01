@@ -588,7 +588,7 @@ class VideoComposerService:
         if preset != "none":
             cmd.extend(["-preset", preset])
         if vcodec == "libx264":
-            cmd.extend(["-crf", "23", "-tune", "zerolatency"])
+            cmd.extend(["-crf", "22"])
         elif vcodec == "h264_amf":
             cmd.extend(["-quality", "speed", "-b:v", "4000k"])
         else:
@@ -625,13 +625,15 @@ class VideoComposerService:
                         pass
                     break
 
-                # Trích xuất time=HH:MM:SS để cập nhật UI
+                # Trích xuất time=HH:MM:SS để cập nhật UI và Console
                 if "time=" in line and (time.time() - last_progress_time > 3.0):
                     last_progress_time = time.time()
                     m = re.search(r"time=(\d+):(\d+):(\d+)", line)
-                    if m and task_id:
+                    if m:
                         h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                        task_manager.update_task(task_id, stage=f"GPU Render: {h:02d}:{mm:02d}:{s:02d}")
+                        print(f"   🎬 Đang Render Video ({vcodec}): {h:02d}:{mm:02d}:{s:02d}")
+                        if task_id:
+                            task_manager.update_task(task_id, stage=f"Render Video: {h:02d}:{mm:02d}:{s:02d}")
 
         process.wait()
         out_p = Path(output_temp_video)
@@ -676,9 +678,11 @@ class VideoComposerService:
                     if "time=" in line and (time.time() - last_fb_time > 3.0):
                         last_fb_time = time.time()
                         m = re.search(r"time=(\d+):(\d+):(\d+)", line)
-                        if m and task_id:
+                        if m:
                             h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                            task_manager.update_task(task_id, stage=f"CPU Render: {h:02d}:{mm:02d}:{s:02d}")
+                            print(f"   🎬 Đang Render CPU Ultrafast: {h:02d}:{mm:02d}:{s:02d}")
+                            if task_id:
+                                task_manager.update_task(task_id, stage=f"CPU Render: {h:02d}:{mm:02d}:{s:02d}")
             fallback_proc.wait()
 
         return out_p.exists() and out_p.stat().st_size > 1000
