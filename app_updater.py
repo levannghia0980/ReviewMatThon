@@ -461,7 +461,7 @@ def save_local_commit(sha: str):
 # ==============================================================================
 # CẬP NHẬT QUA GIT
 # ==============================================================================
-def update_via_git() -> tuple[bool, bool]:
+def update_via_git(force: bool = False) -> tuple[bool, bool]:
     """
     Cập nhật qua Git. Trả về: (thành_công: bool, có_thay_đổi: bool)
     """
@@ -490,7 +490,7 @@ def update_via_git() -> tuple[bool, bool]:
             cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10
         ).stdout.strip()
 
-        if head_before and remote_head and head_before == remote_head:
+        if not force and head_before and remote_head and head_before == remote_head:
             LOG.info("  [✔] Mã nguồn Git đã ở phiên bản mới nhất.")
             return True, False
 
@@ -500,7 +500,7 @@ def update_via_git() -> tuple[bool, bool]:
             cwd=str(BASE_DIR), capture_output=True, text=True, timeout=10
         )
         has_local_changes = bool(status_res.stdout.strip())
-        if has_local_changes:
+        if has_local_changes and not force:
             LOG.info("  [*] Phát hiện mã nguồn cục bộ đang được chỉnh sửa. Tự động bảo vệ (git stash)...")
             subprocess.run(["git", "stash", "save", "Auto-stash-before-update"], cwd=str(BASE_DIR), capture_output=True, timeout=15)
 
@@ -510,9 +510,8 @@ def update_via_git() -> tuple[bool, bool]:
             cwd=str(BASE_DIR), capture_output=True, text=True, timeout=30, encoding='utf-8'
         )
 
-        if has_local_changes:
-            # Khôi phục lại các file đang sửa dở của máy chủ/dev
-            LOG.info("  [*] Đang khôi phục lại các thay đổi cục bộ của máy chủ (git stash pop)...")
+        if has_local_changes and not force:
+            LOG.info("  [*] Đang khôi phục lại các thay đổi cục bộ (git stash pop)...")
             subprocess.run(["git", "stash", "pop"], cwd=str(BASE_DIR), capture_output=True, timeout=15)
 
         if res.returncode == 0:
@@ -521,8 +520,16 @@ def update_via_git() -> tuple[bool, bool]:
                 fix_batch_file_crlf(bat)
             return True, True
         else:
-            LOG.warning("  [!] Git pull có xung đột với code cục bộ. BẢO TOÀN NGUYÊN VẸN MÃ NGUỒN CỦA MÁY CHỦ, không reset!")
-            return False, False
+            if force:
+                LOG.info("  [*] Chế độ ép buộc (--force): Đồng bộ chuẩn xác 100% theo GitHub (git reset --hard)...")
+                subprocess.run(["git", "reset", "--hard", f"origin/{BRANCH}"], cwd=str(BASE_DIR), capture_output=True, timeout=15)
+                for bat in BASE_DIR.glob("*.bat"):
+                    fix_batch_file_crlf(bat)
+                LOG.info("  [✔] Đã đồng bộ mã nguồn và giao diện mới nhất thành công!")
+                return True, True
+            else:
+                LOG.warning("  [!] Git pull có xung đột với code cục bộ. Vui lòng chạy 3_CAP_NHAT_CODE.bat để đồng bộ.")
+                return False, False
     except Exception as e:
         LOG.info(f"  [!] Git gặp lỗi ({e}), chuyển sang ZIP...")
     return False, False
@@ -621,7 +628,7 @@ def check_and_update(force: bool = False):
     code_updated = False
 
     # 2. Thử qua Git trước (nhanh nhất nếu có Git)
-    git_ok, git_has_changes = update_via_git()
+    git_ok, git_has_changes = update_via_git(force=force)
     if git_ok:
         if git_has_changes:
             code_updated = True

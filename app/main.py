@@ -92,10 +92,17 @@ def serve_react_spa(full_path: str):
     if target_file.is_file():
         return FileResponse(str(target_file))
     
-    # Mặc định trả về index.html của React SPA
+    # Mặc định trả về index.html của React SPA (không cache để luôn nhận giao diện mới nhất)
     index_file = FRONTEND_DIST_DIR / "index.html"
     if index_file.exists():
-        return FileResponse(str(index_file))
+        return FileResponse(
+            str(index_file),
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
         
     return {
         "status": "online",
