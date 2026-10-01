@@ -74,7 +74,7 @@ class VideoComposerService:
 
     @staticmethod
     def get_video_resolution(video_path: str) -> Tuple[int, int]:
-        """Đọc chính xác độ phân giải (Width x Height) của video MP4 bằng FFprobe hoặc OpenCV."""
+        """Đọc chính xác độ phân giải (Width x Height) của video MP4 bằng FFprobe, OpenCV hoặc FFmpeg."""
         # 1. Thử qua FFprobe
         try:
             ffprobe_cmd = get_ffprobe_cmd()
@@ -95,7 +95,21 @@ class VideoComposerService:
         except Exception:
             pass
 
-        # 2. Dự phòng bằng OpenCV VideoCapture (cực kỳ tin cậy & nhanh trên Windows)
+        # 2. Thử trực tiếp qua FFmpeg -i (cực kỳ chính xác khi ffprobe bị thiếu/hỏng)
+        try:
+            ffmpeg_cmd = get_ffmpeg_cmd()
+            p = subprocess.run([*ffmpeg_cmd, "-i", str(video_path)], capture_output=True, text=True, errors="replace", timeout=6)
+            for line in p.stderr.splitlines():
+                if "Video:" in line:
+                    m = re.search(r" (\d{2,5})x(\d{2,5})", line)
+                    if m:
+                        w, h = int(m.group(1)), int(m.group(2))
+                        if w > 0 and h > 0:
+                            return w, h
+        except Exception:
+            pass
+
+        # 3. Dự phòng bằng OpenCV VideoCapture (cực kỳ tin cậy & nhanh trên Windows)
         try:
             import cv2
             cap = cv2.VideoCapture(str(video_path))
@@ -351,7 +365,8 @@ class VideoComposerService:
 
         # B. SAU ĐÓ mới Crop — loại bỏ sub Trung cũ & chuẩn tỷ lệ (sub Việt đã nằm đúng vị trí trước khi crop)
         if has_mask:
-            filter_chains.append(f"[{last_v}]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_cropped]")
+            crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x='min(max(0,iw-out_w),{crop_x})':y='min(max(0,ih-out_h),{crop_y})'"
+            filter_chains.append(f"[{last_v}]crop={crop_expr}[v_cropped]")
             last_v = "v_cropped"
             task_manager.add_log(task_id, f"   • Burn sub vào khung gốc → Cắt đáy {mask_height:.1f}% + Chuẩn 16:9 ({render_w}x{render_h})", "cyan")
         else:
@@ -538,13 +553,15 @@ class VideoComposerService:
             render_h = crop_info["h"]
             crop_x = crop_info["x"]
             crop_y = crop_info["y"]
-            filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
+            crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x='min(max(0,iw-out_w),{crop_x})':y='min(max(0,ih-out_h),{crop_y})'"
+            filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
             last_v = "v_clean"
         else:
             render_w = (vw // 2) * 2
             render_h = (vh // 2) * 2
             if render_w != vw or render_h != vh:
-                filter_chains.append(f"[0:v]crop={render_w}:{render_h}:0:0[v_clean]")
+                crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x=0:y=0"
+                filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
                 last_v = "v_clean"
 
         # Subtitle Karaoke & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)

@@ -138,6 +138,14 @@ def get_ffmpeg_cmd() -> List[str]:
     _FFMPEG_BIN_CACHE = "ffmpeg"
     return [_FFMPEG_BIN_CACHE]
 
+def _is_valid_ffprobe(path: str) -> bool:
+    """Kiểm tra binary thực sự là ffprobe chứ không phải ffmpeg bị đổi tên."""
+    try:
+        res = subprocess.run([path, "-version"], capture_output=True, text=True, errors="replace", timeout=3)
+        return "ffprobe version" in res.stdout
+    except Exception:
+        return False
+
 def get_ffprobe_cmd() -> List[str]:
     """Trả về lệnh gọi FFprobe chắc chắn hoạt động. Cache kết quả sau lần đầu."""
     global _FFPROBE_BIN_CACHE
@@ -148,13 +156,13 @@ def get_ffprobe_cmd() -> List[str]:
     
     # 1. Thử tìm trong tools
     tools_bin = BASE_DIR / "tools" / bin_name
-    if tools_bin.exists():
+    if tools_bin.exists() and _is_valid_ffprobe(str(tools_bin)):
         _FFPROBE_BIN_CACHE = str(tools_bin)
         return [_FFPROBE_BIN_CACHE]
 
     # 2. Tìm trong WinGet packages
     winget_bin = _find_winget_package_binary(bin_name)
-    if winget_bin and os.path.exists(winget_bin):
+    if winget_bin and os.path.exists(winget_bin) and _is_valid_ffprobe(winget_bin):
         try:
             (BASE_DIR / "tools").mkdir(parents=True, exist_ok=True)
             shutil.copy2(winget_bin, tools_bin)
@@ -166,7 +174,7 @@ def get_ffprobe_cmd() -> List[str]:
 
     # 3. Tìm trong PATH
     found = shutil.which("ffprobe")
-    if found:
+    if found and _is_valid_ffprobe(found):
         _FFPROBE_BIN_CACHE = found
         return [_FFPROBE_BIN_CACHE]
 
@@ -175,7 +183,7 @@ def get_ffprobe_cmd() -> List[str]:
         BASE_DIR / "tools" / "ffmpeg" / "bin" / bin_name,
         BASE_DIR / "tools" / "bin" / bin_name
     ]:
-        if cand.exists():
+        if cand.exists() and _is_valid_ffprobe(str(cand)):
             _FFPROBE_BIN_CACHE = str(cand)
             return [_FFPROBE_BIN_CACHE]
         
