@@ -62,11 +62,12 @@ def open_browser_when_ready(url: str, port: int, max_wait: float = 10.0):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(0.2)
                 if s.connect_ex(('127.0.0.1', port)) == 0:
-                    print(f"\n[🌐] Server đã khởi động thành công! Đang mở trình duyệt tại: {url}")
-                    webbrowser.open(url)
+                    target_url = f"{url}?v={int(time.time())}"
+                    print(f"\n[🌐] Server đã khởi động thành công! Đang mở trình duyệt tại: {target_url}")
+                    webbrowser.open(target_url)
                     return
         # Fallback nếu quá thời gian
-        webbrowser.open(url)
+        webbrowser.open(f"{url}?v={int(time.time())}")
     threading.Thread(target=_wait_and_open, daemon=True).start()
 
 def main():
