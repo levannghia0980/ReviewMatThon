@@ -315,13 +315,10 @@ class VideoComposerService:
         task_manager.add_log(task_id, "[4/4] 🚀 Đang Render Video 1-Pass Hardware Acceleration...", "cyan")
 
         # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg
-        try:
-            ass_escaped = Path(ass_file).resolve().relative_to(settings.BASE_DIR.resolve()).as_posix()
-        except Exception:
-            try:
-                ass_escaped = Path(ass_file).resolve().relative_to(Path.cwd().resolve()).as_posix()
-            except Exception:
-                ass_escaped = str(ass_file).replace("\\", "/").replace(":", "\\:")
+        # Trên Windows: phải escape dấu ':' trong ổ đĩa (C: -> C\:)
+        ass_abs = str(Path(ass_file).resolve())
+        # FFmpeg subtitles filter trên Windows dùng forward slash và escape ':'
+        ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:")
 
         filter_chains = []
         last_v = "0:v"
@@ -365,7 +362,7 @@ class VideoComposerService:
             last_v = "v_watermark"
 
         # D. Burn Phụ Đề Karaoke ASS & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
-        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}'[v_sub]")
+        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
         filter_chains.append("[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
 
         full_filter_complex = ";".join(filter_chains)
@@ -504,13 +501,11 @@ class VideoComposerService:
                     final_logo = str(cand)
                     break
 
-        try:
-            ass_escaped = Path(ass_file_path).resolve().relative_to(settings.BASE_DIR.resolve()).as_posix()
-        except Exception:
-            try:
-                ass_escaped = Path(ass_file_path).resolve().relative_to(Path.cwd().resolve()).as_posix()
-            except Exception:
-                ass_escaped = str(ass_file_path).replace("\\", "/").replace(":", "\\:")
+        # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg
+        # Trên Windows: phải escape dấu ':' trong ổ đĩa (C: -> C\:)
+        ass_abs = str(Path(ass_file_path).resolve())
+        # FFmpeg subtitles filter trên Windows dùng forward slash và escape ':'
+        ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:")
 
         filter_chains = []
         last_v = "0:v"
@@ -563,7 +558,7 @@ class VideoComposerService:
             last_v = "v_watermark"
 
         # Subtitle Karaoke & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
-        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}'[v_sub]")
+        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
         filter_chains.append("[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
         full_filter_complex = ";".join(filter_chains)
 
