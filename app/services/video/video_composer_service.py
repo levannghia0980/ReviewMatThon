@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import math
 import subprocess
 from pathlib import Path
@@ -320,8 +321,11 @@ class VideoComposerService:
         task_manager.update_task(task_id, step=4, progress=65)
         task_manager.add_log(task_id, "[4/4] 🚀 Đang Render Video 1-Pass Hardware Acceleration...", "cyan")
 
-        # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg (thoát ký tự dấu hai chấm và gạch chéo ngược)
-        ass_escaped = str(ass_file).replace("\\", "/").replace(":", "\\:")
+        # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg
+        try:
+            ass_escaped = Path(ass_file).resolve().relative_to(Path.cwd().resolve()).as_posix()
+        except Exception:
+            ass_escaped = str(ass_file).replace("\\", "/").replace(":", "\\:")
 
         filter_chains = []
         last_v = "0:v"
@@ -334,10 +338,10 @@ class VideoComposerService:
         else:
             task_manager.add_log(task_id, "   • Cắt Sub Cũ & Chuẩn 16:9: Đã tắt", "cyan")
 
-        # B. Thêm Logo nhỏ gọn sát góc
+        # B. Thêm Logo nhỏ gọn sát góc qua input -i (tránh hoàn toàn lỗi movie= và ký tự : ổ đĩa trên Windows)
+        logo_inputs = []
         if final_logo and os.path.exists(final_logo):
-            logo_escaped = str(final_logo).replace("\\", "/")
-            # Đặt vị trí gọn nhỏ sát mép: margin 25px
+            logo_inputs = ["-i", str(final_logo)]
             if logo_position == "top_right":
                 overlay_pos = f"W-w-25:25"
             elif logo_position == "bottom_left":
@@ -347,8 +351,8 @@ class VideoComposerService:
             else: # top_left mặc định
                 overlay_pos = f"25:25"
 
-            # Scale logo nhỏ gọn ~110px-130px và áp dụng opacity
-            filter_chains.append(f"movie='{logo_escaped}',scale={logo_size}:{logo_size},format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
+            # Input 0: video, Input 1: audio, Input 2: logo
+            filter_chains.append(f"[2:v]scale={logo_size}:{logo_size},format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
             filter_chains.append(f"[{last_v}][logo]overlay={overlay_pos}[v_logo]")
             last_v = "v_logo"
 
@@ -386,6 +390,7 @@ class VideoComposerService:
             *hwaccel_args,
             "-i", str(project.video_path),
             "-i", str(audio_source),
+            *logo_inputs,
             "-threads", "0",
             "-filter_complex", full_filter_complex,
             "-map", "[v_out]",
@@ -414,11 +419,12 @@ class VideoComposerService:
         if process.returncode != 0 or not output_video_path.exists():
             # Fallback sang CPU Ultrafast nếu filter phức tạp gặp sự cố
             task_manager.add_log(task_id, f"   ⚠️ Chuyển sang chế độ CPU Ultrafast...", "amber")
-            clean_part = f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[vc];[vc]subtitles='{ass_escaped}'[v_out]" if has_mask else f"[0:v]subtitles='{ass_escaped}'[v_out]"
+            clean_part = full_filter_complex
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(project.video_path),
                 "-i", str(audio_source),
+                *logo_inputs,
                 "-filter_complex", clean_part,
                 "-map", "[v_out]",
                 "-map", "1:a",
@@ -501,7 +507,11 @@ class VideoComposerService:
                     final_logo = str(cand)
                     break
 
-        ass_escaped = str(ass_file_path).replace("\\", "/").replace(":", "\\:")
+        try:
+            ass_escaped = Path(ass_file_path).resolve().relative_to(Path.cwd().resolve()).as_posix()
+        except Exception:
+            ass_escaped = str(ass_file_path).replace("\\", "/").replace(":", "\\:")
+
         filter_chains = []
         last_v = "0:v"
 
@@ -519,8 +529,10 @@ class VideoComposerService:
             render_w, render_h = vw, vh
             crop_x, crop_y = 0, 0
 
+        # Input logo qua -i (tránh hoàn toàn lỗi movie= và ký tự : ổ đĩa trên Windows)
+        logo_inputs = []
         if final_logo and os.path.exists(final_logo):
-            logo_escaped = str(final_logo).replace("\\", "/")
+            logo_inputs = ["-i", str(final_logo)]
             if logo_position == "top_right":
                 overlay_pos = "W-w-25:25"
             elif logo_position == "bottom_left":
@@ -531,7 +543,8 @@ class VideoComposerService:
                 overlay_pos = "25:25"
 
             eff_logo_size = min(logo_size, max(48, int(render_w * 0.18)))
-            filter_chains.append(f"movie='{logo_escaped}',scale={eff_logo_size}:{eff_logo_size},format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
+            # Input 0: video_input_path, Input 1: final_logo
+            filter_chains.append(f"[1:v]scale={eff_logo_size}:{eff_logo_size},format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
             filter_chains.append(f"[{last_v}][logo]overlay={overlay_pos}[v_logo]")
             last_v = "v_logo"
 
@@ -559,6 +572,7 @@ class VideoComposerService:
             "-probesize", "10M", "-analyzeduration", "0",
             *hwaccel_args,
             "-i", str(video_input_path),
+            *logo_inputs,
             "-threads", "0",           # Dùng toàn bộ CPU core cho filter
             "-filter_complex", full_filter_complex,
             "-map", "[v_out]",
@@ -618,10 +632,11 @@ class VideoComposerService:
         if process.returncode != 0 or not out_p.exists() or out_p.stat().st_size < 1000:
             err_summary = "".join(stderr_tail[-10:])
             print(f"[RenderVisualStream] Lỗi encode phần cứng ({vcodec}): {err_summary[-400:]}")
-            clean_part = f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[vc];[vc]subtitles='{ass_escaped}'[v_out]" if has_mask else f"[0:v]subtitles='{ass_escaped}'[v_out]"
+            clean_part = full_filter_complex
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(video_input_path),
+                *logo_inputs,
                 "-filter_complex", clean_part,
                 "-map", "[v_out]",
                 "-an",
