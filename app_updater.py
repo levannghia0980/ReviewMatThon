@@ -256,6 +256,111 @@ def check_requirements_offline(req_file: Path) -> tuple[bool, list]:
         return False, []
 
 
+def _pip_works(py_exe: Path) -> bool:
+    """Kiểm tra nhanh xem python -m pip có hoạt động không."""
+    if not py_exe.exists():
+        return False
+    try:
+        r = subprocess.run(
+            [str(py_exe), "-m", "pip", "--version"],
+            capture_output=True, timeout=15
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def repair_venv_if_broken():
+    """
+    Kiểm tra xem pip trong venv có hoạt động không.
+    Nếu bị hỏng (No module named 'pip') thì tự động sửa bằng ensurepip hoặc get-pip.py.
+    """
+    py_exe = BASE_DIR / "venv" / "Scripts" / "python.exe"
+    pip_exe = BASE_DIR / "venv" / "Scripts" / "pip.exe"
+
+    if not py_exe.exists():
+        return  # Không có venv, bỏ qua
+
+    # Kiểm tra pip có chạy được không
+    try:
+        test = subprocess.run(
+            [str(py_exe), "-m", "pip", "--version"],
+            capture_output=True, timeout=15, encoding='utf-8'
+        )
+        if test.returncode == 0:
+            return  # pip ổn, không cần sửa
+    except Exception:
+        pass
+
+    LOG.warning("  [!] Phát hiện pip trong venv bị hỏng — Đang tự động sửa chữa...")
+
+    # Thử 1: Dùng ensurepip để bootstrap lại pip
+    try:
+        res = subprocess.run(
+            [str(py_exe), "-m", "ensurepip", "--upgrade"],
+            capture_output=True, timeout=60, encoding='utf-8'
+        )
+        if res.returncode == 0:
+            # Nâng cấp pip sau khi bootstrap
+            subprocess.run(
+                [str(py_exe), "-m", "pip", "install", "--upgrade", "pip"],
+                capture_output=True, timeout=60
+            )
+            LOG.info("  [✔] Đã phục hồi pip bằng ensurepip thành công!")
+            return
+        else:
+            LOG.warning(f"  [!] ensurepip thất bại: {res.stderr.strip()[:200]}")
+    except Exception as e:
+        LOG.warning(f"  [!] ensurepip lỗi: {e}")
+
+    # Thử 2: Tải get-pip.py từ internet và chạy
+    LOG.info("  [*] Đang tải get-pip.py để sửa pip...")
+    get_pip_url = "https://bootstrap.pypa.io/get-pip.py"
+    get_pip_tmp = BASE_DIR / "temp" / "get-pip.py"
+    try:
+        (BASE_DIR / "temp").mkdir(parents=True, exist_ok=True)
+        if download_file_robust(get_pip_url, get_pip_tmp):
+            res = subprocess.run(
+                [str(py_exe), str(get_pip_tmp)],
+                capture_output=True, timeout=120, encoding='utf-8'
+            )
+            if res.returncode == 0:
+                LOG.info("  [✔] Đã phục hồi pip bằng get-pip.py thành công!")
+                try:
+                    get_pip_tmp.unlink()
+                except Exception:
+                    pass
+                return
+            else:
+                LOG.warning(f"  [!] get-pip.py thất bại: {res.stderr.strip()[:200]}")
+        else:
+            LOG.warning("  [!] Không tải được get-pip.py. Kiểm tra kết nối mạng.")
+    except Exception as e:
+        LOG.warning(f"  [!] Lỗi khi dùng get-pip.py: {e}")
+
+    # Thử 3: Xóa venv và tạo lại
+    LOG.warning("  [!] Không thể sửa pip — Đang tạo lại môi trường venv hoàn toàn mới...")
+    venv_dir = BASE_DIR / "venv"
+    system_python = sys.executable
+    try:
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        res = subprocess.run(
+            [system_python, "-m", "venv", str(venv_dir)],
+            capture_output=True, timeout=120, encoding='utf-8'
+        )
+        if res.returncode == 0:
+            # Nâng cấp pip sau khi tạo mới
+            subprocess.run(
+                [str(py_exe), "-m", "pip", "install", "--upgrade", "pip"],
+                capture_output=True, timeout=60
+            )
+            LOG.info("  [✔] Đã tạo lại venv và phục hồi pip thành công!")
+        else:
+            LOG.warning(f"  [!] Không thể tạo lại venv: {res.stderr.strip()[:200]}")
+    except Exception as e:
+        LOG.warning(f"  [!] Lỗi khi tạo lại venv: {e}")
+
+
 def smart_pip_install(force_reinstall: bool = False):
     """
     Chỉ chạy pip install khi requirements.txt thực sự thay đổi (MD5 hash)
@@ -266,10 +371,23 @@ def smart_pip_install(force_reinstall: bool = False):
     if not req_file.exists():
         return
 
+    py_exe = BASE_DIR / "venv" / "Scripts" / "python.exe"
     pip_exe = BASE_DIR / "venv" / "Scripts" / "pip.exe"
-    if not pip_exe.exists():
-        LOG.warning("  [!] Không tìm thấy pip trong venv. Bỏ qua bước cài thư viện.")
+
+    if not pip_exe.exists() and not py_exe.exists():
+        LOG.warning("  [!] Không tìm thấy venv. Bỏ qua bước cài thư viện.")
         return
+
+    # ── Kiểm tra và sửa pip trước khi dùng ──────────────────────────────────
+    was_broken_before = not _pip_works(py_exe)
+    repair_venv_if_broken()
+    # Nếu vừa mới sửa xong → xóa hash cũ để buộc cài lại hoàn toàn
+    if was_broken_before and PIP_HASH_FILE.exists():
+        try:
+            PIP_HASH_FILE.unlink()
+            LOG.info("  [*] Đã xóa pip_hash cũ — sẽ cài lại toàn bộ thư viện.")
+        except Exception:
+            pass
 
     current_hash = md5_file(req_file)
     saved_hash   = ""
@@ -305,10 +423,10 @@ def smart_pip_install(force_reinstall: bool = False):
 
     try:
         result = subprocess.run(
-            [str(pip_exe), "install", "-r", str(req_file), "--no-warn-script-location"],
+            [str(py_exe), "-m", "pip", "install", "-r", str(req_file), "--no-warn-script-location"],
             cwd=str(BASE_DIR),
             capture_output=True, text=True,
-            timeout=180, encoding='utf-8'
+            timeout=300, encoding='utf-8'
         )
         if result.returncode == 0:
             try:
