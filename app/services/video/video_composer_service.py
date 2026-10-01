@@ -48,18 +48,7 @@ class VideoComposerService:
         except Exception:
             pass
 
-        # Test Intel QuickSync (Intel Core/Xe)
-        try:
-            test_qsv = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_qsv", "-f", "null", "-"],
-                capture_output=True, text=True, errors="replace", timeout=3
-            )
-            if test_qsv.returncode == 0:
-                return "h264_qsv", "veryfast", "Intel GPU QuickSync"
-        except Exception:
-            pass
-
-        # Test Windows Media Foundation (Hỗ trợ hầu hết GPU trên Windows)
+        # Test Windows Media Foundation (Hỗ trợ hầu hết GPU trên Windows, an toàn nhất)
         try:
             test_mf = subprocess.run(
                 [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_mf", "-f", "null", "-"],
@@ -67,6 +56,17 @@ class VideoComposerService:
             )
             if test_mf.returncode == 0:
                 return "h264_mf", "none", "Windows GPU Media Foundation"
+        except Exception:
+            pass
+
+        # Test Intel QuickSync (Intel Core/Xe - đôi lúc kén tham số)
+        try:
+            test_qsv = subprocess.run(
+                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_qsv", "-f", "null", "-"],
+                capture_output=True, text=True, errors="replace", timeout=3
+            )
+            if test_qsv.returncode == 0:
+                return "h264_qsv", "veryfast", "Intel GPU QuickSync"
         except Exception:
             pass
 
@@ -656,8 +656,13 @@ class VideoComposerService:
                 cwd=str(settings.BASE_DIR)
             )
             last_fb_time = 0.0
+            fb_stderr_tail = []
             if fallback_proc.stderr:
                 for line in fallback_proc.stderr:
+                    fb_stderr_tail.append(line)
+                    if len(fb_stderr_tail) > 25:
+                        fb_stderr_tail.pop(0)
+                        
                     if task_id and task_manager.is_cancelled(task_id):
                         try:
                             fallback_proc.kill()
@@ -673,6 +678,11 @@ class VideoComposerService:
                             if task_id:
                                 task_manager.update_task(task_id, stage=f"CPU Render: {h:02d}:{mm:02d}:{s:02d}")
             fallback_proc.wait()
+            
+            if fallback_proc.returncode != 0:
+                fb_err_summary = "".join(fb_stderr_tail[-10:])
+                if task_id:
+                    task_manager.add_log(task_id, f"❌ Lỗi CPU Fallback: {fb_err_summary[-400:]}", "rose")
 
         return out_p.exists() and out_p.stat().st_size > 1000
 
