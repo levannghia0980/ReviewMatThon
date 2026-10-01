@@ -34,9 +34,10 @@ export default function MainStudioView({ onNavigateTab }) {
   const [cropRatio, setCropRatio] = useState('16:9'); // '16:9' (YouTube Ngang Chuẩn) | '9:16' (Shorts/TikTok)
   const [backdropOpacity, setBackdropOpacity] = useState('CC'); // 80% opacity mặc định khi bật che
 
-  // Subtitle Vertical Placement & Font Size (Cỡ chữ siêu bé chuẩn điện ảnh không chiếm không gian)
+  // Subtitle Vertical Placement, Font Size & Box Padding (Nền sub che chữ gốc)
   const [subBottomOffset, setSubBottomOffset] = useState(2); // % from bottom sát mép đáy (2%)
-  const [subFontSize, setSubFontSize] = useState(11); // Cỡ chữ phụ đề siêu bé (11px)
+  const [subFontSize, setSubFontSize] = useState(13); // Cỡ chữ phụ đề vừa vặn theo khung hình bị cắt
+  const [subBoxPadding, setSubBoxPadding] = useState(8); // Độ to / padding theo chiều dọc của nền phụ đề (px)
 
   // Interactive Drag & Resize State
   const [interactionMode, setInteractionMode] = useState(null); // 'move' | 'sub-move' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | 'resize-n' | 'resize-s' | 'resize-w' | 'resize-e' | 'draw'
@@ -405,8 +406,8 @@ export default function MainStudioView({ onNavigateTab }) {
         crop_ratio: cropRatio,
         font_size: subFontSize,
         box_style: 'white_box',
-        box_padding: 8,
-        karaoke_highlight_color: '&H0000D7FF',
+        box_padding: subBoxPadding,
+        karaoke_highlight_color: '&H00EB6325',
         channel_name: '@Mắt Thần Review',
         channel_opacity: 0.35,
         logo_position: 'top_left',
@@ -716,13 +717,13 @@ export default function MainStudioView({ onNavigateTab }) {
                 </span>
               </div>
 
-              {/* Cỡ Chữ Phụ Đề Siêu Bé */}
+              {/* Cỡ Chữ Phụ Đề */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cỡ Chữ:</span>
                 <button
                   type="button"
                   onClick={() => setSubFontSize(prev => Math.max(9, prev - 1))}
-                  title="Giảm cỡ chữ (siêu bé, không tốn không gian xem phim)"
+                  title="Giảm cỡ chữ"
                   style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                 >
                   <Minus size={11} color="#2563eb" />
@@ -738,9 +739,30 @@ export default function MainStudioView({ onNavigateTab }) {
                 <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0f172a', minWidth: '30px', textAlign: 'center' }}>
                   {subFontSize}px
                 </span>
-                <span style={{ fontSize: '10px', color: '#16a34a', fontWeight: 700 }}>
-                  {subFontSize <= 11 ? '(Siêu bé ✨)' : (subFontSize <= 14 ? '(Gọn)' : '(Vừa)')}
+              </div>
+
+              {/* Độ To Nền Sub (Hộp nền che chữ gốc) */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '2px 8px', borderRadius: '5px', border: '1.5px solid #2563eb' }}>
+                <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af' }}>Nền Sub:</span>
+                <button
+                  type="button"
+                  onClick={() => setSubBoxPadding(prev => Math.max(3, prev - 1))}
+                  title="Thu nhỏ độ to/chiều cao nền sub"
+                  style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                >
+                  <Minus size={11} color="#2563eb" />
+                </button>
+                <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#1d4ed8', minWidth: '28px', textAlign: 'center' }}>
+                  {subBoxPadding}px
                 </span>
+                <button
+                  type="button"
+                  onClick={() => setSubBoxPadding(prev => Math.min(25, prev + 1))}
+                  title="Tăng độ to/chiều cao nền sub để che kín chữ gốc"
+                  style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                >
+                  <Plus size={11} color="#2563eb" />
+                </button>
               </div>
 
               {/* Cắt Sub & Chuẩn Tỷ Lệ YouTube Controls */}
@@ -994,39 +1016,20 @@ export default function MainStudioView({ onNavigateTab }) {
                     </span>
                   </div>
 
-                  {/* 4. THANH KÉO ĐỘ CAO CẮT SUB ĐÁY (INTERACTIVE HITBOX) */}
+                  {/* 4. THANH KÉO ĐỘ CAO CẮT SUB ĐÁY (HITBOX VÔ HÌNH KHÔNG CHE CHỮ) */}
                   <div
                     onMouseDown={(e) => handleMouseDown(e, 'crop-bottom')}
                     style={{
                       position: 'absolute',
-                      top: `calc(${remainH}% - 12px)`,
+                      top: `calc(${remainH}% - 8px)`,
                       left: 0,
                       right: 0,
-                      height: '24px',
+                      height: '16px',
                       cursor: 'ns-resize',
-                      zIndex: 35,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center'
+                      zIndex: 35
                     }}
-                    title="Kéo thanh này lên/xuống để chọn độ cao cắt sub đáy"
-                  >
-                    <div style={{
-                      background: '#f59e0b',
-                      color: '#000',
-                      fontSize: '10px',
-                      fontWeight: 900,
-                      padding: '2px 12px',
-                      borderRadius: '12px',
-                      boxShadow: '0 0 12px rgba(245, 158, 11, 0.8)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      userSelect: 'none'
-                    }}>
-                      <span>↕ Kéo chỉnh độ cao cắt sub (-{maskHeight}%)</span>
-                    </div>
-                  </div>
+                    title="Kéo mép này lên/xuống để chọn độ cao cắt sub đáy"
+                  />
 
                   {/* 5. KHUNG THÀNH PHẨM (CHUẨN TỶ LỆ YOUTUBE - SÁNG RÕ, SIÊU NÉT) */}
                   <div
@@ -1064,7 +1067,7 @@ export default function MainStudioView({ onNavigateTab }) {
                 </>
               )}
 
-              {/* DYNAMIC PURE SUBTITLE (NO BACKGROUND, PURE SHADOWED TEXT) */}
+              {/* DYNAMIC SUBTITLE PREVIEW (KHUNG TRẮNG BO TRÒN CHE SẠCH CHỮ GỐC) */}
               <div
                 onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
                 style={{
@@ -1076,32 +1079,25 @@ export default function MainStudioView({ onNavigateTab }) {
                   cursor: 'ns-resize',
                   zIndex: 25,
                   userSelect: 'none',
-                  maxWidth: hasMask ? `${targetW * 0.94}%` : '92%'
+                  maxWidth: hasMask ? `${targetW * 0.94}%` : '92%',
+                  padding: `${subBoxPadding}px 18px`,
+                  background: '#FFFFFF',
+                  border: '1.5px solid #CBD5E1',
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.35)',
+                  transition: 'padding 0.15s ease'
                 }}
                 title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển vị trí phụ đề"
               >
-                <div style={{
-                  position: 'absolute',
-                  top: '-2px',
-                  left: '-6px',
-                  right: '-6px',
-                  bottom: '-2px',
-                  border: '1px dashed rgba(0, 215, 255, 0.45)',
-                  borderRadius: '3px',
-                  pointerEvents: 'none'
-                }} />
-
                 <span style={{
                   display: 'inline-block',
-                  fontSize: `${Math.max(10, Math.round(subFontSize * 0.95))}px`,
-                  fontWeight: 700,
-                  color: '#00D7FF',
-                  textShadow: '1px 1px 2px #000, -1px -1px 2px #000, 1px -1px 2px #000, -1px 1px 2px #000',
+                  fontSize: `${Math.max(12, Math.round(subFontSize * 0.95))}px`,
+                  fontWeight: 800,
+                  color: '#0F172A',
                   letterSpacing: '0.2px',
-                  whiteSpace: 'nowrap',
-                  padding: '1px 4px'
+                  whiteSpace: 'nowrap'
                 }}>
-                  [Phụ đề tiếng Việt karaoke siêu bé - {subFontSize}px]
+                  <span style={{ color: '#2563EB', fontWeight: 900 }}>Lúc này</span> hắn mới nhận ra điều bất thường... ({subFontSize}px, Nền {subBoxPadding}px)
                 </span>
               </div>
             </div>
