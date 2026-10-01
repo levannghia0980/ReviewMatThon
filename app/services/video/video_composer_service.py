@@ -489,17 +489,9 @@ class VideoComposerService:
         Render luồng hình ảnh không tiếng (Visual Stream) với Subtitle Karaoke + Logo + Vùng che.
         Chạy độc lập trên GPU / CPU, phục vụ mô hình xử lý song song (Parallel Pipeline).
         """
-        final_logo = None
-        if logo_path and os.path.exists(logo_path):
-            final_logo = logo_path
-        else:
-            for cand in [
-                settings.BASE_DIR / "assets" / "logo_nengia_fire.png",
-                settings.BASE_DIR / "assets" / "logo.png"
-            ]:
-                if cand.exists():
-                    final_logo = str(cand)
-                    break
+        # Chỉ có crop + subtitle + scale, không logo/watermark
+        # (drawtext cần font trên máy, dễ gây lỗi -22 nếu máy khách không có fontconfig)
+        logo_inputs = []  # Không dùng logo trong render_visual_stream
 
         # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg
         # Trên Windows: phải escape dấu ':' trong ổ đĩa (C: -> C\:)
@@ -517,50 +509,20 @@ class VideoComposerService:
             render_h = crop_info["h"]
             crop_x = crop_info["x"]
             crop_y = crop_info["y"]
-            # 1. Cắt mép đáy chứa sub Trung cũ & Cắt 2 bên dọc vừa tỷ lệ chuẩn (CHỈ CROP, KHÔNG SCALE ĐỂ RENDER TỐI ĐA TỐC ĐỘ)
             filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
             last_v = "v_clean"
         else:
             render_w = (vw // 2) * 2
             render_h = (vh // 2) * 2
-            crop_x, crop_y = 0, 0
             if render_w != vw or render_h != vh:
                 filter_chains.append(f"[0:v]crop={render_w}:{render_h}:0:0[v_clean]")
                 last_v = "v_clean"
-
-        # Input logo qua -i (tránh hoàn toàn lỗi movie= và ký tự : ổ đĩa trên Windows)
-        logo_inputs = []
-        if final_logo and os.path.exists(final_logo):
-            logo_inputs = ["-i", str(final_logo)]
-            if logo_position == "top_right":
-                overlay_pos = "W-w-25:25"
-            elif logo_position == "bottom_left":
-                overlay_pos = "25:H-h-25"
-            elif logo_position == "bottom_right":
-                overlay_pos = "W-w-25:H-h-25"
-            else:
-                overlay_pos = "25:25"
-
-            eff_logo_size = min(logo_size, max(48, int(render_w * 0.18)))
-            # Input 0: video_input_path, Input 1: final_logo
-            filter_chains.append(f"[1:v]scale={eff_logo_size}:{eff_logo_size},format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
-            filter_chains.append(f"[{last_v}][logo]overlay={overlay_pos}[v_logo]")
-            last_v = "v_logo"
-
-        if channel_name:
-            clean_ch = channel_name.replace("'", "").replace(":", "")
-            drawtext_filter = (
-                f"drawtext=text='{clean_ch}':x=w-tw-30:y=30:"
-                f"fontsize=20:fontcolor=white@{channel_opacity}:"
-                f"shadowcolor=black@{channel_opacity/2}:shadowx=1:shadowy=1"
-            )
-            filter_chains.append(f"[{last_v}]{drawtext_filter}[v_watermark]")
-            last_v = "v_watermark"
 
         # Subtitle Karaoke & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
         filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
         filter_chains.append("[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
         full_filter_complex = ";".join(filter_chains)
+
 
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
 
