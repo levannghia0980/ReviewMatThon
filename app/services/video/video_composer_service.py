@@ -323,9 +323,12 @@ class VideoComposerService:
 
         # Chuẩn hóa đường dẫn ASS cho filter subtitle trong FFmpeg
         try:
-            ass_escaped = Path(ass_file).resolve().relative_to(Path.cwd().resolve()).as_posix()
+            ass_escaped = Path(ass_file).resolve().relative_to(settings.BASE_DIR.resolve()).as_posix()
         except Exception:
-            ass_escaped = str(ass_file).replace("\\", "/").replace(":", "\\:")
+            try:
+                ass_escaped = Path(ass_file).resolve().relative_to(Path.cwd().resolve()).as_posix()
+            except Exception:
+                ass_escaped = str(ass_file).replace("\\", "/").replace(":", "\\:")
 
         filter_chains = []
         last_v = "0:v"
@@ -508,9 +511,12 @@ class VideoComposerService:
                     break
 
         try:
-            ass_escaped = Path(ass_file_path).resolve().relative_to(Path.cwd().resolve()).as_posix()
+            ass_escaped = Path(ass_file_path).resolve().relative_to(settings.BASE_DIR.resolve()).as_posix()
         except Exception:
-            ass_escaped = str(ass_file_path).replace("\\", "/").replace(":", "\\:")
+            try:
+                ass_escaped = Path(ass_file_path).resolve().relative_to(Path.cwd().resolve()).as_posix()
+            except Exception:
+                ass_escaped = str(ass_file_path).replace("\\", "/").replace(":", "\\:")
 
         filter_chains = []
         last_v = "0:v"
