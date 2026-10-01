@@ -26,9 +26,12 @@ except Exception:
 def find_free_port(preferred_port: int = 8686, max_tries: int = 50) -> int:
     """Tìm cổng mạng (port) còn trống tự động để không bị xung đột với ứng dụng khác"""
     for p in range(preferred_port, preferred_port + max_tries):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            if s.connect_ex(('127.0.0.1', p)) != 0:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('127.0.0.1', p))
                 return p
+        except OSError:
+            continue
     return preferred_port
 
 def check_environment():
@@ -107,7 +110,8 @@ def main():
         host="127.0.0.1",
         port=port,
         reload=False,
-        log_level="info"
+        log_level="info",
+        timeout_graceful_shutdown=2
     )
 
 if __name__ == "__main__":
