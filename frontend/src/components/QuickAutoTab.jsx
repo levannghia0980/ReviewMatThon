@@ -94,7 +94,9 @@ export default function QuickAutoTab({ onNavigateStudio }) {
           logo_position: logoPosition,
           logo_size: 120,
           crop_ratio: '16:9',
-          font_size: 11
+          font_size: 11,
+          box_style: 'white_box',
+          box_padding: 8
         })
       });
 

@@ -275,7 +275,9 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             font_size=font_sz,
             highlight_color=req.karaoke_highlight_color,
             backdrop_opacity_hex=req.backdrop_opacity_hex,
-            margin_v=actual_margin_v
+            margin_v=actual_margin_v,
+            box_style=getattr(req, "box_style", "white_box"),
+            box_padding=getattr(req, "box_padding", 8)
         )
 
         temp_visual_video = settings.OUTPUT_FINAL_VIDEOS_DIR / f"temp_{project.video_id}_visual.mp4"

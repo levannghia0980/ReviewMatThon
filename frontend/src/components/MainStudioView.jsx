@@ -404,6 +404,8 @@ export default function MainStudioView({ onNavigateTab }) {
         mask_height: maskHeight,
         crop_ratio: cropRatio,
         font_size: subFontSize,
+        box_style: 'white_box',
+        box_padding: 8,
         karaoke_highlight_color: '&H0000D7FF',
         channel_name: '@Mắt Thần Review',
         channel_opacity: 0.35,

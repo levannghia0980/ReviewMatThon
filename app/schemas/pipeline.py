@@ -31,6 +31,8 @@ class FullAutoPipelineRequest(BaseModel):
     logo_size: int = Field(default=120, description="Kích thước logo px")
     crop_ratio: str = Field(default="16:9", description="Tỷ lệ khung hình crop ('16:9' YouTube Ngang hoặc '9:16' Shorts/TikTok)")
     font_size: Optional[int] = Field(default=None, description="Cỡ chữ phụ đề nhỏ gọn (px). Nếu không truyền sẽ tự động tính theo tỷ lệ điện ảnh thanh mảnh")
+    box_style: str = Field(default="white_box", description="Kiểu hộp phụ đề: 'white_box' (Khung Trắng chữ Đen), 'dark_box' (Hộp Đen mờ), 'outline_only' (Trong suốt)")
+    box_padding: int = Field(default=8, description="Độ to theo chiều dọc / padding của hộp che chữ gốc (px)")
     batch_size: Optional[int] = Field(default=None, description="Số câu một lô dịch (150-500 câu)")
 
 class IngestPipelineResponse(BaseModel):

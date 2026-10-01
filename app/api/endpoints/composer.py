@@ -35,7 +35,9 @@ def _run_compose_worker(task_id: str, req: VideoComposeRequest):
             mask_height=req.mask_height,
             margin_v=req.margin_v,
             crop_ratio=getattr(req, "crop_ratio", "16:9"),
-            font_size=getattr(req, "font_size", None)
+            font_size=getattr(req, "font_size", None),
+            box_style=getattr(req, "box_style", "white_box"),
+            box_padding=getattr(req, "box_padding", 8)
         )
     except Exception as e:
         db.rollback()

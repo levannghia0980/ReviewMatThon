@@ -166,7 +166,9 @@ class VideoComposerService:
         backdrop_opacity_hex: str = "FF",       # 100% Solid Black chống lộ chữ
         margin_v: int = 30,                     # Khoảng cách đáy màn hình
         crop_ratio: str = "16:9",               # 16:9 (YouTube Ngang) hoặc 9:16 (Shorts/TikTok)
-        font_size: Optional[int] = None         # Cỡ chữ phụ đề nhỏ gọn (px)
+        font_size: Optional[int] = None,        # Cỡ chữ phụ đề nhỏ gọn (px)
+        box_style: str = "white_box",           # "white_box" | "dark_box" | "outline_only"
+        box_padding: int = 8                    # Độ to theo chiều dọc / padding của hộp che chữ gốc (px)
     ) -> Dict[str, Any]:
         """
         Sản xuất Video Review Hoàn Thiện:
@@ -257,7 +259,9 @@ class VideoComposerService:
             font_size=font_sz,
             margin_v=actual_margin_v,
             highlight_color=karaoke_highlight_color,
-            backdrop_opacity_hex=backdrop_opacity_hex
+            backdrop_opacity_hex=backdrop_opacity_hex,
+            box_style=box_style,
+            box_padding=box_padding
         )
         task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} ({render_w}x{render_h})", "emerald")
 
