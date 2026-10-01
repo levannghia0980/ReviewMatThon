@@ -146,8 +146,31 @@ def get_ffprobe_cmd() -> List[str]:
 
     bin_name = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
     
+    # 1. Thử tìm trong tools
+    tools_bin = BASE_DIR / "tools" / bin_name
+    if tools_bin.exists():
+        _FFPROBE_BIN_CACHE = str(tools_bin)
+        return [_FFPROBE_BIN_CACHE]
+
+    # 2. Tìm trong WinGet packages
+    winget_bin = _find_winget_package_binary(bin_name)
+    if winget_bin and os.path.exists(winget_bin):
+        try:
+            (BASE_DIR / "tools").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(winget_bin, tools_bin)
+            _FFPROBE_BIN_CACHE = str(tools_bin)
+            return [_FFPROBE_BIN_CACHE]
+        except Exception:
+            _FFPROBE_BIN_CACHE = winget_bin
+            return [_FFPROBE_BIN_CACHE]
+
+    # 3. Tìm trong PATH
+    found = shutil.which("ffprobe")
+    if found:
+        _FFPROBE_BIN_CACHE = found
+        return [_FFPROBE_BIN_CACHE]
+
     for cand in [
-        BASE_DIR / "tools" / bin_name,
         BASE_DIR / "tools" / "ffmpeg" / bin_name,
         BASE_DIR / "tools" / "ffmpeg" / "bin" / bin_name,
         BASE_DIR / "tools" / "bin" / bin_name
@@ -155,16 +178,6 @@ def get_ffprobe_cmd() -> List[str]:
         if cand.exists():
             _FFPROBE_BIN_CACHE = str(cand)
             return [_FFPROBE_BIN_CACHE]
-            
-    found = shutil.which("ffprobe")
-    if found:
-        _FFPROBE_BIN_CACHE = found
-        return [_FFPROBE_BIN_CACHE]
-        
-    winget_bin = _find_winget_package_binary(bin_name)
-    if winget_bin:
-        _FFPROBE_BIN_CACHE = winget_bin
-        return [_FFPROBE_BIN_CACHE]
         
     return ["ffprobe"]
 

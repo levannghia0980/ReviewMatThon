@@ -11,7 +11,7 @@ export default function QuickAutoTab({ onNavigateStudio }) {
   const [genre, setGenre] = useState(DEFAULT_GENRE);
   const [voiceCode, setVoiceCode] = useState('BV074_streaming');
   const [quality, setQuality] = useState('480p');
-  const [marginV, setMarginV] = useState(45);
+  const [marginV, setMarginV] = useState(10);
   const [backdropOpacity, setBackdropOpacity] = useState('99');
   const [channelName, setChannelName] = useState('@Mắt Thần Review');
   const [logoPosition, setLogoPosition] = useState('top_left');
@@ -92,7 +92,9 @@ export default function QuickAutoTab({ onNavigateStudio }) {
           channel_name: channelName,
           channel_opacity: 0.35,
           logo_position: logoPosition,
-          logo_size: 120
+          logo_size: 120,
+          crop_ratio: '16:9',
+          font_size: 11
         })
       });
 

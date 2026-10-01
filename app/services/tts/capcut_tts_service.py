@@ -440,9 +440,9 @@ class CapCutTTSService:
         task_manager.add_log(task_id, f"🎯 [Pha 2/2] Ghép nối {total_count} câu thoại vào Master Audio Track (Engine: NumPy Siêu Tốc)...", "cyan")
 
         fs = 24000
-        channels = 2
         total_samples = int((total_video_ms / 1000.0) * fs) + fs
-        master_buffer = np.zeros((total_samples, channels), dtype=np.float32)
+        # MONO int16: Giọng đọc chỉ cần mono 1 kênh, giảm dung lượng RAM từ 7GB xuống chỉ 1.7GB cho video 10 tiếng
+        master_buffer = np.zeros(total_samples, dtype=np.int16)
 
         current_timeline_sec = 0.0
 
@@ -466,7 +466,6 @@ class CapCutTTSService:
             else:
                 next_orig_start = orig_end_sec + 2.0
 
-            # Khung thời lượng mục tiêu: KHÍT CHẶT KHUNG START - END CỦA CÂU GỐC
             # Khung thời lượng mục tiêu: KHÍT CHẶT KHUNG START - END CỦA CÂU GỐC
             # Chừa 20ms micro-pause ở cuối để dứt câu tự nhiên và không dính vào câu sau
             target_dur = max(0.35, orig_frame_dur - 0.02)
@@ -503,10 +502,10 @@ class CapCutTTSService:
             # Cập nhật mốc timeline (chừa 20ms micro-pause) để câu sau không bao giờ bị đè
             current_timeline_sec = start_sec + seg_dur_sec + 0.02
 
-            # Dán trực tiếp vào NumPy Master Buffer (chống hoàn toàn việc đè âm thanh 2 lần)
+            # Dán trực tiếp vào NumPy Master Buffer (chuẩn Mono 24kHz int16)
             try:
-                norm_seg = fitted_seg.set_frame_rate(fs).set_channels(channels)
-                seg_samples = np.array(norm_seg.get_array_of_samples(), dtype=np.float32).reshape((-1, channels))
+                norm_seg = fitted_seg.set_frame_rate(fs).set_channels(1)
+                seg_samples = np.array(norm_seg.get_array_of_samples(), dtype=np.int16)
 
                 start_idx = int(start_sec * fs)
                 seg_len = len(seg_samples)
@@ -526,18 +525,37 @@ class CapCutTTSService:
         # Lưu thay đổi thông số voice_duration vào CSDL
         db.commit()
 
-        # Xuất file âm thanh tổng hợp từ NumPy Buffer
-        master_buffer = np.clip(master_buffer, -32768, 32767).astype(np.int16)
-        full_timeline_audio = AudioSegment(
-            master_buffer.tobytes(),
-            frame_rate=fs,
-            sample_width=2,
-            channels=channels
-        )
-
+        # Xuất file âm thanh siêu tốc sang FFmpeg qua Streaming Pipe
+        # KHÔNG tobytes() toàn bộ và KHÔNG bọc qua AudioSegment để tránh nhân bản thêm 7GB RAM
         settings.OUTPUT_VOICEOVER_DIR.mkdir(parents=True, exist_ok=True)
-        task_manager.add_log(task_id, f"💾 Đang xuất file Master Audio MP3 192kbps...", "cyan")
-        full_timeline_audio.export(str(master_voice_file), format="mp3", bitrate="192k")
+        task_manager.add_log(task_id, f"💾 Đang xuất file Master Audio MP3 192kbps (Streaming Pipe siêu tốc)...", "cyan")
+
+        ffmpeg_cmd = get_ffmpeg_cmd()
+        cmd = [
+            *ffmpeg_cmd, "-y",
+            "-f", "s16le",
+            "-ar", str(fs),
+            "-ac", "1",
+            "-i", "pipe:0",
+            "-c:a", "libmp3lame",
+            "-b:a", "192k",
+            str(master_voice_file)
+        ]
+
+        pipe_proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        chunk_samples = fs * 60  # Mỗi khối 60 giây (~120KB)
+        for i in range(0, total_samples, chunk_samples):
+            chunk = master_buffer[i:i + chunk_samples]
+            pipe_proc.stdin.write(chunk.tobytes())
+
+        pipe_proc.stdin.close()
+        pipe_proc.wait()
+        del master_buffer
 
         task_manager.add_log(task_id, f"🎉 ĐÃ XUẤT MASTER VOICEOVER THÀNH CÔNG: {master_voice_file.name}", "emerald")
 

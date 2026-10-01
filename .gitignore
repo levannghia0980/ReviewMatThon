@@ -26,6 +26,7 @@ wheels/
 # Frontend
 frontend/node_modules/
 # Keep frontend/dist for end-user client machines without nodejs
+!frontend/dist/
 
 
 # Project Temp & Output Data
@@ -40,6 +41,7 @@ database/*.db-shm
 *.sqlite
 proxies.txt
 scratch/
+scratch_*.py
 test_*.mp3
 *.log
 

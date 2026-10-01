@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from app.config import settings
 from app.schemas.transcript import DialogueSegment
 from app.services.text_cleaner import TextCleanerService
@@ -59,7 +59,8 @@ class WhisperService:
         audio_path: str,
         language: str = "zh",
         model_size: str = None,
-        clean_text: bool = True
+        clean_text: bool = True,
+        task_id: Optional[str] = None
     ) -> Tuple[List[DialogueSegment], str, str, str]:
         """
         Tự động điều phối giữa CapCut Cloud STT (Mặc định siêu tốc, chuẩn mili-giây, 0% CPU) và Groq Cloud.
@@ -78,7 +79,8 @@ class WhisperService:
                 return CapCutASRService.transcribe(
                     audio_path=audio_path,
                     language=cap_lang,
-                    clean_text=clean_text
+                    clean_text=clean_text,
+                    task_id=task_id
                 )
             except Exception as cap_err:
                 import logging
@@ -102,5 +104,6 @@ class WhisperService:
         return CapCutASRService.transcribe(
             audio_path=audio_path,
             language=cap_lang,
-            clean_text=clean_text
+            clean_text=clean_text,
+            task_id=task_id
         )

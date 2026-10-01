@@ -16,6 +16,7 @@ class SettingsUpdateRequest(BaseModel):
     openrouter_api_key: Optional[str] = None
     translation_max_chars: Optional[int] = None
     translation_batch_size: Optional[int] = None
+    asr_threads: Optional[int] = None
     tts_threads: Optional[int] = None
     tts_engine: Optional[str] = None
     capcut_cookie: Optional[str] = None
@@ -57,6 +58,7 @@ def get_settings():
         "openrouter_model": settings.OPENROUTER_MODEL,
         "translation_max_chars": settings.TRANSLATION_MAX_CHARS or 15000,
         "translation_batch_size": settings.TRANSLATION_BATCH_SIZE or 50,
+        "asr_threads": getattr(settings, "ASR_MAX_WORKERS", 8),
         "tts_threads": settings.TTS_MAX_WORKERS,
         "tts_engine": getattr(settings, "TTS_ENGINE", "capcut"),
         "capcut_cookie": getattr(settings, "CAPCUT_COOKIE", ""),
@@ -90,6 +92,8 @@ def update_settings(req: SettingsUpdateRequest):
         updates["TRANSLATION_MAX_CHARS"] = str(max(1000, min(50000, req.translation_max_chars)))
     if req.translation_batch_size is not None:
         updates["TRANSLATION_BATCH_SIZE"] = str(max(10, min(500, req.translation_batch_size)))
+    if req.asr_threads is not None:
+        updates["ASR_MAX_WORKERS"] = str(max(1, min(16, req.asr_threads)))
     if req.tts_threads is not None:
         updates["TTS_MAX_WORKERS"] = str(max(1, min(128, req.tts_threads)))
 

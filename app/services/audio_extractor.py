@@ -1,8 +1,11 @@
 import os
+import logging
 import subprocess
 from pathlib import Path
 from app.config import settings
 from app.utils.bin_helper import get_ffmpeg_cmd
+
+logger = logging.getLogger(__name__)
 
 class AudioExtractorService:
     @staticmethod
@@ -65,17 +68,23 @@ class AudioExtractorService:
             return 0.0
 
     @staticmethod
-    def split_audio_chunks_with_overlap(audio_path: str, chunk_length_sec: int = 3500, overlap_sec: int = 60) -> list:
+    def split_audio_chunks_with_overlap(audio_path: str, chunk_length_sec: int = 2700, overlap_sec: int = 45) -> list:
         """
-        Chia nhỏ audio thành các đoạn có khoảng chồng (overlap) để đồng bộ câu không bị lặp hay cắt ngang.
-        Trả về danh sách dictionary: [{"path": "...", "offset": 0}, {"path": "...", "offset": 3440}, ...]
+        Chia nhỏ audio thành các đoạn có khoảng chồng (overlap 45s) để gửi song song cho CapCut Cloud.
+        QUY TẮC TỐI ƯU KHỚP NỐI:
+        - Mặc định: Mỗi chunk cắt theo DUNG LƯỢNG TỐI ĐA 45 phút (2700s) nén MP3 64kbps 16kHz (~20MB).
+        - Nếu video <= 45 phút: GIỮ NGUYÊN 1 CHUNK DUY NHẤT 100%, tuyệt đối không cắt chia nhỏ.
+        - Nếu video > 45 phút: Cắt chia theo đúng lượng tối đa 45 phút/chunk (ít mối nối nhất có thể, tránh chia vụn gây khó ghép).
+        Trả về danh sách dictionary: [{"path": "...", "offset": 0}, {"path": "...", "offset": 2655}, ...]
         """
         src = Path(audio_path)
         out_dir = src.parent / f"{src.stem}_chunks"
         out_dir.mkdir(parents=True, exist_ok=True)
         
         duration = AudioExtractorService.get_audio_duration(str(src))
+        # Nếu video ngắn hơn hoặc bằng 1 chunk (<= 45 phút), giữ nguyên 100% không cắt chia chunk
         if duration <= chunk_length_sec and duration > 0:
+            logger.info(f"[Audio Splitter] Audio dài {duration:.1f}s ({duration/60:.1f} phút) <= {chunk_length_sec}s (1 chunk tối đa) -> Giữ nguyên 1 file duy nhất, không chia nhỏ.")
             return [{"path": str(src), "offset": 0.0}]
             
         ffmpeg_cmd = get_ffmpeg_cmd()
@@ -85,8 +94,8 @@ class AudioExtractorService:
         current_start = 0.0
         idx = 0
         
-        # Nếu đã chia rồi thì đọc lại
-        existing = sorted(list(out_dir.glob("chunk_*.wav")))
+        # Nếu đã chia rồi thì đọc lại (hỗ trợ cả .mp3 và .wav)
+        existing = sorted(list(out_dir.glob("chunk_*.mp3")) or list(out_dir.glob("chunk_*.wav")))
         if existing and duration > 0:
             expected_chunks = int(duration // stride) + 1
             if len(existing) >= expected_chunks - 1:
@@ -99,21 +108,22 @@ class AudioExtractorService:
         chunks_info = []
         idx = 0
         while True:
-            out_file = out_dir / f"chunk_{idx:03d}_{int(current_start)}.wav"
+            out_file = out_dir / f"chunk_{idx:03d}_{int(current_start)}.mp3"
             cmd = [
                 *ffmpeg_cmd,
                 "-y",
                 "-ss", str(current_start),
                 "-t", str(chunk_length_sec),
                 "-i", str(src),
-                "-acodec", "pcm_s16le",
+                "-acodec", "libmp3lame",
+                "-b:a", "64k",
                 "-ar", "16000",
                 "-ac", "1",
                 str(out_file)
             ]
             subprocess.run(cmd, capture_output=True)
             
-            # Check if file was created and is not empty
+            # Kiểm tra nếu file tạo thành công và có dung lượng hợp lệ
             if not out_file.exists() or out_file.stat().st_size < 1000:
                 if out_file.exists(): out_file.unlink()
                 break

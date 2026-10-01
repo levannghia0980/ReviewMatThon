@@ -67,7 +67,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             dialogues, srt_path, txt_path, json_path = WhisperService.transcribe(
                 audio_path=clean_audio_path,
                 language=req.source_language,
-                clean_text=True
+                clean_text=True,
+                task_id=task_id
             )
             task_manager.add_log(task_id, f"   ✔ Đã bóc tách {len(dialogues)} câu thoại gốc.", "emerald")
 
@@ -143,7 +144,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 dialogues, srt_path, txt_path, json_path = WhisperService.transcribe(
                     audio_path=clean_audio_path,
                     language=req.source_language or project.source_language or "zh",
-                    clean_text=True
+                    clean_text=True,
+                    task_id=task_id
                 )
                 task_manager.add_log(task_id, f"   ✔ Đã bóc tách {len(dialogues)} câu thoại gốc.", "emerald")
 
@@ -235,16 +237,54 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             for d in dialogues_db
         ]
 
+        vw, vh = VideoComposerService.get_video_resolution(project.video_path)
+        crop_ratio = getattr(req, "crop_ratio", "16:9")
+        if req.has_mask:
+            crop_info = VideoComposerService.calculate_crop(vw, vh, req.mask_height, target_ratio=crop_ratio)
+            ass_w = crop_info["w"]
+            ass_h = crop_info["h"]
+        else:
+            ass_w = vw
+            ass_h = vh
+
+        # Cỡ chữ phụ đề SIÊU BÉ chuẩn điện ảnh, không chiếm diện tích xem:
+        if getattr(req, "font_size", None) and req.font_size > 0:
+            font_sz = req.font_size
+        else:
+            if ass_h <= 540:
+                font_sz = 11
+            elif ass_h <= 768:
+                font_sz = 13
+            elif ass_h <= 1100:
+                font_sz = 16
+            else:
+                font_sz = 20
+
+        # Cao độ sát mép đáy màn hình (~2% chiều cao khung hình render, không đẩy lên người nhân vật)
+        if req.margin_v and req.margin_v < 25:
+            actual_margin_v = req.margin_v
+        else:
+            actual_margin_v = max(8, int(round(ass_h * 0.022)))
+
         KaraokeSubtitleService.create_karaoke_ass_file(
             segments=segments,
             output_ass_path=str(ass_file),
             video_title=project.title,
+            width=ass_w,
+            height=ass_h,
+            font_size=font_sz,
             highlight_color=req.karaoke_highlight_color,
             backdrop_opacity_hex=req.backdrop_opacity_hex,
-            margin_v=req.margin_v
+            margin_v=actual_margin_v
         )
 
         temp_visual_video = settings.OUTPUT_FINAL_VIDEOS_DIR / f"temp_{project.video_id}_visual.mp4"
+        if temp_visual_video.exists():
+            try:
+                temp_visual_video.unlink(missing_ok=True)
+            except Exception:
+                pass
+
         mixed_audio_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_mixed_final.mp3"
         output_final_path = settings.OUTPUT_FINAL_VIDEOS_DIR / f"{project.video_id}_{safe_title}_final.mp4"
 
@@ -254,7 +294,13 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         def _audio_worker():
             db_audio = SessionLocal()
             try:
-                # TTS (force_regenerate=True để dọn sạch chunk cũ và tạo mới)
+                # TTS: Tự động kiểm tra file voiceover đã xuất thành công trước đó để tránh lãng phí thời gian tạo lại hàng ngàn câu thoại
+                safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip() or f"project_{project.id}"
+                cached_master = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"
+                force_regen = not (cached_master.exists() and cached_master.stat().st_size > 500_000)
+                if not force_regen:
+                    task_manager.add_log(task_id, f"⚡ Phát hiện file Voiceover hoàn chỉnh đã có sẵn ({cached_master.name}). Bỏ qua bước chờ TTS!", "emerald")
+
                 engine = getattr(settings, "TTS_ENGINE", "capcut").lower()
                 if engine in ("capcut", "capcut_cloud"):
                     tts_res = CapCutTTSService.produce_project_voiceover(
@@ -265,7 +311,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         apply_mastering=True,
                         auto_fit_timeline=True,
                         max_workers=settings.TTS_MAX_WORKERS or 96,
-                        force_regenerate=True
+                        force_regenerate=force_regen
                     )
                 else:
                     tts_res = TikTokTTSService.produce_project_voiceover(
@@ -276,7 +322,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         apply_mastering=True,
                         auto_fit_timeline=True,
                         max_workers=settings.TTS_MAX_WORKERS or 96,
-                        force_regenerate=True
+                        force_regenerate=force_regen
                     )
                 voiceover_file = tts_res.get("audio_path") or tts_res.get("master_voice_path")
                 
@@ -301,6 +347,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             except Exception as e:
                 audio_res_container["error"] = str(e)
                 task_manager.add_log(task_id, f"   ❌ [Lỗi Audio] {str(e)}", "rose")
+                task_manager.cancel_task(task_id)  # Dừng ngay video worker để giải phóng GPU/CPU
             finally:
                 db_audio.close()
 
@@ -320,14 +367,25 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     mask_left=req.mask_left,
                     mask_width=req.mask_width,
                     mask_height=req.mask_height,
-                    backdrop_opacity_hex=req.backdrop_opacity_hex
+                    backdrop_opacity_hex=req.backdrop_opacity_hex,
+                    target_ratio=crop_ratio
                 )
-                if not v_ok or not temp_visual_video.exists():
-                    raise RuntimeError(f"GPU/FFmpeg render video karaoke thất bại (file tạm {temp_visual_video.name} không được tạo). Kiểm tra lại file video gốc hoặc codec FFmpeg.")
+                if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
+                    raise RuntimeError(f"GPU/FFmpeg render video karaoke thất bại (file tạm {temp_visual_video.name} không tạo được hoặc 0 bytes). Kiểm tra lại file video gốc hoặc codec FFmpeg.")
                 video_res_container["success"] = True
                 task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Render Karaoke + Che chữ gốc hoàn tất.", "emerald")
             except Exception as e:
                 video_res_container["error"] = str(e)
+                task_manager.cancel_task(task_id)  # Dừng ngay audio worker nếu render video lỗi
+
+        # Kiểm tra dung lượng ổ đĩa an toàn trước khi chạy video dài
+        try:
+            import shutil
+            free_gb = shutil.disk_usage(settings.BASE_DIR).free / (1024 ** 3)
+            if free_gb < 15.0:
+                task_manager.add_log(task_id, f"⚠️ Cảnh báo ổ đĩa: Chỉ còn {free_gb:.1f}GB trống. Video dài có thể cần 25-35GB dung lượng đệm!", "amber")
+        except Exception:
+            pass
 
         # Chạy đồng thời 2 Worker Threads
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -484,7 +542,8 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
         dialogues, srt_path, txt_path, json_path = WhisperService.transcribe(
             audio_path=audio_path,
             language=req.source_language,
-            clean_text=req.clean_text
+            clean_text=req.clean_text,
+            task_id=task_id
         )
         task_manager.add_log(task_id, f"✔ Bóc tách xong {len(dialogues)} câu thoại timecode.", "emerald")
 
@@ -682,7 +741,8 @@ def _run_extract_stt_worker(task_id: str, req: ExtractSTTRequest):
         dialogues, srt_path, txt_path, json_path = WhisperService.transcribe(
             audio_path=clean_audio_path,
             language=req.source_language,
-            clean_text=True
+            clean_text=True,
+            task_id=task_id
         )
         task_manager.add_log(task_id, f"✔ Đã bóc tách {len(dialogues)} câu thoại.", "emerald")
         

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Zap, Play, Pause, Download, Sparkles, Volume2, VolumeX, Film, CheckCircle2, 
-  RefreshCw, RotateCcw, Terminal, Eye, Sliders, Music, Clock, FileText, ArrowRight, Plus, Trash2,
+  RefreshCw, RotateCcw, Terminal, Eye, Sliders, Music, Clock, FileText, ArrowRight, Plus, Minus, Trash2,
   Maximize2, ArrowUp, ArrowDown, MoveVertical, Search, Headphones, Clipboard, Link as LinkIcon
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
@@ -30,11 +30,13 @@ export default function MainStudioView({ onNavigateTab }) {
   const [maskTop, setMaskTop] = useState(80); // % from top
   const [maskLeft, setMaskLeft] = useState(15); // % left
   const [maskWidth, setMaskWidth] = useState(70); // % width
-  const [maskHeight, setMaskHeight] = useState(12); // % height
+  const [maskHeight, setMaskHeight] = useState(8); // % height cắt sub đáy
+  const [cropRatio, setCropRatio] = useState('16:9'); // '16:9' (YouTube Ngang Chuẩn) | '9:16' (Shorts/TikTok)
   const [backdropOpacity, setBackdropOpacity] = useState('CC'); // 80% opacity mặc định khi bật che
 
-  // Subtitle Vertical Placement (in % from bottom, centered horizontally)
-  const [subBottomOffset, setSubBottomOffset] = useState(6); // % from bottom
+  // Subtitle Vertical Placement & Font Size (Cỡ chữ siêu bé chuẩn điện ảnh không chiếm không gian)
+  const [subBottomOffset, setSubBottomOffset] = useState(2); // % from bottom sát mép đáy (2%)
+  const [subFontSize, setSubFontSize] = useState(11); // Cỡ chữ phụ đề siêu bé (11px)
 
   // Interactive Drag & Resize State
   const [interactionMode, setInteractionMode] = useState(null); // 'move' | 'sub-move' | 'resize-nw' | 'resize-ne' | 'resize-se' | 'resize-sw' | 'resize-n' | 'resize-s' | 'resize-w' | 'resize-e' | 'draw'
@@ -306,120 +308,30 @@ export default function MainStudioView({ onNavigateTab }) {
     }
   };
 
-  // Mouse Drag & Resize Engine
+  // Mouse Drag Engine cho Cắt Sub Đáy và Di chuyển Vị trí Subtitle
   const handleMouseDown = (e, mode) => {
     e.stopPropagation();
     e.preventDefault();
     if (!containerRef.current) return;
 
-    const rect = containerRef.current.getBoundingClientRect();
-    const mouseX = ((e.clientX - rect.left) / rect.width) * 100;
-    const mouseY = ((e.clientY - rect.top) / rect.height) * 100;
-
     setInteractionMode(mode);
-    setDragStart({
-      mouseX,
-      mouseY,
-      boxX: maskLeft,
-      boxY: maskTop,
-      boxW: maskWidth,
-      boxH: maskHeight
-    });
   };
 
   const handleCanvasMouseDown = (e) => {
-    if (!hasMask || !containerRef.current) return;
-    if (e.target !== containerRef.current && e.target.tagName !== 'VIDEO') return;
-
-    const rect = containerRef.current.getBoundingClientRect();
-    const mouseX = ((e.clientX - rect.left) / rect.width) * 100;
-    const mouseY = ((e.clientY - rect.top) / rect.height) * 100;
-
-    setInteractionMode('draw');
-    setMaskLeft(mouseX);
-    setMaskTop(mouseY);
-    setMaskWidth(2);
-    setMaskHeight(2);
-    setDragStart({
-      mouseX,
-      mouseY,
-      boxX: mouseX,
-      boxY: mouseY,
-      boxW: 0,
-      boxH: 0
-    });
+    // Không thao tác vẽ tự do
   };
 
   const handleMouseMove = (e) => {
     if (!interactionMode || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const currentMouseX = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
     const currentMouseY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
 
-    const deltaX = currentMouseX - dragStart.mouseX;
-    const deltaY = currentMouseY - dragStart.mouseY;
-
-    if (interactionMode === 'move') {
-      const newLeft = Math.max(0, Math.min(100 - dragStart.boxW, dragStart.boxX + deltaX));
-      const newTop = Math.max(0, Math.min(100 - dragStart.boxH, dragStart.boxY + deltaY));
-      setMaskLeft(Math.round(newLeft));
-      setMaskTop(Math.round(newTop));
+    if (interactionMode === 'crop-bottom') {
+      const newHeight = Math.max(1, Math.min(45, 100 - currentMouseY));
+      setMaskHeight(Math.round(newHeight));
     } else if (interactionMode === 'sub-move') {
-      const newBottom = Math.max(1, Math.min(90, 100 - currentMouseY));
+      const newBottom = Math.max(1, Math.min(85, 100 - currentMouseY));
       setSubBottomOffset(Math.round(newBottom));
-    } else if (interactionMode === 'draw') {
-      const newLeft = Math.min(dragStart.mouseX, currentMouseX);
-      const newTop = Math.min(dragStart.mouseY, currentMouseY);
-      const newWidth = Math.abs(currentMouseX - dragStart.mouseX);
-      const newHeight = Math.abs(currentMouseY - dragStart.mouseY);
-      setMaskLeft(Math.round(newLeft));
-      setMaskTop(Math.round(newTop));
-      setMaskWidth(Math.max(5, Math.round(newWidth)));
-      setMaskHeight(Math.max(3, Math.round(newHeight)));
-    } else if (interactionMode === 'resize-se') {
-      const newWidth = Math.max(5, Math.min(100 - dragStart.boxX, dragStart.boxW + deltaX));
-      const newHeight = Math.max(3, Math.min(100 - dragStart.boxY, dragStart.boxH + deltaY));
-      setMaskWidth(Math.round(newWidth));
-      setMaskHeight(Math.round(newHeight));
-    } else if (interactionMode === 'resize-sw') {
-      const newLeft = Math.max(0, Math.min(dragStart.boxX + dragStart.boxW - 5, dragStart.boxX + deltaX));
-      const newWidth = dragStart.boxW + (dragStart.boxX - newLeft);
-      const newHeight = Math.max(3, Math.min(100 - dragStart.boxY, dragStart.boxH + deltaY));
-      setMaskLeft(Math.round(newLeft));
-      setMaskWidth(Math.round(newWidth));
-      setMaskHeight(Math.round(newHeight));
-    } else if (interactionMode === 'resize-ne') {
-      const newTop = Math.max(0, Math.min(dragStart.boxY + dragStart.boxH - 3, dragStart.boxY + deltaY));
-      const newHeight = dragStart.boxH + (dragStart.boxY - newTop);
-      const newWidth = Math.max(5, Math.min(100 - dragStart.boxX, dragStart.boxX + deltaX));
-      setMaskTop(Math.round(newTop));
-      setMaskHeight(Math.round(newHeight));
-      setMaskWidth(Math.round(newWidth));
-    } else if (interactionMode === 'resize-nw') {
-      const newLeft = Math.max(0, Math.min(dragStart.boxX + dragStart.boxW - 5, dragStart.boxX + deltaX));
-      const newTop = Math.max(0, Math.min(dragStart.boxY + dragStart.boxH - 3, dragStart.boxY + deltaY));
-      const newWidth = dragStart.boxW + (dragStart.boxX - newLeft);
-      const newHeight = dragStart.boxH + (dragStart.boxY - newTop);
-      setMaskLeft(Math.round(newLeft));
-      setMaskTop(Math.round(newTop));
-      setMaskWidth(Math.round(newWidth));
-      setMaskHeight(Math.round(newHeight));
-    } else if (interactionMode === 'resize-n') {
-      const newTop = Math.max(0, Math.min(dragStart.boxY + dragStart.boxH - 3, dragStart.boxY + deltaY));
-      const newHeight = dragStart.boxH + (dragStart.boxY - newTop);
-      setMaskTop(Math.round(newTop));
-      setMaskHeight(Math.round(newHeight));
-    } else if (interactionMode === 'resize-s') {
-      const newHeight = Math.max(3, Math.min(100 - dragStart.boxY, dragStart.boxH + deltaY));
-      setMaskHeight(Math.round(newHeight));
-    } else if (interactionMode === 'resize-w') {
-      const newLeft = Math.max(0, Math.min(dragStart.boxX + dragStart.boxW - 5, dragStart.boxX + deltaX));
-      const newWidth = dragStart.boxW + (dragStart.boxX - newLeft);
-      setMaskLeft(Math.round(newLeft));
-      setMaskWidth(Math.round(newWidth));
-    } else if (interactionMode === 'resize-e') {
-      const newWidth = Math.max(5, Math.min(100 - dragStart.boxX, dragStart.boxW + deltaX));
-      setMaskWidth(Math.round(newWidth));
     }
   };
 
@@ -483,13 +395,15 @@ export default function MainStudioView({ onNavigateTab }) {
         genre: genre,
         provider: 'gemini',
         voice_code: voiceCode,
-        margin_v: Math.max(15, Math.round(1080 * (subBottomOffset / 100))),
+        margin_v: Math.max(8, Math.min(20, Math.round(subBottomOffset * 3.5))),
         backdrop_opacity_hex: backdropOpacity,
         has_mask: hasMask,
         mask_top: maskTop,
         mask_left: maskLeft,
         mask_width: maskWidth,
         mask_height: maskHeight,
+        crop_ratio: cropRatio,
+        font_size: subFontSize,
         karaoke_highlight_color: '&H0000D7FF',
         channel_name: '@Mắt Thần Review',
         channel_opacity: 0.35,
@@ -588,6 +502,23 @@ export default function MainStudioView({ onNavigateTab }) {
     const s = videoSearch.toLowerCase();
     return projects.filter(p => (p.title || '').toLowerCase().includes(s) || (p.video_id || '').toLowerCase().includes(s));
   }, [projects, videoSearch]);
+
+  const parseVideoRatio = () => {
+    if (videoRatio && videoRatio.includes('/')) {
+      const parts = videoRatio.split('/').map(v => parseFloat(v.trim()));
+      if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) return parts[0] / parts[1];
+    }
+    return 16 / 9;
+  };
+
+  const videoAspect = parseVideoRatio();
+  const remainH = Math.max(10, 100 - maskHeight);
+  // Tỷ lệ khung hình: YouTube Ngang chuẩn là 16/9, Shorts/TikTok là 9/16
+  const ratioVal = cropRatio === '9:16' ? (9 / 16) : (16 / 9);
+  // targetW tính theo % container
+  const targetW = Math.min(100, Math.max(15, (remainH / videoAspect) * ratioVal));
+  const targetLeft = Math.max(0, (100 - targetW) / 2);
+  const targetRight = targetLeft + targetW;
 
   return (
     <div style={{
@@ -757,12 +688,13 @@ export default function MainStudioView({ onNavigateTab }) {
               )}
             </div>
 
-            {/* Row 2: Subtitle Elevation & Mask Controls */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', background: '#f8fafc', padding: '4px 8px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+            {/* Row 2: Subtitle Elevation & Cắt Sub 9:16 Controls */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', background: '#f8fafc', padding: '6px 10px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
               {/* Subtitle Elevation */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cao Độ Sub:</span>
                 <button
+                  type="button"
                   onClick={() => setSubBottomOffset(prev => Math.min(85, prev + 2))}
                   title="Nâng phụ đề lên (Phím ↑)"
                   style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
@@ -770,6 +702,7 @@ export default function MainStudioView({ onNavigateTab }) {
                   <ArrowUp size={11} color="#2563eb" />
                 </button>
                 <button
+                  type="button"
                   onClick={() => setSubBottomOffset(prev => Math.max(1, prev - 2))}
                   title="Hạ phụ đề xuống (Phím ↓)"
                   style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
@@ -781,79 +714,161 @@ export default function MainStudioView({ onNavigateTab }) {
                 </span>
               </div>
 
-              {/* Mask Controls */}
+              {/* Cỡ Chữ Phụ Đề Siêu Bé */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cỡ Chữ:</span>
+                <button
+                  type="button"
+                  onClick={() => setSubFontSize(prev => Math.max(9, prev - 1))}
+                  title="Giảm cỡ chữ (siêu bé, không tốn không gian xem phim)"
+                  style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                >
+                  <Minus size={11} color="#2563eb" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubFontSize(prev => Math.min(24, prev + 1))}
+                  title="Tăng cỡ chữ"
+                  style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                >
+                  <Plus size={11} color="#2563eb" />
+                </button>
+                <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0f172a', minWidth: '30px', textAlign: 'center' }}>
+                  {subFontSize}px
+                </span>
+                <span style={{ fontSize: '10px', color: '#16a34a', fontWeight: 700 }}>
+                  {subFontSize <= 11 ? '(Siêu bé ✨)' : (subFontSize <= 14 ? '(Gọn)' : '(Vừa)')}
+                </span>
+              </div>
+
+              {/* Cắt Sub & Chuẩn Tỷ Lệ YouTube Controls */}
               {hasMask ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px', background: '#f0f9ff', padding: '2px 6px', borderRadius: '4px', border: '1px solid #7dd3fc' }}>
-                    <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#0369a1' }}>Rộng:</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  {/* Selector Tỷ lệ Chuẩn */}
+                  <div style={{ display: 'inline-flex', borderRadius: '4px', overflow: 'hidden', border: '1.5px solid #2563eb' }}>
                     <button
                       type="button"
-                      onClick={() => { setMaskWidth(prev => Math.max(10, prev - 6)); setMaskLeft(prev => Math.min(90, prev + 3)); }}
-                      title="Thu hẹp"
-                      style={{ background: '#ffffff', border: '1px solid #7dd3fc', borderRadius: '3px', padding: '1px 4px', cursor: 'pointer', fontSize: '10.5px', fontWeight: 700, color: '#0369a1' }}
+                      onClick={() => setCropRatio('16:9')}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        border: 'none',
+                        cursor: 'pointer',
+                        background: cropRatio === '16:9' ? '#2563eb' : '#ffffff',
+                        color: cropRatio === '16:9' ? '#ffffff' : '#2563eb'
+                      }}
+                      title="Tỷ lệ 16:9 YouTube Chuẩn: Cắt đáy bao nhiêu thì cắt đều 2 bên bấy nhiêu để giữ trọn hình ảnh và đúng chuẩn YouTube"
                     >
-                      ◀
+                      🎬 16:9 YouTube Chuẩn
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setMaskWidth(prev => Math.min(100, prev + 6)); setMaskLeft(prev => Math.max(0, prev - 3)); }}
-                      title="Nới rộng"
-                      style={{ background: '#ffffff', border: '1px solid #7dd3fc', borderRadius: '3px', padding: '1px 4px', cursor: 'pointer', fontSize: '10.5px', fontWeight: 700, color: '#0369a1' }}
+                      onClick={() => setCropRatio('9:16')}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        border: 'none',
+                        borderLeft: '1px solid #2563eb',
+                        cursor: 'pointer',
+                        background: cropRatio === '9:16' ? '#2563eb' : '#ffffff',
+                        color: cropRatio === '9:16' ? '#ffffff' : '#2563eb'
+                      }}
+                      title="Tỷ lệ 9:16 Dọc dành cho YouTube Shorts / TikTok"
                     >
-                      ▶
+                      📱 9:16 Shorts
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => { setMaskLeft(0); setMaskWidth(100); }}
-                      title="100% Full"
-                      style={{ background: maskWidth === 100 ? '#0284c7' : '#ffffff', color: maskWidth === 100 ? '#fff' : '#0369a1', border: '1px solid #7dd3fc', borderRadius: '3px', padding: '1px 4px', cursor: 'pointer', fontSize: '10px', fontWeight: 700 }}
-                    >
-                      100%
-                    </button>
-                    <span style={{ fontSize: '10.5px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0369a1', minWidth: '26px', textAlign: 'center' }}>
-                      {maskWidth}%
-                    </span>
                   </div>
 
-                  <select
-                    value={backdropOpacity}
-                    onChange={(e) => setBackdropOpacity(e.target.value)}
-                    title="Độ mờ vùng che phụ đề"
-                    style={{ fontSize: '10.5px', padding: '2px 4px', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px' }}
-                  >
-                    <option value="CC">Mờ 80%</option>
-                    <option value="FF">Đặc 100%</option>
-                    <option value="99">Mờ 60%</option>
-                  </select>
+                  {/* Độ cao cắt sub đáy */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '3px 8px', borderRadius: '5px', border: '1px solid #93c5fd' }}>
+                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                      ✂ Cắt Đáy:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setMaskHeight(prev => Math.max(1, prev - 1))}
+                      title="Giảm độ cao cắt sub"
+                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
+                    >
+                      -
+                    </button>
+                    <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#2563eb', minWidth: '28px', textAlign: 'center' }}>
+                      {maskHeight}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setMaskHeight(prev => Math.min(35, prev + 1))}
+                      title="Tăng độ cao cắt sub"
+                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
+                    >
+                      +
+                    </button>
+
+                    <input
+                      type="range"
+                      min={1}
+                      max={30}
+                      value={maskHeight}
+                      onChange={(e) => setMaskHeight(parseInt(e.target.value, 10))}
+                      title="Kéo chọn % chiều cao cắt sub đáy"
+                      style={{ width: '65px', height: '4px', accentColor: '#2563eb', cursor: 'pointer' }}
+                    />
+                  </div>
+
+                  {/* Preset Buttons */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                    {[
+                      { label: '5%', val: 5 },
+                      { label: '8% (Nhẹ)', val: 8 },
+                      { label: '12% (Chuẩn)', val: 12 },
+                      { label: '16%', val: 16 }
+                    ].map(p => (
+                      <button
+                        key={p.val}
+                        type="button"
+                        onClick={() => setMaskHeight(p.val)}
+                        style={{
+                          fontSize: '10px',
+                          fontWeight: 700,
+                          padding: '2px 5px',
+                          borderRadius: '3px',
+                          border: '1px solid',
+                          borderColor: maskHeight === p.val ? '#0284c7' : '#cbd5e1',
+                          background: maskHeight === p.val ? '#0284c7' : '#ffffff',
+                          color: maskHeight === p.val ? '#ffffff' : '#475569',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+
                   <button
+                    type="button"
                     className="btn btn-secondary btn-sm"
-                    onClick={() => { setMaskTop(80); setMaskLeft(15); setMaskWidth(70); setMaskHeight(12); }}
-                    title="Đặt lại vị trí hộp che mặc định"
-                    style={{ fontSize: '10.5px', padding: '2px 6px' }}
-                  >
-                    <RefreshCw size={10} /> Đặt Lại
-                  </button>
-                  <button
-                    className="btn btn-danger btn-sm"
                     onClick={() => setHasMask(false)}
-                    title="Tắt không sử dụng vùng che"
-                    style={{ fontSize: '10.5px', padding: '2px 6px', background: '#ef4444', color: '#fff' }}
+                    title="Tắt cắt sub (giữ nguyên kích thước video gốc)"
+                    style={{ fontSize: '10.5px', padding: '2px 6px', color: '#64748b' }}
                   >
-                    <Trash2 size={10} /> Xóa Che
+                    Tắt Cắt
                   </button>
                 </div>
               ) : (
                 <button
+                  type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={() => { setHasMask(true); setMaskTop(80); setMaskLeft(15); setMaskWidth(70); setMaskHeight(12); }}
-                  style={{ fontSize: '11px', padding: '3px 8px', background: '#0284c7', color: '#ffffff', fontWeight: 700 }}
+                  onClick={() => { setHasMask(true); setMaskHeight(8); setCropRatio('16:9'); }}
+                  style={{ fontSize: '11px', padding: '3px 10px', background: '#0284c7', color: '#ffffff', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
                 >
-                  <Plus size={11} /> + Vùng Che Gốc
+                  <Plus size={11} /> + Bật Cắt Sub 16:9 YouTube
                 </button>
               )}
             </div>
 
-            {/* VIDEO CANVAS (CHUẨN TỈ LỆ 16:9 YOUTUBE - FULL WIDTH KHÔNG VIỀN ĐEN, KHÔNG LỆCH TỌA ĐỘ) */}
+            {/* VIDEO CANVAS (CHUẨN TỈ LỆ VIDEO - FULL WIDTH KHÔNG VIỀN ĐEN, KHÔNG LỆCH TỌA ĐỘ) */}
             <div
               ref={containerRef}
               onMouseDown={handleCanvasMouseDown}
@@ -871,7 +886,7 @@ export default function MainStudioView({ onNavigateTab }) {
                 alignItems: 'center',
                 justifyContent: 'center',
                 userSelect: 'none',
-                cursor: interactionMode === 'draw' ? 'crosshair' : 'default',
+                cursor: interactionMode === 'crop-bottom' ? 'ns-resize' : 'default',
                 boxShadow: '0 2px 10px rgba(0, 0, 0, 0.25)'
               }}
             >
@@ -895,95 +910,156 @@ export default function MainStudioView({ onNavigateTab }) {
                 </div>
               )}
 
-              {/* MASK BOX (MÀU XANH SIÊU MỜ, KHÔNG CÓ CHỮ, KHÔNG CÓ DẤU CLUTTER NHƯNG KÉO THẢ FULL 8 HƯỚNG) */}
+              {/* CẮT SUB & TỰ ĐỘNG CÂN TỶ LỆ CHUẨN YOUTUBE PREVIEW OVERLAYS */}
               {hasMask && (
-                <div
-                  onMouseDown={(e) => handleMouseDown(e, 'move')}
-                  style={{
-                    position: 'absolute',
-                    top: `${maskTop}%`,
-                    left: `${maskLeft}%`,
-                    width: `${maskWidth}%`,
-                    height: `${maskHeight}%`,
-                    background: 'rgba(56, 189, 248, 0.16)',
-                    border: '1.5px dashed rgba(56, 189, 248, 0.85)',
-                    borderRadius: '4px',
-                    cursor: 'move',
-                    zIndex: 20,
-                    boxShadow: '0 0 10px rgba(56, 189, 248, 0.2)'
-                  }}
-                  title="Kéo hộp để di chuyển, hoặc rê chuột vào các mép/góc để kéo giãn chiều rộng/cao"
-                >
-                  {/* 1. VÙNG KÉO NGANG MÉP TRÁI (EW-RESIZE INVISIBLE HITBOX) */}
+                <>
+                  {/* 1. LỚP PHỦ CẮT DỌC MÉP TRÁI (CHỈ CHE NHẸ NẾU CÓ CẮT) */}
+                  {targetLeft > 0.4 && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        bottom: 0,
+                        left: 0,
+                        width: `${targetLeft}%`,
+                        background: 'rgba(5, 8, 15, 0.70)',
+                        borderRight: '1.5px dashed rgba(56, 189, 248, 0.6)',
+                        pointerEvents: 'none',
+                        zIndex: 18,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: 'rgba(255, 255, 255, 0.6)', writingMode: 'vertical-rl' }}>
+                        ✂ Cắt {targetLeft.toFixed(1)}%
+                      </span>
+                    </div>
+                  )}
+
+                  {/* 2. LỚP PHỦ CẮT DỌC MÉP PHẢI (CHỈ CHE NHẸ NẾU CÓ CẮT) */}
+                  {targetLeft > 0.4 && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        bottom: 0,
+                        left: `${targetRight}%`,
+                        right: 0,
+                        background: 'rgba(5, 8, 15, 0.70)',
+                        borderLeft: '1.5px dashed rgba(56, 189, 248, 0.6)',
+                        pointerEvents: 'none',
+                        zIndex: 18,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: 'rgba(255, 255, 255, 0.6)', writingMode: 'vertical-rl' }}>
+                        ✂ Cắt {targetLeft.toFixed(1)}%
+                      </span>
+                    </div>
+                  )}
+
+                  {/* 3. VÙNG CẮT SUB Ở MÉP ĐÁY (ĐỎ CẢNH BÁO) */}
                   <div
-                    onMouseDown={(e) => handleMouseDown(e, 'resize-w')}
-                    title="Kéo mép trái để chỉnh độ rộng ngang"
+                    style={{
+                      position: 'absolute',
+                      top: `${remainH}%`,
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      background: 'rgba(239, 68, 68, 0.32)',
+                      borderTop: '2px dashed #ef4444',
+                      pointerEvents: 'none',
+                      zIndex: 20,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                  >
+                    <span style={{
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      color: '#ffffff',
+                      background: 'rgba(185, 28, 28, 0.88)',
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+                      letterSpacing: '0.3px'
+                    }}>
+                      ✂ VÙNG CẮT BỎ SUB TRUNG GỐC (-{maskHeight}%)
+                    </span>
+                  </div>
+
+                  {/* 4. THANH KÉO ĐỘ CAO CẮT SUB ĐÁY (INTERACTIVE HITBOX) */}
+                  <div
+                    onMouseDown={(e) => handleMouseDown(e, 'crop-bottom')}
+                    style={{
+                      position: 'absolute',
+                      top: `calc(${remainH}% - 12px)`,
+                      left: 0,
+                      right: 0,
+                      height: '24px',
+                      cursor: 'ns-resize',
+                      zIndex: 35,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}
+                    title="Kéo thanh này lên/xuống để chọn độ cao cắt sub đáy"
+                  >
+                    <div style={{
+                      background: '#f59e0b',
+                      color: '#000',
+                      fontSize: '10px',
+                      fontWeight: 900,
+                      padding: '2px 12px',
+                      borderRadius: '12px',
+                      boxShadow: '0 0 12px rgba(245, 158, 11, 0.8)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      userSelect: 'none'
+                    }}>
+                      <span>↕ Kéo chỉnh độ cao cắt sub (-{maskHeight}%)</span>
+                    </div>
+                  </div>
+
+                  {/* 5. KHUNG THÀNH PHẨM (CHUẨN TỶ LỆ YOUTUBE - SÁNG RÕ, SIÊU NÉT) */}
+                  <div
                     style={{
                       position: 'absolute',
                       top: 0,
-                      bottom: 0,
-                      left: '-8px',
-                      width: '16px',
-                      cursor: 'ew-resize',
-                      zIndex: 35,
-                      background: 'transparent'
+                      height: `${remainH}%`,
+                      left: `${targetLeft}%`,
+                      width: `${targetW}%`,
+                      border: '2px solid rgba(56, 189, 248, 0.95)',
+                      boxShadow: '0 0 20px rgba(56, 189, 248, 0.3)',
+                      pointerEvents: 'none',
+                      zIndex: 19
                     }}
-                  />
-
-                  {/* 2. VÙNG KÉO NGANG MÉP PHẢI (EW-RESIZE INVISIBLE HITBOX) */}
-                  <div
-                    onMouseDown={(e) => handleMouseDown(e, 'resize-e')}
-                    title="Kéo mép phải để chỉnh độ rộng ngang"
-                    style={{
+                  >
+                    <div style={{
                       position: 'absolute',
-                      top: 0,
-                      bottom: 0,
-                      right: '-8px',
-                      width: '16px',
-                      cursor: 'ew-resize',
-                      zIndex: 35,
-                      background: 'transparent'
-                    }}
-                  />
-
-                  {/* 3. VÙNG KÉO DỌC MÉP TRÊN (NS-RESIZE INVISIBLE HITBOX) */}
-                  <div
-                    onMouseDown={(e) => handleMouseDown(e, 'resize-n')}
-                    title="Kéo mép trên để chỉnh chiều cao"
-                    style={{
-                      position: 'absolute',
-                      top: '-8px',
-                      left: 0,
-                      right: 0,
-                      height: '16px',
-                      cursor: 'ns-resize',
-                      zIndex: 35,
-                      background: 'transparent'
-                    }}
-                  />
-
-                  {/* 4. VÙNG KÉO DỌC MÉP DƯỚI (NS-RESIZE INVISIBLE HITBOX) */}
-                  <div
-                    onMouseDown={(e) => handleMouseDown(e, 'resize-s')}
-                    title="Kéo mép dưới để chỉnh chiều cao"
-                    style={{
-                      position: 'absolute',
-                      bottom: '-8px',
-                      left: 0,
-                      right: 0,
-                      height: '16px',
-                      cursor: 'ns-resize',
-                      zIndex: 35,
-                      background: 'transparent'
-                    }}
-                  />
-
-                  {/* 4 GÓC RESIZE INVISIBLE HITBOXES */}
-                  <div onMouseDown={(e) => handleMouseDown(e, 'resize-nw')} title="Kéo góc trên trái" style={{ position: 'absolute', top: '-8px', left: '-8px', width: '20px', height: '20px', cursor: 'nwse-resize', zIndex: 36, background: 'transparent' }} />
-                  <div onMouseDown={(e) => handleMouseDown(e, 'resize-ne')} title="Kéo góc trên phải" style={{ position: 'absolute', top: '-8px', right: '-8px', width: '20px', height: '20px', cursor: 'nesw-resize', zIndex: 36, background: 'transparent' }} />
-                  <div onMouseDown={(e) => handleMouseDown(e, 'resize-sw')} title="Kéo góc dưới trái" style={{ position: 'absolute', bottom: '-8px', left: '-8px', width: '20px', height: '20px', cursor: 'nesw-resize', zIndex: 36, background: 'transparent' }} />
-                  <div onMouseDown={(e) => handleMouseDown(e, 'resize-se')} title="Kéo góc dưới phải" style={{ position: 'absolute', bottom: '-8px', right: '-8px', width: '20px', height: '20px', cursor: 'nwse-resize', zIndex: 36, background: 'transparent' }} />
-                </div>
+                      top: '6px',
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      background: 'rgba(2, 132, 199, 0.88)',
+                      color: '#ffffff',
+                      fontSize: '10px',
+                      fontWeight: 800,
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      whiteSpace: 'nowrap',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.5)'
+                    }}>
+                      {cropRatio === '16:9'
+                        ? '🎬 Chuẩn 16:9 YouTube (Giữ Trọn Hình - 0% Scale)'
+                        : '📱 Chuẩn 9:16 (Shorts/TikTok) - 0% Scale'}
+                    </div>
+                  </div>
+                </>
               )}
 
               {/* DYNAMIC PURE SUBTITLE (NO BACKGROUND, PURE SHADOWED TEXT) */}
@@ -991,14 +1067,14 @@ export default function MainStudioView({ onNavigateTab }) {
                 onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
                 style={{
                   position: 'absolute',
-                  bottom: `${subBottomOffset}%`,
+                  bottom: hasMask ? `calc(${maskHeight}% + ${subBottomOffset}%)` : `${subBottomOffset}%`,
                   left: '50%',
                   transform: 'translateX(-50%)',
                   textAlign: 'center',
                   cursor: 'ns-resize',
                   zIndex: 25,
                   userSelect: 'none',
-                  maxWidth: '92%'
+                  maxWidth: hasMask ? `${targetW * 0.94}%` : '92%'
                 }}
                 title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển vị trí phụ đề"
               >
@@ -1015,15 +1091,15 @@ export default function MainStudioView({ onNavigateTab }) {
 
                 <span style={{
                   display: 'inline-block',
-                  fontSize: '16.5px',
-                  fontWeight: 900,
+                  fontSize: `${Math.max(10, Math.round(subFontSize * 0.95))}px`,
+                  fontWeight: 700,
                   color: '#00D7FF',
-                  textShadow: '2px 2px 3px #000, -2px -2px 3px #000, 2px -2px 3px #000, -2px 2px 3px #000, 0 2px 5px rgba(0,0,0,0.9)',
-                  letterSpacing: '0.3px',
+                  textShadow: '1px 1px 2px #000, -1px -1px 2px #000, 1px -1px 2px #000, -1px 1px 2px #000',
+                  letterSpacing: '0.2px',
                   whiteSpace: 'nowrap',
-                  padding: '1px 6px'
+                  padding: '1px 4px'
                 }}>
-                  [Phụ đề tiếng Việt karaoke tự co giãn]
+                  [Phụ đề tiếng Việt karaoke siêu bé - {subFontSize}px]
                 </span>
               </div>
             </div>

@@ -63,7 +63,8 @@ class VideoComposerService:
 
     @staticmethod
     def get_video_resolution(video_path: str) -> Tuple[int, int]:
-        """Đọc chính xác độ phân giải (Width x Height) của video MP4."""
+        """Đọc chính xác độ phân giải (Width x Height) của video MP4 bằng FFprobe hoặc OpenCV."""
+        # 1. Thử qua FFprobe
         try:
             ffprobe_cmd = get_ffprobe_cmd()
             cmd = [
@@ -73,14 +74,76 @@ class VideoComposerService:
                 "-of", "csv=s=x:p=0",
                 str(video_path)
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=5)
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=6)
             if res.returncode == 0 and res.stdout.strip():
                 parts = res.stdout.strip().split("x")
                 if len(parts) == 2:
-                    return int(parts[0]), int(parts[1])
+                    w, h = int(parts[0]), int(parts[1])
+                    if w > 0 and h > 0:
+                        return w, h
         except Exception:
             pass
+
+        # 2. Dự phòng bằng OpenCV VideoCapture (cực kỳ tin cậy & nhanh trên Windows)
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(video_path))
+            if cap.isOpened():
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
+                if w > 0 and h > 0:
+                    return w, h
+        except Exception:
+            pass
+
         return 1280, 720
+
+    @classmethod
+    def calculate_crop(cls, vw: int, vh: int, bottom_cut_percent: float, target_ratio: str = "16:9") -> Dict[str, int]:
+        """
+        Tính toán thông số crop:
+        - Cắt bỏ phần đáy theo bottom_cut_percent (% chiều cao) để xóa bỏ hoàn toàn hardsub Trung Quốc cũ.
+        - Cắt đều 2 bên (trái & phải) để video đạt chuẩn tỷ lệ YouTube hỗ trợ (Mặc định 16:9 YouTube ngang, hoặc 9:16 Shorts).
+        - CHỈ CẮT (CROP) - TUYỆT ĐỐI KHÔNG SCALE để tối ưu tốc độ render nhanh nhất có thể.
+        """
+        pct = max(0.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 12.0)))
+        cut_h = int(round(vh * (pct / 100.0)))
+        h_target = vh - cut_h
+        h_target = max(120, (h_target // 2) * 2)
+
+        ratio_val = 9.0 / 16.0 if target_ratio == "9:16" else 16.0 / 9.0
+        w_target = int(round(h_target * ratio_val))
+        w_target = (w_target // 2) * 2
+
+        if w_target > vw:
+            w_target = (vw // 2) * 2
+            h_target = int(round(w_target / ratio_val))
+            h_target = (h_target // 2) * 2
+            x = 0
+            y = 0
+        else:
+            x = int(round((vw - w_target) / 2.0))
+            x = (x // 2) * 2
+            y = 0
+
+        # Giới hạn an toàn tuyệt đối tránh tràn khung hình
+        w_target = max(64, min(vw, (w_target // 2) * 2))
+        h_target = max(64, min(vh, (h_target // 2) * 2))
+        x = max(0, min(vw - w_target, (x // 2) * 2))
+        y = max(0, min(vh - h_target, (y // 2) * 2))
+
+        return {
+            "w": w_target,
+            "h": h_target,
+            "x": x,
+            "y": y,
+            "cut_h": cut_h
+        }
+
+    @classmethod
+    def calculate_crop_9_16(cls, vw: int, vh: int, bottom_cut_percent: float, target_ratio: str = "16:9") -> Dict[str, int]:
+        return cls.calculate_crop(vw, vh, bottom_cut_percent, target_ratio=target_ratio)
 
     @classmethod
     def compose_full_video(
@@ -101,7 +164,9 @@ class VideoComposerService:
         mask_width: float = 100.0,
         mask_height: float = 16.5,              # Dải đen cao 16.5% ôm trọn mọi cỡ chữ cũ
         backdrop_opacity_hex: str = "FF",       # 100% Solid Black chống lộ chữ
-        margin_v: int = 30                      # Khoảng cách đáy màn hình
+        margin_v: int = 30,                     # Khoảng cách đáy màn hình
+        crop_ratio: str = "16:9",               # 16:9 (YouTube Ngang) hoặc 9:16 (Shorts/TikTok)
+        font_size: Optional[int] = None         # Cỡ chữ phụ đề nhỏ gọn (px)
     ) -> Dict[str, Any]:
         """
         Sản xuất Video Review Hoàn Thiện:
@@ -136,8 +201,37 @@ class VideoComposerService:
         task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
 
         vw, vh = cls.get_video_resolution(project.video_path)
-        font_sz = 32 if vh <= 720 else 46
-        actual_margin_v = margin_v if margin_v != 65 else (30 if vh <= 720 else 45)
+        if has_mask:
+            crop_info = cls.calculate_crop(vw, vh, mask_height, target_ratio=crop_ratio)
+            render_w = crop_info["w"]
+            render_h = crop_info["h"]
+            crop_x = crop_info["x"]
+            crop_y = crop_info["y"]
+        else:
+            render_w, render_h = vw, vh
+            crop_x, crop_y = 0, 0
+
+        # Cỡ chữ phụ đề SIÊU BÉ chuẩn điện ảnh, không chiếm diện tích xem:
+        # 480p / 360p: 10 - 11px
+        # 720p: 13 - 14px
+        # 1080p: 16 - 17px
+        if font_size and font_size > 0:
+            font_sz = font_size
+        else:
+            if render_h <= 540:
+                font_sz = 11
+            elif render_h <= 768:
+                font_sz = 13
+            elif render_h <= 1100:
+                font_sz = 16
+            else:
+                font_sz = 20
+
+        # Cao độ sát mép đáy màn hình (~2% chiều cao khung hình render, không đẩy lên người nhân vật)
+        if margin_v and margin_v < 25:
+            actual_margin_v = margin_v
+        else:
+            actual_margin_v = max(8, int(round(render_h * 0.022)))
 
         segments = [
             DialogueSegment(
@@ -158,14 +252,14 @@ class VideoComposerService:
             segments=segments,
             output_ass_path=str(ass_file),
             video_title=project.title,
-            width=vw,
-            height=vh,
+            width=render_w,
+            height=render_h,
             font_size=font_sz,
             margin_v=actual_margin_v,
             highlight_color=karaoke_highlight_color,
             backdrop_opacity_hex=backdrop_opacity_hex
         )
-        task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} ({vw}x{vh})", "emerald")
+        task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} ({render_w}x{render_h})", "emerald")
 
         # Kiểm tra nếu đã có file mixed sẵn hoặc file voiceover
         mixed_audio_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_mixed_final.mp3"
@@ -185,7 +279,7 @@ class VideoComposerService:
                     original_video_or_audio=project.video_path,
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
-                    dialogue_segments=segments,
+                    dialogue_segments=dialogue_segments if 'dialogue_segments' in locals() else segments,
                     bgm_volume_when_speaking=0.03,
                     bgm_volume_normal=0.70,
                     voiceover_volume=1.05
@@ -228,16 +322,13 @@ class VideoComposerService:
         filter_chains = []
         last_v = "0:v"
 
-        # A. Tự động Crop bỏ mép đáy chứa sub Trung cũ & Zoom về kích thước gốc (Cách 1: Siêu nét, 0% nhòe, siêu nhẹ)
+        # A. Cắt mép đáy chứa sub Trung cũ & Cắt đều 2 bên vừa chuẩn tỷ lệ 16:9 YouTube (CHỈ CROP, KHÔNG SCALE)
         if has_mask:
-            mh = max(0.05, min(0.30, float(mask_height) / 100.0 if mask_height is not None else 0.160))
-            keep_h = 1.0 - mh
-            # bilinear thay lanczos: nhanh hơn 40%, đây là file final nên dùng bilinear vẫn sắc nét tốt
-            filter_chains.append(f"[0:v]crop=iw:trunc(ih*{keep_h:.3f}/2)*2:0:0,scale=iw:ih:flags=bilinear[v_clean]")
+            filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
             last_v = "v_clean"
-            task_manager.add_log(task_id, f"   • Xóa Sub Cũ (Crop & Zoom): Cắt {mh*100:.1f}% mép đáy + Phóng to 100%", "cyan")
+            task_manager.add_log(task_id, f"   • Cắt Sub Cũ & Chuẩn Tỷ Lệ YouTube 16:9: Cắt đáy {mask_height:.1f}% + Cắt đều 2 bên ({render_w}x{render_h}) - 0% Scale siêu tốc", "cyan")
         else:
-            task_manager.add_log(task_id, "   • Vùng Xóa Sub Cũ: Đã tắt", "cyan")
+            task_manager.add_log(task_id, "   • Cắt Sub Cũ & Chuẩn 16:9: Đã tắt", "cyan")
 
         # B. Thêm Logo nhỏ gọn sát góc
         if final_logo and os.path.exists(final_logo):
@@ -319,7 +410,7 @@ class VideoComposerService:
         if process.returncode != 0 or not output_video_path.exists():
             # Fallback sang CPU Ultrafast nếu filter phức tạp gặp sự cố
             task_manager.add_log(task_id, f"   ⚠️ Chuyển sang chế độ CPU Ultrafast...", "amber")
-            clean_part = f"[0:v]crop=iw:trunc(ih*{keep_h:.3f}/2)*2:0:0,scale=iw:ih:flags=lanczos[vc];[vc]subtitles='{ass_escaped}'[v_out]" if has_mask else f"[0:v]subtitles='{ass_escaped}'[v_out]"
+            clean_part = f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[vc];[vc]subtitles='{ass_escaped}'[v_out]" if has_mask else f"[0:v]subtitles='{ass_escaped}'[v_out]"
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(project.video_path),
@@ -345,7 +436,7 @@ class VideoComposerService:
         db.commit()
 
         task_manager.add_log(task_id, f"🎉 HOÀN TẤT XUẤT BẢN VIDEO REVIEW! File: output/final_videos/{output_video_path.name}", "emerald")
-        task_manager.add_log(task_id, f"   • Karaoke Sub: Đồng bộ 100% từng từ", "emerald")
+        task_manager.add_log(task_id, f"   • Karaoke Sub: Đồng bộ 100% từng từ ({render_w}x{render_h})", "emerald")
         task_manager.add_log(task_id, f"   • Audio Mix: BGM gốc giữ nguyên + Lồng tiếng Việt nét căng", "emerald")
         task_manager.add_log(task_id, f"   • Logo & Watermark: Gọn nhỏ, chống clone bản quyền tinh tế", "emerald")
 
@@ -387,7 +478,8 @@ class VideoComposerService:
         mask_left: float = 15.0,
         mask_width: float = 70.0,
         mask_height: float = 12.0,
-        backdrop_opacity_hex: str = "80"
+        backdrop_opacity_hex: str = "80",
+        target_ratio: str = "16:9"
     ) -> bool:
         """
         Render luồng hình ảnh không tiếng (Visual Stream) với Subtitle Karaoke + Logo + Vùng che.
@@ -409,13 +501,19 @@ class VideoComposerService:
         filter_chains = []
         last_v = "0:v"
 
-        # 1. Tự động Crop bỏ mép đáy chứa sub Trung cũ & Zoom về kích thước gốc
-        # Dùng bilinear thay lanczos cho file tạm (nhanh hơn 40%, mux cuối dùng stream copy nên chất lượng không mất)
+        vw, vh = cls.get_video_resolution(video_input_path)
         if has_mask:
-            mh = max(0.05, min(0.30, float(mask_height) / 100.0 if mask_height is not None else 0.160))
-            keep_h = 1.0 - mh
-            filter_chains.append(f"[0:v]crop=iw:trunc(ih*{keep_h:.3f}/2)*2:0:0,scale=iw:ih:flags=bilinear[v_clean]")
+            crop_info = cls.calculate_crop(vw, vh, mask_height, target_ratio=target_ratio)
+            render_w = crop_info["w"]
+            render_h = crop_info["h"]
+            crop_x = crop_info["x"]
+            crop_y = crop_info["y"]
+            # 1. Cắt mép đáy chứa sub Trung cũ & Cắt 2 bên dọc vừa tỷ lệ chuẩn (CHỈ CROP, KHÔNG SCALE ĐỂ RENDER TỐI ĐA TỐC ĐỘ)
+            filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
             last_v = "v_clean"
+        else:
+            render_w, render_h = vw, vh
+            crop_x, crop_y = 0, 0
 
         if final_logo and os.path.exists(final_logo):
             logo_escaped = str(final_logo).replace("\\", "/")
@@ -428,7 +526,8 @@ class VideoComposerService:
             else:
                 overlay_pos = "25:25"
 
-            filter_chains.append(f"movie='{logo_escaped}',scale={logo_size}:{logo_size},format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
+            eff_logo_size = min(logo_size, max(48, int(render_w * 0.18)))
+            filter_chains.append(f"movie='{logo_escaped}',scale={eff_logo_size}:{eff_logo_size},format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
             filter_chains.append(f"[{last_v}][logo]overlay={overlay_pos}[v_logo]")
             last_v = "v_logo"
 
@@ -448,15 +547,11 @@ class VideoComposerService:
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
 
         # Hardware decode: dxva2 (AMD/Intel/NVIDIA Windows) giải mã nhanh hơn CPU
-        # Lưu ý: filter (crop, subtitles) vẫn chạy CPU, nên dùng hwaccel + output sw
         hwaccel_args = []
-        # if vcodec in ("h264_nvenc", "h264_amf", "h264_mf"):
-        #     hwaccel_args = ["-hwaccel", "dxva2"] # Removed for better stability with CPU filters
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         cmd = [
             *ffmpeg_cmd, "-y",
-            # Bỏ qua phân tích đầu vào chậm (file đã biết định dạng)
             "-probesize", "10M", "-analyzeduration", "0",
             *hwaccel_args,
             "-i", str(video_input_path),
@@ -469,7 +564,6 @@ class VideoComposerService:
         if preset != "none":
             cmd.extend(["-preset", preset])
         if vcodec == "libx264":
-            # CRF 23 thay vì 21: nhanh hơn ~15%, file tạm này sẽ bị mux stream copy không encode lại
             cmd.extend(["-crf", "23", "-tune", "zerolatency"])
         elif vcodec == "h264_amf":
             cmd.extend(["-quality", "speed", "-b:v", "4000k"])
@@ -481,9 +575,46 @@ class VideoComposerService:
             str(output_temp_video)
         ])
 
-        process = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if process.returncode != 0 or not Path(output_temp_video).exists():
-            clean_part = f"[0:v]crop=iw:trunc(ih*{keep_h:.3f}/2)*2:0:0,scale=iw:ih:flags=lanczos[vc];[vc]subtitles='{ass_escaped}'[v_out]" if has_mask else f"[0:v]subtitles='{ass_escaped}'[v_out]"
+        # Chạy FFmpeg với đọc tiến trình thời gian thực, cập nhật live progress UI và chống treo bộ nhớ
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        last_progress_time = 0.0
+        stderr_tail = []
+        if process.stderr:
+            for line in process.stderr:
+                stderr_tail.append(line)
+                if len(stderr_tail) > 25:
+                    stderr_tail.pop(0)
+
+                # Kiểm tra hủy tác vụ từ người dùng hoặc luồng song song gặp sự cố
+                if task_id and task_manager.is_cancelled(task_id):
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+                    break
+
+                # Trích xuất time=HH:MM:SS để cập nhật UI
+                if "time=" in line and (time.time() - last_progress_time > 3.0):
+                    last_progress_time = time.time()
+                    m = re.search(r"time=(\d+):(\d+):(\d+)", line)
+                    if m and task_id:
+                        h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                        task_manager.update_task(task_id, stage=f"GPU Render: {h:02d}:{mm:02d}:{s:02d}")
+
+        process.wait()
+        out_p = Path(output_temp_video)
+        if process.returncode != 0 or not out_p.exists() or out_p.stat().st_size < 1000:
+            err_summary = "".join(stderr_tail[-10:])
+            print(f"[RenderVisualStream] Lỗi encode phần cứng ({vcodec}): {err_summary[-400:]}")
+            clean_part = f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[vc];[vc]subtitles='{ass_escaped}'[v_out]" if has_mask else f"[0:v]subtitles='{ass_escaped}'[v_out]"
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(video_input_path),
@@ -496,9 +627,25 @@ class VideoComposerService:
                 "-pix_fmt", "yuv420p",
                 str(output_temp_video)
             ]
-            subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            fallback_proc = subprocess.Popen(
+                fallback_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+            if fallback_proc.stderr:
+                for line in fallback_proc.stderr:
+                    if task_id and task_manager.is_cancelled(task_id):
+                        try:
+                            fallback_proc.kill()
+                        except Exception:
+                            pass
+                        break
+            fallback_proc.wait()
 
-        return Path(output_temp_video).exists()
+        return out_p.exists() and out_p.stat().st_size > 1000
 
     @classmethod
     def mux_final_video(

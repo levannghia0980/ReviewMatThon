@@ -16,6 +16,8 @@ class VideoComposeRequest(BaseModel):
     mask_left: float = Field(default=15.0, description="Vị trí left của vùng che (%)")
     mask_width: float = Field(default=70.0, description="Chiều rộng vùng che (%)")
     mask_height: float = Field(default=12.0, description="Chiều cao vùng che (%)")
+    crop_ratio: str = Field(default="16:9", description="Tỷ lệ khung hình crop ('16:9' YouTube Ngang hoặc '9:16' Shorts/TikTok)")
+    font_size: Optional[int] = Field(default=None, description="Cỡ chữ phụ đề nhỏ gọn (px). Mặc định tính theo tỷ lệ điện ảnh thanh mảnh")
     margin_v: int = Field(default=65, description="Vị trí thanh phụ đề từ dưới đáy màn hình")
 
 class VideoComposeResponse(BaseModel):

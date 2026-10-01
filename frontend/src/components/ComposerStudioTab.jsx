@@ -9,8 +9,9 @@ export default function ComposerStudioTab({ initialProjectId }) {
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId || null);
   const [projectInfo, setProjectInfo] = useState(null);
 
-  // Video Composer Parameters
-  const [marginV, setMarginV] = useState(45);
+  // Video Composer Parameters (Mặc định Siêu Bé chuẩn điện ảnh không che phim)
+  const [marginV, setMarginV] = useState(10);
+  const [fontSize, setFontSize] = useState(11);
   const [backdropOpacity, setBackdropOpacity] = useState('99');
   const [karaokeColor, setKaraokeColor] = useState('&H0000D7FF');
   const [channelName, setChannelName] = useState('@Mắt Thần Review');
@@ -117,7 +118,10 @@ export default function ComposerStudioTab({ initialProjectId }) {
           channel_opacity: channelOpacity,
           karaoke_highlight_color: karaokeColor,
           backdrop_opacity_hex: backdropOpacity,
-          has_mask: true
+          has_mask: true,
+          crop_ratio: '16:9',
+          margin_v: marginV,
+          font_size: fontSize
         })
       });
 
@@ -264,8 +268,8 @@ export default function ComposerStudioTab({ initialProjectId }) {
               textAlign: 'center',
               boxShadow: '0 4px 20px rgba(0,0,0,0.7)'
             }}>
-              <div style={{ fontSize: '14px', fontWeight: 800, color: '#fff', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
-                <span style={{ color: '#00D7FF' }}>Lúc này</span> hắn mới nhận ra điều bất thường...
+              <div style={{ fontSize: `${Math.max(12, Math.round(fontSize * 0.72))}px`, fontWeight: 800, color: '#fff', textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>
+                <span style={{ color: '#00D7FF' }}>Lúc này</span> hắn mới nhận ra điều bất thường... ({fontSize}px)
               </div>
             </div>
           </div>
@@ -278,10 +282,10 @@ export default function ComposerStudioTab({ initialProjectId }) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <input
                     type="number"
-                    min="10"
-                    max="200"
+                    min="6"
+                    max="100"
                     value={marginV}
-                    onChange={(e) => setMarginV(parseInt(e.target.value, 10) || 45)}
+                    onChange={(e) => setMarginV(parseInt(e.target.value, 10) || 10)}
                     style={{ width: '55px', padding: '2px 6px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--cyan)', fontSize: '11px', textAlign: 'center', fontWeight: 700 }}
                   />
                   <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>px</span>
@@ -289,10 +293,10 @@ export default function ComposerStudioTab({ initialProjectId }) {
               </div>
               <div style={{ display: 'flex', gap: '6px' }}>
                 {[
-                  { v: 30, l: '30px' },
-                  { v: 45, l: '45px (Chuẩn)' },
-                  { v: 60, l: '60px' },
-                  { v: 80, l: '80px' }
+                  { v: 8, l: '8px (Sát đáy)' },
+                  { v: 10, l: '10px' },
+                  { v: 15, l: '15px' },
+                  { v: 22, l: '22px' }
                 ].map((lvl) => (
                   <button
                     key={lvl.v}
@@ -308,6 +312,51 @@ export default function ComposerStudioTab({ initialProjectId }) {
                       background: marginV === lvl.v ? 'rgba(0, 242, 254, 0.2)' : 'rgba(255, 255, 255, 0.05)',
                       border: marginV === lvl.v ? '1px solid var(--cyan)' : '1px solid var(--border)',
                       color: marginV === lvl.v ? 'var(--cyan)' : 'var(--text-sub)',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {lvl.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <label style={{ fontSize: '12px', color: 'var(--text-sub)' }}>Cỡ Chữ Phụ Đề (Font Size):</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <input
+                    type="number"
+                    min="9"
+                    max="32"
+                    value={fontSize}
+                    onChange={(e) => setFontSize(parseInt(e.target.value, 10) || 11)}
+                    style={{ width: '55px', padding: '2px 6px', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: '4px', color: 'var(--cyan)', fontSize: '11px', textAlign: 'center', fontWeight: 700 }}
+                  />
+                  <span style={{ fontSize: '11px', color: 'var(--text-dim)' }}>px</span>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {[
+                  { v: 11, l: '11px (Siêu bé)' },
+                  { v: 13, l: '13px (Gọn)' },
+                  { v: 16, l: '16px' },
+                  { v: 20, l: '20px' }
+                ].map((lvl) => (
+                  <button
+                    key={lvl.v}
+                    type="button"
+                    onClick={() => setFontSize(lvl.v)}
+                    style={{
+                      flex: 1,
+                      padding: '6px 4px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      background: fontSize === lvl.v ? 'rgba(0, 242, 254, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                      border: fontSize === lvl.v ? '1px solid var(--cyan)' : '1px solid var(--border)',
+                      color: fontSize === lvl.v ? 'var(--cyan)' : 'var(--text-sub)',
                       transition: 'all 0.15s ease'
                     }}
                   >

@@ -31,8 +31,15 @@ class VocalCleanerService:
 
         dst.parent.mkdir(parents=True, exist_ok=True)
 
-        # 1. Thử nghiệm lọc tạp âm chuyên sâu bằng DeepFilterNet3
-        worker_code = """
+        # Kiểm tra kích thước file: 16kHz Mono WAV có tốc độ 32KB/s (khoảng 1.9MB/phút)
+        # Nếu file > 60MB (tương đương > 30 phút), DeepFilterNet chạy toàn bộ sẽ rất chậm và dễ tràn RAM.
+        # Chuyển thẳng sang FFmpeg Vocal Enhancer (chỉ mất vài chục giây cho video 10 tiếng)
+        file_size_mb = src.stat().st_size / (1024 * 1024)
+        run_deepfilter = file_size_mb <= 60.0
+
+        if run_deepfilter:
+            # 1. Thử nghiệm lọc tạp âm chuyên sâu bằng DeepFilterNet3 cho file ngắn/vừa
+            worker_code = """
 import sys
 import os
 import warnings
@@ -58,22 +65,23 @@ try:
 except Exception as err:
     sys.exit(1)
 """
-        try:
-            from app.utils.bin_helper import BASE_DIR, get_ffmpeg_cmd
-            tools_dir = str(BASE_DIR / "tools")
-            res = subprocess.run(
-                [sys.executable, "-c", worker_code, str(src), str(dst), tools_dir],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=35
-            )
-            if res.returncode == 0 and dst.exists() and dst.stat().st_size > 1000:
-                logger.info(f"[VocalCleaner] Đã khử nhiễu DeepFilterNet AI -> {dst.name}")
-                return str(dst)
-        except Exception:
-            pass
+            try:
+                from app.utils.bin_helper import BASE_DIR, get_ffmpeg_cmd
+                tools_dir = str(BASE_DIR / "tools")
+                calc_timeout = max(45, int(file_size_mb * 2.5))
+                res = subprocess.run(
+                    [sys.executable, "-c", worker_code, str(src), str(dst), tools_dir],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=calc_timeout
+                )
+                if res.returncode == 0 and dst.exists() and dst.stat().st_size > 1000:
+                    logger.info(f"[VocalCleaner] Đã khử nhiễu DeepFilterNet AI -> {dst.name}")
+                    return str(dst)
+            except Exception:
+                pass
 
         # 2. Cấp 2: Bộ lọc âm thanh FFmpeg Vocal Enhancer (Khử nhiễu nền, lọc tần số thoại 120Hz-7500Hz, nâng âm lượng giọng nói)
         try:

@@ -29,6 +29,8 @@ class FullAutoPipelineRequest(BaseModel):
     channel_opacity: float = Field(default=0.35, description="Độ mờ watermark kênh")
     logo_position: str = Field(default="top_left", description="top_left, top_right, bottom_left, bottom_right")
     logo_size: int = Field(default=120, description="Kích thước logo px")
+    crop_ratio: str = Field(default="16:9", description="Tỷ lệ khung hình crop ('16:9' YouTube Ngang hoặc '9:16' Shorts/TikTok)")
+    font_size: Optional[int] = Field(default=None, description="Cỡ chữ phụ đề nhỏ gọn (px). Nếu không truyền sẽ tự động tính theo tỷ lệ điện ảnh thanh mảnh")
     batch_size: Optional[int] = Field(default=None, description="Số câu một lô dịch (150-500 câu)")
 
 class IngestPipelineResponse(BaseModel):
