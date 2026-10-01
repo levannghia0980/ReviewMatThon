@@ -77,37 +77,48 @@ def get_voices():
 @router.post("/single", response_model=TTSSingleResponse, summary="Thử nghiệm tạo giọng đọc TTS cho 1 câu đơn lẻ")
 def synthesize_single_preview(req: TTSSingleRequest):
     try:
-        engine = getattr(settings, "TTS_ENGINE", "capcut").lower()
-        if engine in ("capcut", "capcut_cloud"):
-            try:
-                audio_seg = CapCutTTSService.synthesize_sentence(
-                    text=req.text,
-                    voice_code=req.voice_code,
-                    cookie=req.session_id,
-                    apply_mastering=req.apply_mastering,
-                    playback_speed=req.playback_speed
-                )
-            except Exception:
-                audio_seg = TikTokTTSService.synthesize_sentence(
-                    text=req.text,
-                    voice_code=req.voice_code,
-                    session_id=req.session_id,
-                    apply_mastering=req.apply_mastering,
-                    playback_speed=req.playback_speed
-                )
-        else:
-            audio_seg = TikTokTTSService.synthesize_sentence(
-                text=req.text,
-                voice_code=req.voice_code,
-                session_id=req.session_id,
-                apply_mastering=req.apply_mastering,
-                playback_speed=req.playback_speed
-            )
-        
+        from app.services.tts.async_tts_engine import AsyncTTSEngine
+        from app.services.tts.tiktok_tts_service import _load_audio_from_bytes, TikTokTTSService
+        import asyncio
+        import aiohttp
+
+        async def _fetch_audio():
+            async with aiohttp.ClientSession() as sess:
+                raw = None
+                # 1. Nếu là giọng CapCut (chứa multi_)
+                if "multi_" in req.voice_code:
+                    raw = await AsyncTTSEngine.fetch_capcut_chunk_async(
+                        sess, req.text, voice_code=req.voice_code, cookie=req.session_id
+                    )
+                # 2. Thử qua TikTok TTS API (rất nhanh và ổn định với BV074, BV075...)
+                if not raw:
+                    raw = await AsyncTTSEngine.fetch_tiktok_chunk_async(
+                        sess, req.text, voice_code=req.voice_code, session_id=req.session_id
+                    )
+                # 3. Fallback tiếp tục qua CapCut Cloud SAMI nếu TikTok không có giọng này
+                if not raw:
+                    raw = await AsyncTTSEngine.fetch_capcut_chunk_async(
+                        sess, req.text, voice_code=req.voice_code, cookie=req.session_id
+                    )
+                return raw
+
+        loop = asyncio.new_event_loop()
+        try:
+            raw_bytes = loop.run_until_complete(_fetch_audio())
+        finally:
+            loop.close()
+
+        if not raw_bytes or len(raw_bytes) < 100:
+            raise RuntimeError(f"Không thể tạo âm thanh cho giọng '{req.voice_code}'. Vui lòng thử lại hoặc đổi giọng khác.")
+
+        audio_seg = _load_audio_from_bytes(raw_bytes, format="mp3")
+        if req.playback_speed and abs(req.playback_speed - 1.0) > 0.05:
+            audio_seg = TikTokTTSService.time_stretch_by_factor(audio_seg, req.playback_speed)
+
         buffer = io.BytesIO()
         audio_seg.export(buffer, format="mp3", bitrate="192k")
         audio_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-        
+
         return TTSSingleResponse(
             status="success",
             voice_code=req.voice_code,
