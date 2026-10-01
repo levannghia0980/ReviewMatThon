@@ -428,6 +428,7 @@ class VideoComposerService:
         pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
         cmd.extend([
             "-pix_fmt", pix_fmt,
+            "-r", "30",
             "-movflags", "+faststart",
             "-c:a", "aac",
             "-b:a", "192k",
@@ -583,6 +584,7 @@ class VideoComposerService:
         pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
         cmd.extend([
             "-pix_fmt", pix_fmt,
+            "-r", "30",
             str(output_temp_video)
         ])
 
@@ -644,6 +646,7 @@ class VideoComposerService:
                 "-preset", "ultrafast",
                 "-crf", "22",
                 "-pix_fmt", "yuv420p",
+                "-r", "30",
                 str(output_temp_video)
             ]
             fallback_proc = subprocess.Popen(
