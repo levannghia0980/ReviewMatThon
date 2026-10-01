@@ -26,11 +26,11 @@ class VideoComposerService:
         3. libx264     (CPU Đa Luồng Ultrafast - tương thích 100% mọi máy, không lỗi MediaFoundation)
         """
         ff_cmd = get_ffmpeg_cmd()
-        # Test NVIDIA NVENC
+        # Test NVIDIA NVENC (tăng timeout lên 8s để card rời Laptop RTX 3050/4060 kịp đánh thức từ chế độ ngủ)
         try:
             test_nvenc = subprocess.run(
                 [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"],
-                capture_output=True, text=True, errors="replace", timeout=3
+                capture_output=True, text=True, errors="replace", timeout=8
             )
             if test_nvenc.returncode == 0:
                 return "h264_nvenc", "p4", "NVIDIA GPU NVENC Siêu Tốc"
@@ -364,8 +364,9 @@ class VideoComposerService:
             filter_chains.append(f"[{last_v}]{drawtext_filter}[v_watermark]")
             last_v = "v_watermark"
 
-        # D. Burn Phụ Đề Karaoke ASS
-        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}'[v_out]")
+        # D. Burn Phụ Đề Karaoke ASS & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
+        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}'[v_sub]")
+        filter_chains.append("[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
 
         full_filter_complex = ";".join(filter_chains)
 
@@ -525,8 +526,12 @@ class VideoComposerService:
             filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
             last_v = "v_clean"
         else:
-            render_w, render_h = vw, vh
+            render_w = (vw // 2) * 2
+            render_h = (vh // 2) * 2
             crop_x, crop_y = 0, 0
+            if render_w != vw or render_h != vh:
+                filter_chains.append(f"[0:v]crop={render_w}:{render_h}:0:0[v_clean]")
+                last_v = "v_clean"
 
         # Input logo qua -i (tránh hoàn toàn lỗi movie= và ký tự : ổ đĩa trên Windows)
         logo_inputs = []
@@ -557,7 +562,9 @@ class VideoComposerService:
             filter_chains.append(f"[{last_v}]{drawtext_filter}[v_watermark]")
             last_v = "v_watermark"
 
-        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}'[v_out]")
+        # Subtitle Karaoke & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
+        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}'[v_sub]")
+        filter_chains.append("[v_sub]scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2'[v_out]")
         full_filter_complex = ";".join(filter_chains)
 
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
