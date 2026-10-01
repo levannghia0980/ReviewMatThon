@@ -260,9 +260,14 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             else:
                 font_sz = 20
 
-        # Cao độ sát mép đáy màn hình (~2% chiều cao khung hình render, không đẩy lên người nhân vật)
-        if req.margin_v and req.margin_v < 25:
-            actual_margin_v = req.margin_v
+        # Cao độ phụ đề theo setup của người dùng:
+        # Nếu margin_v <= 100: tính theo % chiều cao khung hình render (ví dụ: 15% -> round(ass_h * 0.15))
+        # Nếu margin_v > 100: giá trị pixel trực tiếp
+        if getattr(req, "margin_v", None) and req.margin_v > 0:
+            if req.margin_v <= 100:
+                actual_margin_v = max(4, int(round(ass_h * (req.margin_v / 100.0))))
+            else:
+                actual_margin_v = req.margin_v
         else:
             actual_margin_v = max(8, int(round(ass_h * 0.022)))
 

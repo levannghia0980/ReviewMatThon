@@ -396,7 +396,7 @@ export default function MainStudioView({ onNavigateTab }) {
         genre: genre,
         provider: 'gemini',
         voice_code: voiceCode,
-        margin_v: Math.max(8, Math.min(20, Math.round(subBottomOffset * 3.5))),
+        margin_v: subBottomOffset, // % khoảng cách từ đáy (1% - 85%) theo vị trí người dùng đã kéo setup
         backdrop_opacity_hex: backdropOpacity,
         has_mask: hasMask,
         mask_top: maskTop,

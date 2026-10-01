@@ -230,9 +230,14 @@ class VideoComposerService:
             else:
                 font_sz = 20
 
-        # Cao độ sát mép đáy màn hình (~2% chiều cao khung hình render, không đẩy lên người nhân vật)
-        if margin_v and margin_v < 25:
-            actual_margin_v = margin_v
+        # Cao độ phụ đề theo setup của người dùng:
+        # Nếu margin_v <= 100: tính theo % chiều cao khung hình render (ví dụ: 15% -> round(render_h * 0.15))
+        # Nếu margin_v > 100: giá trị pixel trực tiếp
+        if margin_v and margin_v > 0:
+            if margin_v <= 100:
+                actual_margin_v = max(4, int(round(render_h * (margin_v / 100.0))))
+            else:
+                actual_margin_v = margin_v
         else:
             actual_margin_v = max(8, int(round(render_h * 0.022)))
 
