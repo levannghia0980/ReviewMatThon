@@ -21,10 +21,9 @@ class VideoComposerService:
     def detect_best_encoder() -> Tuple[str, str, str]:
         """
         Tự động nhận diện Encoder phần cứng nhanh nhất trên máy:
-        1. h264_nvenc  (NVIDIA - nhanh nhất)
+        1. h264_nvenc  (NVIDIA - nhanh nhất, ổn định nhất)
         2. h264_amf    (AMD RX/RX Vega/RDNA - card rời AMD)
-        3. h264_mf     (Windows Media Foundation / Intel Iris Xe)
-        4. libx264     (CPU Ultrafast - fallback)
+        3. libx264     (CPU Đa Luồng Ultrafast - tương thích 100% mọi máy, không lỗi MediaFoundation)
         """
         ff_cmd = get_ffmpeg_cmd()
         # Test NVIDIA NVENC
@@ -46,17 +45,6 @@ class VideoComposerService:
             )
             if test_amf.returncode == 0:
                 return "h264_amf", "none", "AMD GPU AMF (RX Series) Siêu Tốc"
-        except Exception:
-            pass
-
-        # Test Windows Media Foundation (Intel Iris Xe / DirectX GPU)
-        try:
-            test_mf = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_mf", "-f", "null", "-"],
-                capture_output=True, text=True, errors="replace", timeout=3
-            )
-            if test_mf.returncode == 0:
-                return "h264_mf", "none", "GPU Phần Cứng (Intel Iris Xe / Windows MF)"
         except Exception:
             pass
 
@@ -642,12 +630,16 @@ class VideoComposerService:
         out_p = Path(output_temp_video)
         if process.returncode != 0 or not out_p.exists() or out_p.stat().st_size < 1000:
             err_summary = "".join(stderr_tail[-10:])
-            print(f"[RenderVisualStream] Lỗi encode phần cứng ({vcodec}): {err_summary[-400:]}")
+            print(f"[RenderVisualStream] Lỗi encode ({vcodec}), tự động chuyển CPU Ultrafast: {err_summary[-400:]}")
+            if task_id:
+                task_manager.add_log(task_id, f"   ⚠️ Chuyển sang bộ mã hóa CPU Đa Luồng Ultrafast an toàn...", "amber")
             clean_part = full_filter_complex
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
+                "-probesize", "10M", "-analyzeduration", "0",
                 "-i", str(video_input_path),
                 *logo_inputs,
+                "-threads", "0",
                 "-filter_complex", clean_part,
                 "-map", "[v_out]",
                 "-an",
@@ -665,6 +657,7 @@ class VideoComposerService:
                 encoding="utf-8",
                 errors="replace"
             )
+            last_fb_time = 0.0
             if fallback_proc.stderr:
                 for line in fallback_proc.stderr:
                     if task_id and task_manager.is_cancelled(task_id):
@@ -673,6 +666,12 @@ class VideoComposerService:
                         except Exception:
                             pass
                         break
+                    if "time=" in line and (time.time() - last_fb_time > 3.0):
+                        last_fb_time = time.time()
+                        m = re.search(r"time=(\d+):(\d+):(\d+)", line)
+                        if m and task_id:
+                            h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                            task_manager.update_task(task_id, stage=f"CPU Render: {h:02d}:{mm:02d}:{s:02d}")
             fallback_proc.wait()
 
         return out_p.exists() and out_p.stat().st_size > 1000
