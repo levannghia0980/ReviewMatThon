@@ -32,41 +32,51 @@ class AudioMixerService:
         ffmpeg_cmd = get_ffmpeg_cmd()
 
         timeline_expr = ""
-        # An toàn trên Windows: Chỉ dùng biểu thức timeline khi số khoảng thoại nhỏ (<= 80)
-        # Nếu video dài (hàng trăm đến hàng nghìn câu thoại), ghép chuỗi sẽ vượt quá giới hạn 32,767 ký tự
-        # của Windows CreateProcess (WinError 206) và làm FFmpeg bị tràn bộ nhớ stack (Stack Overflow C00000FD).
-        if dialogue_segments and len(dialogue_segments) <= 80:
+        # An toàn trên Windows: Biểu thức timeline dùng khi số khoảng thoại sau khi gộp hợp lý
+        # Giúp triệt tiêu hoàn toàn tiếng Trung gốc (xuống 3%) khi có thoại và giữ nguyên BGM khi im lặng.
+        if dialogue_segments:
             merged_intervals = []
-            for seg in sorted(dialogue_segments, key=lambda s: getattr(s, 'start', 0.0)):
-                s = max(0.0, float(getattr(seg, 'start', 0.0)) - 0.05)
-                e = float(getattr(seg, 'end', 0.0)) + 0.05
+            def _extract_t(item, field_names, fallback=0.0):
+                for f in field_names:
+                    if isinstance(item, dict) and f in item and item[f] is not None:
+                        return float(item[f])
+                    if hasattr(item, f) and getattr(item, f) is not None:
+                        return float(getattr(item, f))
+                return fallback
+
+            for seg in sorted(dialogue_segments, key=lambda s: _extract_t(s, ['start', 'start_time'])):
+                s_val = _extract_t(seg, ['start', 'start_time'])
+                e_val = _extract_t(seg, ['end', 'end_time'])
+                s = max(0.0, s_val - 0.05)
+                e = e_val + 0.05
                 if merged_intervals and s <= merged_intervals[-1][1]:
                     merged_intervals[-1] = (merged_intervals[-1][0], max(merged_intervals[-1][1], e))
                 else:
                     merged_intervals.append((s, e))
 
-            if len(merged_intervals) <= 80:
+            if len(merged_intervals) <= 120:
                 expr_parts = [f"between(t,{start:.2f},{end:.2f})" for start, end in merged_intervals]
                 candidate_expr = "+".join(expr_parts)
-                if len(candidate_expr) < 2500:
+                if len(candidate_expr) < 3500:
                     timeline_expr = candidate_expr
 
         if timeline_expr:
-            # Dùng biểu thức timeline chuẩn frame kèm alimiter chống clipping/vỡ tiếng
+            # Khi có lời thoại Việt: Ép âm thanh gốc xuống 3% để triệt tiêu tiếng Trung
+            # Khi hết thoại: Trả nhạc nền BGM về mức 70% tự nhiên
             mix_filter = (
-                f"[0:a]volume=enable='{timeline_expr}':volume={bgm_volume_when_speaking}:eval=frame[bgm];"
+                f"[0:a]volume='if({timeline_expr},{bgm_volume_when_speaking},{bgm_volume_normal})':eval=frame[bgm];"
                 f"[1:a]volume={voiceover_volume}[voice];"
                 f"[bgm][voice]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95:attack=5:release=50[a_out]"
             )
         else:
             # Thuật toán Auto Sidechain Ducking thông minh tiêu chuẩn phòng thu:
-            # - Tự động ép BGM/tiếng Trung gốc xuống mức 3-5% khi phát hiện tín hiệu giọng Việt
-            # - Hoạt động siêu mượt và tức thì bất chấp video dài 10 tiếng (12,000+ câu thoại)
+            # BẮT BUỘC dùng asplit=2 để [voice] vừa làm tín hiệu kích hoạt Sidechain Ducking,
+            # vừa giữ lại luồng sạch để trộn vào amix (tránh bị FFmpeg nuốt mất luồng tiếng Việt).
             mix_filter = (
                 f"[0:a]volume={bgm_volume_normal}[bgm];"
-                f"[1:a]volume={voiceover_volume}[voice];"
-                f"[bgm][voice]sidechaincompress=threshold=0.015:ratio=16:attack=10:release=180:makeup=1[ducked_bgm];"
-                f"[ducked_bgm][voice]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95:attack=5:release=50[a_out]"
+                f"[1:a]volume={voiceover_volume},asplit=2[voice_sc][voice_mix];"
+                f"[bgm][voice_sc]sidechaincompress=threshold=0.015:ratio=16:attack=10:release=180[ducked_bgm];"
+                f"[ducked_bgm][voice_mix]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95:attack=5:release=50[a_out]"
             )
 
         cmd = [
