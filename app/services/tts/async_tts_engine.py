@@ -7,6 +7,7 @@ import os
 import random
 import re
 import time
+import threading
 import uuid
 from typing import Dict, List, Optional, Tuple, Any, Callable
 from urllib.parse import urlencode
@@ -88,11 +89,35 @@ class DirectIPManager:
     """
 
     def __init__(self, max_concurrent: int = 96, cooldown_seconds: float = 45.0):
+        self.max_concurrent = max_concurrent
         self.cooldown_seconds = cooldown_seconds
         self.cooldown_until: float = 0.0
-        self.semaphore = asyncio.Semaphore(max_concurrent)
-        self._gate_lock = asyncio.Lock()   # chỉ 1 worker đi kiểm tra sau cooldown
         self._verified_ok: bool = True     # Mặc định ban đầu IP máy hoạt động tốt
+        self._semaphores: Dict[Any, asyncio.Semaphore] = {}
+        self._gate_locks: Dict[Any, asyncio.Lock] = {}
+        self._lock = threading.Lock()
+
+    def get_semaphore(self) -> asyncio.Semaphore:
+        """Lấy Semaphore đồng bộ đúng event loop đang chạy của luồng hiện tại."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        with self._lock:
+            if loop not in self._semaphores:
+                self._semaphores[loop] = asyncio.Semaphore(self.max_concurrent)
+            return self._semaphores[loop]
+
+    def get_gate_lock(self) -> asyncio.Lock:
+        """Lấy Gate Lock đồng bộ đúng event loop đang chạy của luồng hiện tại."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        with self._lock:
+            if loop not in self._gate_locks:
+                self._gate_locks[loop] = asyncio.Lock()
+            return self._gate_locks[loop]
 
     def is_in_cooldown(self) -> bool:
         return time.time() < self.cooldown_until
@@ -112,28 +137,31 @@ class DirectIPManager:
         if self.is_in_cooldown():
             return False
 
+        sem = self.get_semaphore()
+        gate_lock = self.get_gate_lock()
+
         if self._verified_ok:
             try:
-                await asyncio.wait_for(self.semaphore.acquire(), timeout=0.05)
+                await asyncio.wait_for(sem.acquire(), timeout=0.05)
                 return True
             except (asyncio.TimeoutError, Exception):
                 return False
 
-        if self._gate_lock.locked():
+        if gate_lock.locked():
             return False
 
         try:
-            async with self._gate_lock:
+            async with gate_lock:
                 if self.is_in_cooldown():
                     return False
                 if self._verified_ok:
                     try:
-                        await asyncio.wait_for(self.semaphore.acquire(), timeout=0.05)
+                        await asyncio.wait_for(sem.acquire(), timeout=0.05)
                         return True
                     except Exception:
                         return False
                 try:
-                    await asyncio.wait_for(self.semaphore.acquire(), timeout=0.1)
+                    await asyncio.wait_for(sem.acquire(), timeout=0.1)
                     self._verified_ok = True
                     return True
                 except (asyncio.TimeoutError, Exception):
@@ -143,7 +171,8 @@ class DirectIPManager:
 
     def release(self):
         try:
-            self.semaphore.release()
+            sem = self.get_semaphore()
+            sem.release()
         except Exception:
             pass
 

@@ -331,8 +331,16 @@ export default function MainStudioView({ onNavigateTab }) {
       const newHeight = Math.max(1, Math.min(45, 100 - currentMouseY));
       setMaskHeight(Math.round(newHeight));
     } else if (interactionMode === 'sub-move') {
-      const newBottom = Math.max(1, Math.min(85, 100 - currentMouseY));
-      setSubBottomOffset(Math.round(newBottom));
+      const rawBottom = 100 - currentMouseY;
+      if (hasMask) {
+        // Tọa độ tính từ mép trên của đường cắt sub đáy
+        const newBottom = Math.max(0, Math.min(85, rawBottom - maskHeight));
+        setSubBottomOffset(Math.round(newBottom));
+      } else {
+        // Tọa độ tính từ mép đáy của video gốc
+        const newBottom = Math.max(0, Math.min(85, rawBottom));
+        setSubBottomOffset(Math.round(newBottom));
+      }
     }
   };
 
@@ -342,9 +350,23 @@ export default function MainStudioView({ onNavigateTab }) {
 
   useEffect(() => {
     const onUp = () => setInteractionMode(null);
+    const onKeyDown = (e) => {
+      if (['INPUT', 'TEXTAREA'].includes(e.target?.tagName)) return;
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSubBottomOffset(prev => Math.min(85, prev + 1));
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSubBottomOffset(prev => Math.max(0, prev - 1));
+      }
+    };
     window.addEventListener('mouseup', onUp);
-    return () => window.removeEventListener('mouseup', onUp);
-  }, []);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [hasMask, maskHeight]);
 
   // Download video via URL
   const handleDownloadOnly = async () => {
@@ -407,7 +429,7 @@ export default function MainStudioView({ onNavigateTab }) {
         font_size: subFontSize,
         box_style: 'white_box',
         box_padding: subBoxPadding,
-        karaoke_highlight_color: '&H00EB6325',
+        karaoke_highlight_color: '&H000000FF',
         channel_name: '@Mắt Thần Review',
         channel_opacity: 0.35,
         logo_position: 'top_left',
@@ -698,7 +720,7 @@ export default function MainStudioView({ onNavigateTab }) {
                 <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cao Độ Sub:</span>
                 <button
                   type="button"
-                  onClick={() => setSubBottomOffset(prev => Math.min(85, prev + 2))}
+                  onClick={() => setSubBottomOffset(prev => Math.min(85, prev + 1))}
                   title="Nâng phụ đề lên (Phím ↑)"
                   style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                 >
@@ -706,15 +728,49 @@ export default function MainStudioView({ onNavigateTab }) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSubBottomOffset(prev => Math.max(1, prev - 2))}
+                  onClick={() => setSubBottomOffset(prev => Math.max(0, prev - 1))}
                   title="Hạ phụ đề xuống (Phím ↓)"
                   style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                 >
                   <ArrowDown size={11} color="#2563eb" />
                 </button>
-                <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0f172a', minWidth: '26px', textAlign: 'center' }}>
-                  {subBottomOffset}%
-                </span>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+                  <input
+                    type="number"
+                    min="0"
+                    max="85"
+                    value={subBottomOffset}
+                    onChange={(e) => setSubBottomOffset(Math.max(0, Math.min(85, parseInt(e.target.value, 10) || 0)))}
+                    style={{ width: '40px', padding: '1px 3px', border: '1.5px solid #2563eb', borderRadius: '4px', fontSize: '11px', fontWeight: 800, textAlign: 'center', color: '#0f172a' }}
+                    title="Nhập trực tiếp % khoảng cách từ đáy (0% - 85%)"
+                  />
+                  <span style={{ fontSize: '11px', fontWeight: 800, color: '#0f172a' }}>%</span>
+                </div>
+
+                {/* Quick Presets */}
+                <div style={{ display: 'inline-flex', gap: '2px', marginLeft: '2px' }}>
+                  {[5, 8, 12, 16, 20].map(p => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setSubBottomOffset(p)}
+                      style={{
+                        fontSize: '9.5px',
+                        fontWeight: 700,
+                        padding: '1px 4px',
+                        borderRadius: '3px',
+                        border: '1px solid',
+                        borderColor: subBottomOffset === p ? '#2563eb' : '#cbd5e1',
+                        background: subBottomOffset === p ? '#2563eb' : '#ffffff',
+                        color: subBottomOffset === p ? '#ffffff' : '#475569',
+                        cursor: 'pointer'
+                      }}
+                      title={`Đặt nhanh cao độ ${p}%`}
+                    >
+                      {p}%
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Cỡ Chữ Phụ Đề */}
@@ -873,7 +929,10 @@ export default function MainStudioView({ onNavigateTab }) {
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
-                    onClick={() => setHasMask(false)}
+                    onClick={() => {
+                      setHasMask(false);
+                      setSubBottomOffset(prev => Math.max(8, prev));
+                    }}
                     title="Tắt cắt sub (giữ nguyên kích thước video gốc)"
                     style={{ fontSize: '10.5px', padding: '2px 6px', color: '#64748b' }}
                   >
@@ -884,7 +943,12 @@ export default function MainStudioView({ onNavigateTab }) {
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={() => { setHasMask(true); setMaskHeight(8); setCropRatio('16:9'); }}
+                  onClick={() => {
+                    setHasMask(true);
+                    setMaskHeight(8);
+                    setCropRatio('16:9');
+                    setSubBottomOffset(prev => Math.max(2, prev > 8 ? prev - 8 : prev));
+                  }}
                   style={{ fontSize: '11px', padding: '3px 10px', background: '#0284c7', color: '#ffffff', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
                 >
                   <Plus size={11} /> + Bật Cắt Sub 16:9 YouTube
@@ -1097,7 +1161,7 @@ export default function MainStudioView({ onNavigateTab }) {
                   letterSpacing: '0.2px',
                   whiteSpace: 'nowrap'
                 }}>
-                  <span style={{ color: '#2563EB', fontWeight: 900 }}>Lúc này</span> hắn mới nhận ra điều bất thường... ({subFontSize}px, Nền {subBoxPadding}px)
+                  <span style={{ color: '#EF4444', fontWeight: 900 }}>Lúc này</span> hắn mới nhận ra điều bất thường... ({subFontSize}px, Nền {subBoxPadding}px)
                 </span>
               </div>
             </div>

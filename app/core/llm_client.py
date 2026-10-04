@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import time
+import threading
 import httpx
 from typing import Dict, Any, Optional
 
@@ -25,8 +26,29 @@ DEFAULT_SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
 ]
 
+_PACING_LOCK = threading.Lock()
 _LAST_GEMINI_REQUEST_TIME = 0.0
-_GEMINI_REQUEST_LOCK = asyncio.Lock()
+
+def _get_pacing_delay(min_interval: Optional[float] = None) -> float:
+    """Điều tiết giãn cách request an toàn trên mọi luồng, mọi máy và mọi event loop."""
+    global _LAST_GEMINI_REQUEST_TIME
+    if min_interval is None:
+        try:
+            env_val = os.getenv("GEMINI_PACING_INTERVAL")
+            min_interval = max(0.0, float(env_val)) if env_val is not None else 4.1
+        except Exception:
+            min_interval = 4.1
+
+    with _PACING_LOCK:
+        now = time.time()
+        elapsed = now - _LAST_GEMINI_REQUEST_TIME
+        if elapsed < min_interval:
+            delay = min_interval - elapsed
+            _LAST_GEMINI_REQUEST_TIME = now + delay
+            return delay
+        else:
+            _LAST_GEMINI_REQUEST_TIME = now
+            return 0.0
 
 async def post_gemini_with_retry(
     client: httpx.AsyncClient,
@@ -42,22 +64,16 @@ async def post_gemini_with_retry(
     - Xử lý thông minh lỗi HTTP 429 (Rate Limit / Quota Exceeded) với delay từ API.
     - Tự động gắn bộ lọc safetySettings=BLOCK_NONE để loại bỏ hoàn toàn vi phạm chặn văn bản.
     """
-    global _LAST_GEMINI_REQUEST_TIME
-
     if payload is not None and "safetySettings" not in payload:
         payload["safetySettings"] = DEFAULT_SAFETY_SETTINGS
 
     last_exception = None
     for attempt in range(1, max_retries + 1):
         # Tự động điều tiết tần suất request (Pacing): Giãn cách tối thiểu 4.1s giữa các request
-        # để đảm bảo 100% không vượt quá ngưỡng 15 RPM của Gemini Free Tier, tránh tối đa việc bị ngắt 60s.
-        async with _GEMINI_REQUEST_LOCK:
-            now = time.time()
-            elapsed = now - _LAST_GEMINI_REQUEST_TIME
-            min_interval = 4.1  # 60s / 15 RPM = 4.0s -> 4.1s safe margin
-            if elapsed < min_interval:
-                await asyncio.sleep(min_interval - elapsed)
-            _LAST_GEMINI_REQUEST_TIME = time.time()
+        # để đảm bảo 100% không vượt quá ngưỡng 15 RPM của Gemini Free Tier, an toàn tuyệt đối trên mọi event loop.
+        delay = _get_pacing_delay(min_interval=4.1)
+        if delay > 0:
+            await asyncio.sleep(delay)
 
         try:
             resp = await client.post(url, headers=headers, json=payload)

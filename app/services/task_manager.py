@@ -30,11 +30,14 @@ class TaskManager:
         with cls._lock:
             current_time = time.strftime("%H:%M:%S")
             if task_id in cls._tasks:
-                cls._tasks[task_id]["logs"].append({
+                logs = cls._tasks[task_id]["logs"]
+                logs.append({
                     "time": current_time,
                     "text": text,
                     "type": log_type
                 })
+                if len(logs) > 300:
+                    del logs[:50]  # Giữ 250-300 log mới nhất, chống phình to JSON làm đơ/ngắt kết nối Web
                 cls._tasks[task_id]["updated_at"] = time.time()
             # In trực tiếp ra console terminal để người dùng theo dõi
             try:

@@ -61,7 +61,7 @@ class KaraokeSubtitleService:
         highlight_color: Optional[str] = None,
         outline_color: Optional[str] = None,
         backdrop_opacity_hex: str = "80",       # Hộp nền mờ 50% opacity
-        margin_v: int = 10,                     # Cao độ phụ đề từ đáy (px)
+        margin_v: int = 10,                     # Cao độ phụ đề từ đáy (px hoặc %)
         box_style: str = "white_box",           # "white_box" (Khung Trắng bo tròn chữ Đen), "dark_box" (Hộp Đen mờ), "outline_only" (Chữ viền nổi)
         box_padding: int = 8                    # Độ to theo chiều dọc / padding của hộp che chữ gốc (px)
     ) -> str:
@@ -70,28 +70,53 @@ class KaraokeSubtitleService:
         - Kiểu A (Mặc định: 'white_box'): Khung viền Trắng bo tròn che sạch chữ gốc, chữ Đen đậm + Karaoke Xanh hoàng gia.
         - Kiểu B ('dark_box'): Hộp Đen mờ bo góc sang trọng + Chữ Trắng / Highlight Vàng kim.
         - Kiểu C ('outline_only'): Chữ viền hairline trong suốt không nền.
-        - box_padding: Điều chỉnh độ to theo chiều dọc của hộp che để phủ kín hoàn toàn phụ đề tiếng Trung cũ.
+        - Tự động scale font_size & box_padding theo độ phân giải màn hình ASS (PlayResY)
+          để đảm bảo tỷ lệ hộp che trên video thành phẩm khớp 1:1 với giao diện preview trên web.
         """
         style_mode = (box_style or "white_box").lower()
 
+        # 1. Chuẩn hóa margin_v: Nếu margin_v <= 100, hiểu là % khoảng cách từ đáy (chuẩn giao diện Web)
+        if margin_v <= 100:
+            actual_margin_v = max(4, int(round(height * (margin_v / 100.0))))
+        else:
+            actual_margin_v = int(margin_v)
+
+        # 2. Tự động scale font_size & box_padding từ hệ quy chiếu preview web (~360px) sang độ phân giải thực của video
+        ref_h = 360.0
+        scale_factor = max(1.0, height / ref_h)
+
+        if font_size <= 28:
+            effective_font_size = max(16, int(round(font_size * scale_factor)))
+        else:
+            effective_font_size = font_size
+
+        if box_padding is not None and box_padding <= 25:
+            effective_box_padding = max(5.0, round(box_padding * scale_factor, 1))
+        else:
+            effective_box_padding = float(box_padding if box_padding is not None else 8.0)
+
+        # Màu Karaoke chữ chạy: Chuyển sang Đỏ cờ rực rỡ (&HAABBGGRR: &H000000FF) theo yêu cầu người dùng
+        red_highlight = "&H000000FF"
+        active_highlight = highlight_color if (highlight_color and highlight_color != "&H00EB6325") else red_highlight
+
         if style_mode == "white_box":
-            # ⚪ KIỂU A: KHUNG TRẮNG BO TRÒN - CHỮ ĐEN ĐẬM / HIGHLIGHT XANH HOÀNG GIA (Che chữ gốc 100%)
+            # ⚪ KIỂU A: KHUNG TRẮNG BO TRÒN - CHỮ ĐEN ĐẬM / HIGHLIGHT ĐỎ RỰC RỠ (Che chữ gốc 100%)
             border_style = 3  # 3 = Opaque Box (Hộp nền bao quanh chữ)
-            outline_val = max(3.0, float(box_padding if box_padding is not None else 8.0))
+            outline_val = max(4.0, effective_box_padding)
             shadow_val = 1.0  # Bóng nhẹ cho hộp nền nổi khối
             primary_c = primary_color or "&H00111111"       # Chữ Đen than chì siêu đậm & sắc nét
-            highlight_c = highlight_color or "&H00EB6325"   # Karaoke Xanh hoàng gia Electric Blue (&HAABBGGRR: #2563EB)
+            highlight_c = active_highlight                  # Karaoke Chữ chạy MÀU ĐỎ RỰC RỠ (&HAABBGGRR: #FF0000)
             outline_c = outline_color or "&H00D0D5DD"       # Viền bo xám nhẹ tinh tế viền quanh hộp trắng
             back_c = "&H00FFFFFF"                           # Nền trắng tinh khiết che phủ hoàn toàn chữ gốc
             bold_val = 1                                    # Chữ in đậm rõ ràng
 
         elif style_mode == "dark_box":
-            # ⚫ KIỂU B: HỘP ĐEN MỜ BO GÓC - CHỮ TRẮNG / HIGHLIGHT VÀNG KIM ĐIỆN ẢNH
+            # ⚫ KIỂU B: HỘP ĐEN MỜ BO GÓC - CHỮ TRẮNG / HIGHLIGHT ĐỎ RỰC RỠ
             border_style = 3
-            outline_val = max(3.0, float(box_padding if box_padding is not None else 8.0))
+            outline_val = max(4.0, effective_box_padding)
             shadow_val = 1.0
             primary_c = primary_color or "&H00FFFFFF"
-            highlight_c = highlight_color or "&H0000D7FF"   # Vàng kim sang trọng
+            highlight_c = active_highlight
             outline_c = outline_color or "&H00333333"
             back_c = f"&H{backdrop_opacity_hex}000000"
             bold_val = 1
@@ -99,13 +124,19 @@ class KaraokeSubtitleService:
         else:
             # 🔤 KIỂU C: CHỮ VIỀN NỔI HAIRLINE TRONG SUỐT (Không hộp che)
             border_style = 1
-            outline_val = max(0.8, round(font_size * 0.075, 1))
-            shadow_val = max(0.4, round(font_size * 0.035, 1))
+            outline_val = max(0.8, round(effective_font_size * 0.075, 1))
+            shadow_val = max(0.4, round(effective_font_size * 0.035, 1))
             primary_c = primary_color or "&H00FFFFFF"
-            highlight_c = highlight_color or "&H0000D7FF"
+            highlight_c = active_highlight
             outline_c = outline_color or "&H00000000"
             back_c = "&H00000000"
             bold_val = 0
+
+        # Cập nhật lại ass_margin_v sau khi outline_val đã được xác định chắc chắn
+        if border_style == 3:
+            ass_margin_v = int(round(actual_margin_v + outline_val + (effective_font_size * 0.12)))
+        else:
+            ass_margin_v = actual_margin_v
 
         ass_header = f"""[Script Info]
 ; Script generated by ReviewMatThon Ultra Karaoke Engine
@@ -118,8 +149,8 @@ PlayResY: {height}
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-; Style Karaoke: BorderStyle={border_style}, Outline={outline_val}, Bold={bold_val}, MarginV={margin_v}
-Style: KaraokeSub,{font_name},{font_size},{primary_c},{highlight_c},{outline_c},{back_c},{bold_val},0,0,0,100,100,0,0,{border_style},{outline_val},{shadow_val},2,15,15,{margin_v},1
+; Style Karaoke: BorderStyle={border_style}, Outline={outline_val}, Bold={bold_val}, MarginV={ass_margin_v}
+Style: KaraokeSub,{font_name},{effective_font_size},{primary_c},{highlight_c},{outline_c},{back_c},{bold_val},0,0,0,100,100,0,0,{border_style},{outline_val},{shadow_val},2,15,15,{ass_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

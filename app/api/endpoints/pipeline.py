@@ -247,29 +247,11 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             ass_w = vw
             ass_h = vh
 
-        # Cỡ chữ phụ đề SIÊU BÉ chuẩn điện ảnh, không chiếm diện tích xem:
-        if getattr(req, "font_size", None) and req.font_size > 0:
-            font_sz = req.font_size
-        else:
-            if ass_h <= 540:
-                font_sz = 11
-            elif ass_h <= 768:
-                font_sz = 13
-            elif ass_h <= 1100:
-                font_sz = 16
-            else:
-                font_sz = 20
+        font_sz = getattr(req, "font_size", 14) or 14
+        margin_v_val = getattr(req, "margin_v", 8) if getattr(req, "margin_v", None) is not None else 8
+        box_pad_val = getattr(req, "box_padding", 8) if getattr(req, "box_padding", None) is not None else 8
 
-        # Cao độ phụ đề theo setup của người dùng:
-        # Nếu margin_v <= 100: tính theo % chiều cao khung hình render (ví dụ: 15% -> round(ass_h * 0.15))
-        # Nếu margin_v > 100: giá trị pixel trực tiếp
-        if getattr(req, "margin_v", None) and req.margin_v > 0:
-            if req.margin_v <= 100:
-                actual_margin_v = max(4, int(round(ass_h * (req.margin_v / 100.0))))
-            else:
-                actual_margin_v = req.margin_v
-        else:
-            actual_margin_v = max(8, int(round(ass_h * 0.022)))
+        highlight_c = req.karaoke_highlight_color if (getattr(req, "karaoke_highlight_color", None) and req.karaoke_highlight_color != "&H00EB6325") else "&H000000FF"
 
         KaraokeSubtitleService.create_karaoke_ass_file(
             segments=segments,
@@ -278,11 +260,11 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             width=ass_w,
             height=ass_h,
             font_size=font_sz,
-            highlight_color=req.karaoke_highlight_color,
+            highlight_color=highlight_c,
             backdrop_opacity_hex=req.backdrop_opacity_hex,
-            margin_v=actual_margin_v,
+            margin_v=margin_v_val,
             box_style=getattr(req, "box_style", "white_box"),
-            box_padding=getattr(req, "box_padding", 8)
+            box_padding=box_pad_val
         )
 
         temp_visual_video = settings.OUTPUT_FINAL_VIDEOS_DIR / f"temp_{project.video_id}_visual.mp4"

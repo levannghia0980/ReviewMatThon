@@ -15,7 +15,7 @@ export default function ComposerStudioTab({ initialProjectId }) {
   const [marginV, setMarginV] = useState(12);
   const [fontSize, setFontSize] = useState(13);
   const [backdropOpacity, setBackdropOpacity] = useState('99');
-  const [karaokeColor, setKaraokeColor] = useState('&H0000D7FF');
+  const [karaokeColor, setKaraokeColor] = useState('&H000000FF');
   const [channelName, setChannelName] = useState('@Mắt Thần Review');
   const [channelOpacity, setChannelOpacity] = useState(0.35);
   const [logoPosition, setLogoPosition] = useState('top_left');
@@ -295,7 +295,7 @@ export default function ComposerStudioTab({ initialProjectId }) {
                 letterSpacing: '0.2px'
               }}>
                 <span style={{ 
-                  color: boxStyle === 'white_box' ? '#2563EB' : '#00D7FF',
+                  color: '#EF4444',
                   fontWeight: 900
                 }}>Lúc này</span> hắn mới nhận ra điều bất thường... ({fontSize}px, Hộp {boxPadding}px)
               </div>
