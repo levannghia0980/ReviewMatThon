@@ -87,9 +87,7 @@ class KaraokeSubtitleService:
         else:
             effective_font_size = int(round(font_size * (height / 1080.0))) if height != 1080 else font_size
 
-        # Với Alignment=2 (Bottom-Center), margin_v trong ASS là khoảng cách từ đáy màn hình tới đáy dòng chữ.
-        # Để tâm dòng chữ trùng với tâm dải mờ, cần cộng thêm một khoảng bù bằng một nửa chiều cao font chữ.
-        actual_margin_v = max(4, actual_margin_v + int(round(effective_font_size * 0.35)))
+        # actual_margin_v đã được tính toán đồng bộ chuẩn xác từ đáy đến đáy dòng chữ để cả khối chữ nằm chính giữa dải mờ
 
         # Scale box_padding từ preview sang độ phân giải thực tế
         if box_padding is not None and box_padding <= 25:

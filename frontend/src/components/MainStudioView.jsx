@@ -426,7 +426,7 @@ export default function MainStudioView({ onNavigateTab }) {
         genre: genre,
         provider: 'gemini',
         voice_code: voiceCode,
-        margin_v: Math.max(2, Math.round(subBottomOffset + (calcBlurH * 0.45))), // Đặt chữ phụ đề nằm CHÍNH GIỮA dải mờ
+        margin_v: Math.max(2, Math.round(subBottomOffset + (calcBlurH * 0.22))), // Căn chính giữa khối chữ vào dải mờ
         backdrop_opacity_hex: backdropOpacity,
         has_mask: hasMask,
         mask_top: calcMaskTop, // % từ đỉnh xuống dải mờ

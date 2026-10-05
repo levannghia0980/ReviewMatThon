@@ -530,24 +530,32 @@ class VideoComposerService:
             m_h = int(round(render_h * (b_h_val / 100.0)))
             m_x = max(0, int(round((render_w - m_w) / 2.0)))
 
-            # offset từ đáy khung hình: khi b_offset_val = 0 -> dải mờ dính sát mép cắt crop đáy
+            # offset từ đáy khung hình: khi b_offset_val <= 1.0% -> dải mờ dính sát 100% mép cắt crop đáy, không hở 1 pixel nào
             offset_bottom_px = int(round(render_h * (b_offset_val / 100.0)))
-            m_y = max(0, render_h - offset_bottom_px - m_h)
+            if offset_bottom_px <= 2:
+                m_y = max(0, render_h - m_h)
+                fade_expr = "a='if(lt(Y,8),245*(Y/8),245)'"
+            else:
+                m_y = max(0, render_h - offset_bottom_px - m_h)
+                f_h = max(2, int(round(m_h * 0.12)))
+                fade_expr = f"a='if(lt(Y,{f_h}),245*(Y/{f_h}),if(gt(Y,H-{f_h}),245*((H-Y)/{f_h}),245))'"
 
             m_w = max(32, min(render_w, (m_w // 2) * 2))
             m_h = max(16, min(render_h, (m_h // 2) * 2))
             m_x = max(0, min(render_w - m_w, (m_x // 2) * 2))
-            m_y = max(0, min(render_h - m_h, (m_y // 2) * 2))
+            if offset_bottom_px <= 2:
+                m_y = max(0, render_h - m_h)
+            else:
+                m_y = max(0, min(render_h - m_h, (m_y // 2) * 2))
 
-            f_h = max(2, int(round(m_h * 0.15)))
-            # Dải mờ Cinema: avgblur chống gợn sóng + làm tối nhẹ r*0.35 g*0.35 b*0.35 che sạch 100% tàn tích chữ Trung
+            # Dải mờ Frosted Glass đục trắng mịn màng như CapCut: avgblur làm nhòe chữ cũ + ánh sáng trắng sương sang trọng
             filter_chains.append(
                 f"[{last_v}]split=2[v_main][v_crop_src];"
                 f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
-                f"avgblur=sizeX=55:sizeY=5,"
+                f"avgblur=sizeX=65:sizeY=5,"
                 f"format=yuva420p,"
-                f"geq=r='r(X,Y)*0.30':g='g(X,Y)*0.30':b='b(X,Y)*0.30':"
-                f"a='if(lt(Y,{f_h}),240*(Y/{f_h}),if(gt(Y,H-{f_h}),240*((H-Y)/{f_h}),240))'[v_blurred];"
+                f"geq=r='min(255,r(X,Y)*0.85+35)':g='min(255,g(X,Y)*0.85+35)':b='min(255,b(X,Y)*0.85+40)':"
+                f"{fade_expr}[v_blurred];"
                 f"[v_main][v_blurred]overlay={m_x}:{m_y}[v_masked]"
             )
             last_v = "v_masked"

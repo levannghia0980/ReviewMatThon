@@ -257,7 +257,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         sub_offset_val = float(getattr(req, "sub_bottom_offset", 0.0) or 0.0)
         margin_v_val = getattr(req, "margin_v", None)
         if margin_v_val is None:
-            margin_v_val = int(round(sub_offset_val + (blur_h_val * 0.45)))
+            margin_v_val = max(2, int(round(sub_offset_val + (blur_h_val * 0.22))))
         box_pad_val = getattr(req, "box_padding", 8) if getattr(req, "box_padding", None) is not None else 8
 
         highlight_c = req.karaoke_highlight_color if (getattr(req, "karaoke_highlight_color", None) and req.karaoke_highlight_color != "&H00EB6325") else "&H000000FF"
