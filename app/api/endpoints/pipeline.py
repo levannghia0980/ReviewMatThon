@@ -239,13 +239,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         vw, vh = VideoComposerService.get_video_resolution(project.video_path)
         crop_ratio = getattr(req, "crop_ratio", "16:9")
-        if req.has_mask:
-            crop_info = VideoComposerService.calculate_crop(vw, vh, req.mask_height, target_ratio=crop_ratio)
-            ass_w = crop_info["w"]
-            ass_h = crop_info["h"]
-        else:
-            ass_w = vw
-            ass_h = vh
+        ass_w, ass_h = vw, vh
 
         font_sz = getattr(req, "font_size", 14) or 14
         margin_v_val = getattr(req, "margin_v", 8) if getattr(req, "margin_v", None) is not None else 8
@@ -386,8 +380,9 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             err_details = audio_res_container.get("error") or "Không tìm thấy file âm thanh tiếng Việt hoàn chỉnh"
             raise RuntimeError(f"Lỗi tạo giọng lồng tiếng tiếng Việt: {err_details}. Đã chặn tiến trình để không xuất video giữ tiếng Trung gốc.")
 
-        if video_res_container.get("error"):
-            raise RuntimeError(f"Lỗi Render Video GPU: {video_res_container['error']}")
+        if video_res_container.get("error") or not video_res_container.get("success") or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
+            err_details = video_res_container.get("error") or "File video render tạm không tồn tại hoặc bị lỗi."
+            raise RuntimeError(f"Lỗi Render Video GPU/CPU: {err_details}. Đã chặn tiến trình gộp video!")
 
         # BƯỚC 4: HỢP NHẤT STREAM COPY 0.5s
         task_manager.update_task(task_id, step=4, progress=92)

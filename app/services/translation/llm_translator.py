@@ -42,12 +42,13 @@ async def extract_batch_entities_pass1_llm(
     accumulated_entities = accumulated_entities or {}
     
     existing_entities_preview = ""
-    if accumulated_entities:
+    if accumulated_entities and batch_raw_text:
         sample_list = []
-        for raw, item in list(accumulated_entities.items())[-40:]: # Lấy 40 thực thể gần nhất
-            viet = item.get("viet", "")
-            etype = item.get("type", "NAME")
-            sample_list.append(f"- {raw} ➔ {viet} ({etype})")
+        for raw, item in accumulated_entities.items():
+            if raw and raw in batch_raw_text:
+                viet = item.get("viet", "")
+                etype = item.get("type", "NAME")
+                sample_list.append(f"- {raw} ➔ {viet} ({etype})")
         existing_entities_preview = "\n".join(sample_list)
 
     genre_rules = get_profile_description(genre)

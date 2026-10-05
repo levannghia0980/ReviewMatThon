@@ -28,14 +28,15 @@ export default function MainStudioView({ onNavigateTab }) {
   // Video Mask & Placement Configuration (Mặc định Bật Che Phụ Đề Gốc để chống đè chữ)
   const [hasMask, setHasMask] = useState(true);
   const [maskTop, setMaskTop] = useState(80); // % from top
-  const [maskLeft, setMaskLeft] = useState(15); // % left
-  const [maskWidth, setMaskWidth] = useState(70); // % width
+  const [maskLeft, setMaskLeft] = useState(0); // % left
+  const [maskWidth, setMaskWidth] = useState(100); // Giữ để gửi backend
   const [maskHeight, setMaskHeight] = useState(8); // % height cắt sub đáy
+  const [blurHeight, setBlurHeight] = useState(13); // % height dải mờ che sub cũ (tùy chỉnh cao nền)
   const [cropRatio, setCropRatio] = useState('16:9'); // '16:9' (YouTube Ngang Chuẩn) | '9:16' (Shorts/TikTok)
   const [backdropOpacity, setBackdropOpacity] = useState('CC'); // 80% opacity mặc định khi bật che
 
   // Subtitle Vertical Placement, Font Size & Box Padding (Nền sub che chữ gốc)
-  const [subBottomOffset, setSubBottomOffset] = useState(2); // % from bottom sát mép đáy (2%)
+  const [subBottomOffset, setSubBottomOffset] = useState(2); // % from bottom sát mép cắt đáy (2%)
   const [subFontSize, setSubFontSize] = useState(13); // Cỡ chữ phụ đề vừa vặn theo khung hình bị cắt
   const [subBoxPadding, setSubBoxPadding] = useState(8); // Độ to / padding theo chiều dọc của nền phụ đề (px)
 
@@ -333,12 +334,10 @@ export default function MainStudioView({ onNavigateTab }) {
     } else if (interactionMode === 'sub-move') {
       const rawBottom = 100 - currentMouseY;
       if (hasMask) {
-        // Tọa độ tính từ mép trên của đường cắt sub đáy
-        const newBottom = Math.max(0, Math.min(85, rawBottom - maskHeight));
+        const newBottom = Math.max(0, Math.min(80, rawBottom - maskHeight));
         setSubBottomOffset(Math.round(newBottom));
       } else {
-        // Tọa độ tính từ mép đáy của video gốc
-        const newBottom = Math.max(0, Math.min(85, rawBottom));
+        const newBottom = Math.max(0, Math.min(80, rawBottom));
         setSubBottomOffset(Math.round(newBottom));
       }
     }
@@ -412,19 +411,28 @@ export default function MainStudioView({ onNavigateTab }) {
     setResult(null);
 
     try {
+      // 🎬 TÍNH TOÁN TỌA ĐỘ DẢI MỜ & PHỤ ĐỀ ĐỒNG BỘ 1:1 VỚI PREVIEW CANVAS
+      const calcBlurH = Math.max(6, blurHeight || 13);
+      const baseBottom = hasMask ? (maskHeight + subBottomOffset) : subBottomOffset;
+      // Đặt chữ phụ đề nằm CHÍNH GIỮA dải mờ: tâm dải mờ cách đáy = baseBottom + (calcBlurH / 2)
+      const finalMarginV = Math.round(baseBottom + (calcBlurH * 0.45));
+      const calcMaskTop = Math.max(0, Math.min(95, 100 - baseBottom - calcBlurH));
+      const calcMaskWidth = Math.min(100, Math.max(30, maskWidth || 100));
+      const calcMaskLeft = Math.max(0, (100 - calcMaskWidth) / 2);
+
       const payload = {
         quality: downloadQuality,
         source_language: 'zh',
         genre: genre,
         provider: 'gemini',
         voice_code: voiceCode,
-        margin_v: subBottomOffset, // % khoảng cách từ đáy (1% - 85%) theo vị trí người dùng đã kéo setup
+        margin_v: finalMarginV, // % khoảng cách từ đáy đến chữ phụ đề
         backdrop_opacity_hex: backdropOpacity,
         has_mask: hasMask,
-        mask_top: maskTop,
-        mask_left: maskLeft,
-        mask_width: maskWidth,
-        mask_height: maskHeight,
+        mask_top: calcMaskTop, // % từ đỉnh xuống dải mờ
+        mask_left: calcMaskLeft,
+        mask_width: calcMaskWidth, // Độ rộng dải mờ %
+        mask_height: calcBlurH, // Chiều cao dải mờ (Cao Nền) %
         crop_ratio: cropRatio,
         font_size: subFontSize,
         box_style: 'white_box',
@@ -797,24 +805,25 @@ export default function MainStudioView({ onNavigateTab }) {
                 </span>
               </div>
 
-              {/* Độ To Nền Sub (Hộp nền che chữ gốc) */}
+
+              {/* Chiều Cao Vùng Mờ Sub (Cao Nền) */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '2px 8px', borderRadius: '5px', border: '1.5px solid #2563eb' }}>
-                <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af' }}>Nền Sub:</span>
+                <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af' }}>Cao Nền:</span>
                 <button
                   type="button"
-                  onClick={() => setSubBoxPadding(prev => Math.max(3, prev - 1))}
-                  title="Thu nhỏ độ to/chiều cao nền sub"
+                  onClick={() => setBlurHeight(prev => Math.max(8, prev - 1))}
+                  title="Giảm chiều cao dải mờ che chữ"
                   style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                 >
                   <Minus size={11} color="#2563eb" />
                 </button>
-                <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#1d4ed8', minWidth: '28px', textAlign: 'center' }}>
-                  {subBoxPadding}px
+                <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#1d4ed8', minWidth: '32px', textAlign: 'center' }}>
+                  {blurHeight}%
                 </span>
                 <button
                   type="button"
-                  onClick={() => setSubBoxPadding(prev => Math.min(25, prev + 1))}
-                  title="Tăng độ to/chiều cao nền sub để che kín chữ gốc"
+                  onClick={() => setBlurHeight(prev => Math.min(30, prev + 1))}
+                  title="Tăng chiều cao dải mờ che chữ"
                   style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                 >
                   <Plus size={11} color="#2563eb" />
@@ -838,7 +847,7 @@ export default function MainStudioView({ onNavigateTab }) {
                         background: cropRatio === '16:9' ? '#2563eb' : '#ffffff',
                         color: cropRatio === '16:9' ? '#ffffff' : '#2563eb'
                       }}
-                      title="Tỷ lệ 16:9 YouTube Chuẩn: Cắt đáy bao nhiêu thì cắt đều 2 bên bấy nhiêu để giữ trọn hình ảnh và đúng chuẩn YouTube"
+                      title="Tỷ lệ 16:9 YouTube Chuẩn"
                     >
                       🎬 16:9 YouTube Chuẩn
                     </button>
@@ -929,11 +938,8 @@ export default function MainStudioView({ onNavigateTab }) {
                   <button
                     type="button"
                     className="btn btn-secondary btn-sm"
-                    onClick={() => {
-                      setHasMask(false);
-                      setSubBottomOffset(prev => Math.max(8, prev));
-                    }}
-                    title="Tắt cắt sub (giữ nguyên kích thước video gốc)"
+                    onClick={() => setHasMask(false)}
+                    title="Tắt cắt sub & dải mờ"
                     style={{ fontSize: '10.5px', padding: '2px 6px', color: '#64748b' }}
                   >
                     Tắt Cắt
@@ -947,7 +953,6 @@ export default function MainStudioView({ onNavigateTab }) {
                     setHasMask(true);
                     setMaskHeight(8);
                     setCropRatio('16:9');
-                    setSubBottomOffset(prev => Math.max(2, prev > 8 ? prev - 8 : prev));
                   }}
                   style={{ fontSize: '11px', padding: '3px 10px', background: '#0284c7', color: '#ffffff', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
                 >
@@ -1001,7 +1006,7 @@ export default function MainStudioView({ onNavigateTab }) {
               {/* CẮT SUB & TỰ ĐỘNG CÂN TỶ LỆ CHUẨN YOUTUBE PREVIEW OVERLAYS */}
               {hasMask && (
                 <>
-                  {/* 1. LỚP PHỦ CẮT DỌC MÉP TRÁI (CHỈ CHE NHẸ NẾU CÓ CẮT) */}
+                  {/* 1. LỚP PHỦ CẮT DỌC MÉP TRÁI */}
                   {targetLeft > 0.4 && (
                     <div
                       style={{
@@ -1025,7 +1030,7 @@ export default function MainStudioView({ onNavigateTab }) {
                     </div>
                   )}
 
-                  {/* 2. LỚP PHỦ CẮT DỌC MÉP PHẢI (CHỈ CHE NHẸ NẾU CÓ CẮT) */}
+                  {/* 2. LỚP PHỦ CẮT DỌC MÉP PHẢI */}
                   {targetLeft > 0.4 && (
                     <div
                       style={{
@@ -1080,7 +1085,7 @@ export default function MainStudioView({ onNavigateTab }) {
                     </span>
                   </div>
 
-                  {/* 4. THANH KÉO ĐỘ CAO CẮT SUB ĐÁY (HITBOX VÔ HÌNH KHÔNG CHE CHỮ) */}
+                  {/* 4. THANH KÉO ĐỘ CAO CẮT SUB ĐÁY */}
                   <div
                     onMouseDown={(e) => handleMouseDown(e, 'crop-bottom')}
                     style={{
@@ -1095,7 +1100,7 @@ export default function MainStudioView({ onNavigateTab }) {
                     title="Kéo mép này lên/xuống để chọn độ cao cắt sub đáy"
                   />
 
-                  {/* 5. KHUNG THÀNH PHẨM (CHUẨN TỶ LỆ YOUTUBE - SÁNG RÕ, SIÊU NÉT) */}
+                  {/* 5. KHUNG THÀNH PHẨM YOUTUBE / SHORTS */}
                   <div
                     style={{
                       position: 'absolute',
@@ -1131,39 +1136,85 @@ export default function MainStudioView({ onNavigateTab }) {
                 </>
               )}
 
-              {/* DYNAMIC SUBTITLE PREVIEW (KHUNG TRẮNG BO TRÒN CHE SẠCH CHỮ GỐC) */}
-              <div
-                onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
-                style={{
-                  position: 'absolute',
-                  bottom: hasMask ? `calc(${maskHeight}% + ${subBottomOffset}%)` : `${subBottomOffset}%`,
-                  left: '50%',
-                  transform: 'translateX(-50%)',
-                  textAlign: 'center',
-                  cursor: 'ns-resize',
-                  zIndex: 25,
-                  userSelect: 'none',
-                  maxWidth: hasMask ? `${targetW * 0.94}%` : '92%',
-                  padding: `${subBoxPadding}px 18px`,
-                  background: '#FFFFFF',
-                  border: '1.5px solid #CBD5E1',
-                  borderRadius: '8px',
-                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.35)',
-                  transition: 'padding 0.15s ease'
-                }}
-                title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển vị trí phụ đề"
-              >
-                <span style={{
-                  display: 'inline-block',
-                  fontSize: `${Math.max(12, Math.round(subFontSize * 0.95))}px`,
-                  fontWeight: 800,
-                  color: '#0F172A',
-                  letterSpacing: '0.2px',
-                  whiteSpace: 'nowrap'
-                }}>
-                  <span style={{ color: '#EF4444', fontWeight: 900 }}>Lúc này</span> hắn mới nhận ra điều bất thường... ({subFontSize}px, Nền {subBoxPadding}px)
-                </span>
-              </div>
+              {/* DYNAMIC SUBTITLE PREVIEW (ĐỒNG BỘ 1:1 VỚI BẢN RENDER VIDEO THÀNH PHẨM) */}
+              {hasMask ? (
+                /* 1. Nền mờ ôm vừa đủ độ rộng sub — CSS max-content, canh giữa */
+                <div
+                  onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
+                  style={{
+                    position: 'absolute',
+                    bottom: `calc(${maskHeight}% + ${subBottomOffset}%)`,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    width: 'max-content',
+                    maxWidth: '96%',
+                    height: `${blurHeight}%`,
+                    padding: '0 28px',
+                    background: 'rgba(10, 14, 22, 0.68)',
+                    backdropFilter: 'blur(10px) saturate(1.2)',
+                    borderRadius: '6px',
+                    borderTop: '1px solid rgba(255,255,255,0.10)',
+                    borderBottom: '1px solid rgba(255,255,255,0.10)',
+                    boxShadow: '0 2px 24px rgba(0,0,0,0.55)',
+                    cursor: 'ns-resize',
+                    zIndex: 25,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    boxSizing: 'border-box',
+                    overflow: 'hidden'
+                  }}
+                  title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển cao độ dải mờ & phụ đề"
+                >
+                  {/* Chữ Phụ Đề — luôn ở chính giữa nền */}
+                  <span
+                    style={{
+                      position: 'relative',
+                      zIndex: 26,
+                      whiteSpace: 'nowrap',
+                      fontSize: `${Math.max(13, Math.round(subFontSize * 1.05))}px`,
+                      fontWeight: 900,
+                      color: '#ffffff',
+                      textShadow: '0 0 4px #000, 1px 1px 3px #000, -1px -1px 3px #000',
+                      letterSpacing: '0.4px',
+                      lineHeight: 1.3,
+                      pointerEvents: 'none',
+                      flexShrink: 0
+                    }}
+                  >
+                    Lúc này hắn mới nhận ra điều bất thường... ({subFontSize}px)
+                  </span>
+                </div>
+              ) : (
+                /* 2. Chữ Phụ Đề Khi Không Có Dải Mờ Che */
+                <div
+                  onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
+                  style={{
+                    position: 'absolute',
+                    bottom: `${subBottomOffset}%`,
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    textAlign: 'center',
+                    cursor: 'ns-resize',
+                    zIndex: 25,
+                    userSelect: 'none',
+                    maxWidth: '92%'
+                  }}
+                  title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển cao độ phụ đề"
+                >
+                  <span style={{
+                    display: 'inline-block',
+                    fontSize: `${Math.max(13, Math.round(subFontSize * 1.05))}px`,
+                    fontWeight: 900,
+                    color: '#FFE600',
+                    textShadow: '0 0 3px #000, 2px 2px 3px #000, -2px -2px 3px #000, 2px -2px 3px #000, -2px 2px 3px #000',
+                    letterSpacing: '0.4px',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    Lúc này hắn mới nhận ra điều bất thường... ({subFontSize}px)
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* COMPACT PLAYBACK CONTROL BAR */}

@@ -142,17 +142,22 @@ class TranslationPipelineService:
                 sample_new = [f"{e.get('raw','')}->{e.get('viet','')}" for e in new_entities[:4]]
                 task_manager.add_log(task_id, f"      ✔ LLM 1 phát hiện thêm {new_found_count} thực thể mới: {', '.join(sample_new)}", "emerald")
 
-            # Tạo bảng thực thể cho LLM 2
+            # Tạo bảng thực thể cho LLM 2 (Chỉ lấy các thực thể thực sự xuất hiện trong lô này)
             entity_lines = []
             for raw, ent in accumulated_entities.items():
-                viet = ent.get("viet", "")
-                etype = ent.get("type", "NAME")
-                desc = ent.get("desc", "")
-                entity_lines.append(f"- {raw} ➔ {viet} ({etype}{': ' + desc if desc else ''})")
+                if raw and (raw in clean_batch_text or raw in tagged_batch_text):
+                    viet = ent.get("viet", "")
+                    etype = ent.get("type", "NAME")
+                    desc = ent.get("desc", "")
+                    entity_lines.append(f"- {raw} ➔ {viet} ({etype}{': ' + desc if desc else ''})")
             entity_table_text = "\n".join(entity_lines)
 
+            # --- ĐỢI 5 GIÂY TRƯỚC KHI GỬI LLM 2 ---
+            task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Đợi 5 giây trước khi gửi LLM 2 dịch...", "gray")
+            await asyncio.sleep(5)
+
             # --- LLM 2: DỊCH VĂN PHONG CHUẨN AIREAD ---
-            task_manager.add_log(task_id, f"   ✨ [Lô #{b_num}/{len(batches)}] LLM 2: Dịch kịch bản văn phong AIRead với bảng {len(accumulated_entities)} thực thể khóa...", "cyan")
+            task_manager.add_log(task_id, f"   ✨ [Lô #{b_num}/{len(batches)}] LLM 2: Dịch kịch bản văn phong AIRead với bảng {len(entity_lines)} thực thể xuất hiện trong lô...", "cyan")
 
             raw_llm_batch_output = await translate_batch_pass2_llm(
                 tagged_text=tagged_batch_text,
@@ -188,6 +193,11 @@ class TranslationPipelineService:
 
             pct = int(30 + (b_num / len(batches)) * 45)
             task_manager.update_task(task_id, progress=pct)
+
+            # --- ĐỢI 5 GIÂY NGHỈ GIỮA CÁC LÔ TRƯỚC KHI TÌM THỰC THỂ LÔ TIẾP THEO ---
+            if b_idx < len(batches) - 1:
+                task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Đã xong. Đợi 5 giây trước khi bóc tách thực thể Lô #{b_num + 1}...", "gray")
+                await asyncio.sleep(5)
 
         task_manager.add_log(task_id, f"   ✔ Hoàn tất dịch toàn bộ {len(batches)} lô với tổng {len(accumulated_entities)} thực thể xuyên suốt.", "emerald")
 

@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import time
 import math
@@ -268,19 +269,7 @@ class VideoComposerService:
         task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
 
         vw, vh = cls.get_video_resolution(project.video_path)
-        if has_mask:
-            crop_info = cls.calculate_crop(vw, vh, mask_height, target_ratio=crop_ratio)
-            render_w = crop_info["w"]
-            render_h = crop_info["h"]
-            crop_x = crop_info["x"]
-            crop_y = crop_info["y"]
-        else:
-            render_w, render_h = vw, vh
-            crop_x, crop_y = 0, 0
-
-        # ASS phụ đề dùng kích thước chính xác của khung hình sau khi crop (render_w x render_h)
-        # để đảm bảo tọa độ margin_v và kích thước hộp che khớp 1:1 với Web Preview
-        ass_w, ass_h = render_w, render_h
+        ass_w, ass_h = vw, vh
 
         font_sz = font_size if (font_size and font_size > 0) else 14
         margin_v_val = margin_v if margin_v is not None else 8
@@ -315,6 +304,33 @@ class VideoComposerService:
             box_padding=box_pad_val
         )
         task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} (PlayRes: {ass_w}x{ass_h})", "emerald")
+
+        # Gen file ASS mask che sub gốc: nền dark vừa đúng độ rộng từng dòng sub Hán (BorderStyle=4)
+        source_mask_ass = None
+        if has_mask:
+            try:
+                mask_ass_file = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_source_mask.ass"
+                # margin_v_pct: vị trí đáy sub gốc (% từ đáy), nhất thiết phải đúng vị trí sub Hán
+                src_margin_v_pct = mask_top * 0.01 * 100 if mask_top > 1 else (100 - mask_top - mask_height)
+                # mask_top là % từ trên xuống → margin_v_pct từ đáy = 100 - mask_top - mask_height
+                src_margin_v_pct = max(1.0, 100.0 - mask_top - mask_height)
+                KaraokeSubtitleService.create_source_mask_ass(
+                    segments=segments,
+                    output_ass_path=str(mask_ass_file),
+                    video_title=project.title,
+                    width=ass_w,
+                    height=ass_h,
+                    source_font_size=32,
+                    mask_height_pct=mask_height,
+                    margin_v_pct=src_margin_v_pct,
+                    blur_radius=10,
+                    bg_alpha_hex="90",  # 90 = ~44% transparent (56% opaque)
+                )
+                source_mask_ass = str(mask_ass_file)
+                task_manager.add_log(task_id, f"   ✔ Đã tạo Source Mask ASS (per-sub blur): {mask_ass_file.name}", "emerald")
+            except Exception as e_mask:
+                task_manager.add_log(task_id, f"   ⚠️ Không tạo được source mask ASS: {e_mask}", "amber")
+                source_mask_ass = None
 
         # Kiểm tra nếu đã có file mixed sẵn hoặc file voiceover
         mixed_audio_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_mixed_final.mp3"
@@ -356,6 +372,13 @@ class VideoComposerService:
 
         output_video_path = settings.OUTPUT_FINAL_VIDEOS_DIR / f"{project.video_id}_{safe_title}_final.mp4"
         temp_visual_video = settings.TEMP_DIR / f"{project.video_id}_{safe_title}_visual_tmp.mp4"
+        
+        # Xóa triệt để file tạm hình ảnh cũ nếu có từ lần chạy trước
+        if temp_visual_video.exists():
+            try:
+                temp_visual_video.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         v_ok = cls.render_visual_stream(
             task_id=task_id,
@@ -374,11 +397,12 @@ class VideoComposerService:
             mask_width=mask_width,
             mask_height=mask_height,
             backdrop_opacity_hex=backdrop_opacity_hex,
-            target_ratio=target_ratio
+            target_ratio=target_ratio,
+            source_mask_ass=source_mask_ass
         )
 
         if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
-            raise RuntimeError("Render luồng hình ảnh video thất bại!")
+            raise RuntimeError("Render luồng hình ảnh video thất bại! Không thể tiến hành ghép audio.")
 
         # 5. Hợp nhất luồng hình ảnh & âm thanh thành phẩm (Stream copy 0.5s)
         task_manager.add_log(task_id, "   ⚡ [Stream Mux] Hợp nhất video và âm thanh thành phẩm...", "cyan")
@@ -442,38 +466,71 @@ class VideoComposerService:
         mask_width: float = 70.0,
         mask_height: float = 12.0,
         backdrop_opacity_hex: str = "80",
-        target_ratio: str = "16:9"
+        target_ratio: str = "16:9",
+        source_mask_ass: Optional[str] = None
     ) -> Tuple[str, List[str], int, int]:
         """Tạo chuỗi filter_complex chuẩn xác dùng chung cho cả render đơn luồng và song song."""
-        try:
-            ass_rel = os.path.relpath(str(ass_file_path), start=str(settings.BASE_DIR))
-            ass_escaped = ass_rel.replace("\\", "/").replace("'", "\\'")
-        except ValueError:
-            ass_abs = str(Path(ass_file_path).resolve())
-            ass_escaped = ass_abs.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+        # Chuẩn hóa đường dẫn file ASS an toàn tuyệt đối cho FFmpeg trên mọi hệ điều hành (kể cả ổ C:, D:, E: trên Windows hoặc Linux)
+        ass_path_obj = Path(ass_file_path).resolve()
+        ass_posix = str(ass_path_obj).replace("\\", "/")
+        if sys.platform == "win32" and ":" in ass_posix:
+            drive, rest = ass_posix.split(":", 1)
+            ass_escaped = f"{drive}\\:{rest}".replace("'", "\\'")
+        else:
+            ass_escaped = ass_posix.replace("'", "\\'")
+
+        # Chuẩn hóa đường dẫn file mask ASS nếu có
+        mask_ass_escaped = None
+        if source_mask_ass and os.path.exists(source_mask_ass):
+            mask_path_obj = Path(source_mask_ass).resolve()
+            mask_posix = str(mask_path_obj).replace("\\", "/")
+            if sys.platform == "win32" and ":" in mask_posix:
+                m_drive, m_rest = mask_posix.split(":", 1)
+                mask_ass_escaped = f"{m_drive}\\:{m_rest}".replace("'", "\\'")
+            else:
+                mask_ass_escaped = mask_posix.replace("'", "\\'")
 
         filter_chains = []
         last_v = "0:v"
 
         vw, vh = cls.get_video_resolution(video_input_path)
-        if has_mask:
-            crop_info = cls.calculate_crop(vw, vh, mask_height, target_ratio=target_ratio)
-            render_w = crop_info["w"]
-            render_h = crop_info["h"]
-            crop_x = crop_info["x"]
-            crop_y = crop_info["y"]
-            crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x='min(max(0,iw-out_w),{crop_x})':y='min(max(0,ih-out_h),{crop_y})'"
+        render_w, render_h = (vw // 2) * 2, (vh // 2) * 2
+
+        if render_w != vw or render_h != vh:
+            crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x=0:y=0"
             filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
             last_v = "v_clean"
-        else:
-            render_w = (vw // 2) * 2
-            render_h = (vh // 2) * 2
-            if render_w != vw or render_h != vh:
-                crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x=0:y=0"
-                filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
-                last_v = "v_clean"
 
-        # Subtitle Karaoke & Đảm bảo kích thước chẵn tuyệt đối (chống lỗi code -22 invalid argument)
+        if has_mask:
+            if mask_ass_escaped:
+                # 🎬 PHƯƠNG ÁN DYNAMIC MASK: Hộp che mờ ôm khít đúng từng câu chữ Hán cũ theo timing
+                # Không làm nhòe kéo dài cả 2 bên mép video
+                filter_chains.append(f"[{last_v}]subtitles='{mask_ass_escaped}':force_style='Encoding=UTF-8'[v_masked]")
+                last_v = "v_masked"
+            else:
+                m_w = int(round(vw * (mask_width / 100.0)))
+                m_h = int(round(vh * (mask_height / 100.0)))
+                m_x = int(round(vw * (mask_left / 100.0)))
+                m_y = int(round(vh * (mask_top / 100.0)))
+
+                m_w = max(32, min(vw, (m_w // 2) * 2))
+                m_h = max(16, min(vh, (m_h // 2) * 2))
+                m_x = max(0, min(vw - m_w, (m_x // 2) * 2))
+                m_y = max(0, min(vh - m_h, (m_y // 2) * 2))
+
+                f_h = max(3, int(round(m_h * 0.12)))
+                filter_chains.append(
+                    f"[{last_v}]split=2[v_main][v_crop_src];"
+                    f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
+                    f"avgblur=sizeX=55:sizeY=3,"
+                    f"format=yuva420p,"
+                    f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                    f"a='if(lt(Y,{f_h}),255*(Y/{f_h}),if(gt(Y,H-{f_h}),255*((H-Y)/{f_h}),255))'[v_blurred];"
+                    f"[v_main][v_blurred]overlay={m_x}:{m_y}[v_masked]"
+                )
+                last_v = "v_masked"
+
+        # Subtitle Tiếng Việt đặt lên trên cùng, căn giữa vùng che
         filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
         last_v = "v_sub"
 
@@ -515,7 +572,8 @@ class VideoComposerService:
         mask_height: float = 12.0,
         backdrop_opacity_hex: str = "80",
         target_ratio: str = "16:9",
-        max_workers: Optional[int] = None
+        max_workers: Optional[int] = None,
+        source_mask_ass: Optional[str] = None
     ) -> bool:
         """
         Render luồng hình ảnh song song tối đa (Parallel Segment Rendering).
@@ -541,7 +599,8 @@ class VideoComposerService:
                 mask_width=mask_width,
                 mask_height=mask_height,
                 backdrop_opacity_hex=backdrop_opacity_hex,
-                target_ratio=target_ratio
+                target_ratio=target_ratio,
+                source_mask_ass=source_mask_ass
             )
 
         cpu_cores = os.cpu_count() or 4
@@ -597,12 +656,19 @@ class VideoComposerService:
             mask_width=mask_width,
             mask_height=mask_height,
             backdrop_opacity_hex=backdrop_opacity_hex,
-            target_ratio=target_ratio
+            target_ratio=target_ratio,
+            source_mask_ass=source_mask_ass
         )
 
         out_p = Path(output_temp_video).resolve()
         out_p.parent.mkdir(parents=True, exist_ok=True)
         temp_seg_dir = out_p.parent / f"segs_{out_p.stem}"
+        # Luôn làm sạch thư mục phân đoạn cũ để không dính file hỏng từ lần chạy trước
+        if temp_seg_dir.exists():
+            try:
+                shutil.rmtree(temp_seg_dir, ignore_errors=True)
+            except Exception:
+                pass
         temp_seg_dir.mkdir(parents=True, exist_ok=True)
 
         segments_info = []
@@ -630,17 +696,17 @@ class VideoComposerService:
             if task_id and task_manager.is_cancelled(task_id):
                 return idx, False
 
-            # Nếu phân đoạn đã có sẵn từ trước hợp lệ
-            if seg_file.exists() and seg_file.stat().st_size > 5000:
-                with lock:
-                    completed_count += 1
-                return idx, True
+            # Xóa file cũ nếu có để tránh xung đột
+            try:
+                seg_file.unlink(missing_ok=True)
+            except Exception:
+                pass
 
             ffmpeg_cmd = get_ffmpeg_cmd()
+            # Sử dụng -ss sau -i để filter subtitles giải mã đúng timestamp và frame của phân đoạn
             cmd = [
                 *ffmpeg_cmd, "-y",
                 "-ss", f"{start_sec:.3f}",
-                "-copyts",
                 "-t", f"{dur_sec:.3f}",
                 "-i", str(video_input_path),
                 *logo_inputs,
@@ -673,7 +739,6 @@ class VideoComposerService:
                 fb_cmd = [
                     *ffmpeg_cmd, "-y",
                     "-ss", f"{start_sec:.3f}",
-                    "-copyts",
                     "-t", f"{dur_sec:.3f}",
                     "-i", str(video_input_path),
                     *logo_inputs,
@@ -690,6 +755,10 @@ class VideoComposerService:
                 ]
                 res_fb = subprocess.run(fb_cmd, capture_output=True, text=True, errors="replace", cwd=str(settings.BASE_DIR))
                 if res_fb.returncode != 0 or not seg_file.exists() or seg_file.stat().st_size < 1000:
+                    err_msg = (res_fb.stderr or res.stderr or "").strip()
+                    err_lines = [l for l in err_msg.splitlines() if l.strip() and not l.startswith("frame=")]
+                    summary_err = "\n".join(err_lines[-10:])
+                    print(f"❌ [Segment #{idx+1}] Lỗi render FFmpeg (code={res_fb.returncode}):\n{summary_err}", flush=True)
                     return idx, False
 
             with lock:
@@ -721,17 +790,41 @@ class VideoComposerService:
                 if not ok:
                     all_ok = False
                     if task_id:
-                        task_manager.add_log(task_id, f"❌ Phân đoạn #{idx+1} bị lỗi render!", "rose")
+                        task_manager.add_log(task_id, f"⚠️ Phân đoạn song song #{idx+1} bị lỗi, tự động chuyển sang chế độ Render Toàn Diện An Toàn...", "amber")
                     break
 
         if not all_ok:
-            return False
+            try:
+                shutil.rmtree(temp_seg_dir, ignore_errors=True)
+            except Exception:
+                pass
+            # Fallback 100% tin cậy: chuyển sang Render đơn luồng toàn bộ video
+            return cls._render_visual_stream_single(
+                task_id=task_id,
+                video_input_path=video_input_path,
+                ass_file_path=ass_file_path,
+                output_temp_video=output_temp_video,
+                logo_path=logo_path,
+                logo_position=logo_position,
+                logo_size=logo_size,
+                logo_opacity=logo_opacity,
+                channel_name=channel_name,
+                channel_opacity=channel_opacity,
+                has_mask=has_mask,
+                mask_top=mask_top,
+                mask_left=mask_left,
+                mask_width=mask_width,
+                mask_height=mask_height,
+                backdrop_opacity_hex=backdrop_opacity_hex,
+                target_ratio=target_ratio
+            )
 
         # Ghép nối các phân đoạn bằng Concat Demuxer
         concat_list_file = temp_seg_dir / "concat_list.txt"
         with open(concat_list_file, "w", encoding="utf-8") as f:
             for seg in segments_info:
-                f.write(f"file '{seg['output'].resolve().as_posix()}'\n")
+                # Dùng relative filename để FFmpeg concat demuxer đọc an toàn tuyệt đối trên Windows/Linux
+                f.write(f"file '{seg['output'].name}'\n")
 
         if task_id:
             task_manager.add_log(task_id, f"⚡ Hợp nhất {num_segments} phân đoạn video (Stream Concat 1s)...", "cyan")
@@ -746,7 +839,7 @@ class VideoComposerService:
             "-movflags", "+faststart",
             str(output_temp_video)
         ]
-        c_res = subprocess.run(concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(settings.BASE_DIR))
+        c_res = subprocess.run(concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir))
         out_video = Path(output_temp_video)
         if c_res.returncode == 0 and out_video.exists() and out_video.stat().st_size > 1000:
             # Dọn dẹp ngay các phân đoạn tạm để giải phóng ổ đĩa
@@ -759,8 +852,31 @@ class VideoComposerService:
             return True
         else:
             if task_id:
-                task_manager.add_log(task_id, f"❌ Lỗi hợp nhất phân đoạn concat: {c_res.stderr[-300:]}", "rose")
-            return False
+                task_manager.add_log(task_id, f"⚠️ Concat phân đoạn không thành công, tự động chuyển Render Đơn Luồng An Toàn...", "amber")
+            try:
+                shutil.rmtree(temp_seg_dir, ignore_errors=True)
+            except Exception:
+                pass
+            return cls._render_visual_stream_single(
+                task_id=task_id,
+                video_input_path=video_input_path,
+                ass_file_path=ass_file_path,
+                output_temp_video=output_temp_video,
+                logo_path=logo_path,
+                logo_position=logo_position,
+                logo_size=logo_size,
+                logo_opacity=logo_opacity,
+                channel_name=channel_name,
+                channel_opacity=channel_opacity,
+                has_mask=has_mask,
+                mask_top=mask_top,
+                mask_left=mask_left,
+                mask_width=mask_width,
+                mask_height=mask_height,
+                backdrop_opacity_hex=backdrop_opacity_hex,
+                target_ratio=target_ratio,
+                source_mask_ass=source_mask_ass
+            )
 
     @classmethod
     def _render_visual_stream_single(
@@ -781,7 +897,8 @@ class VideoComposerService:
         mask_width: float = 70.0,
         mask_height: float = 12.0,
         backdrop_opacity_hex: str = "80",
-        target_ratio: str = "16:9"
+        target_ratio: str = "16:9",
+        source_mask_ass: Optional[str] = None
     ) -> bool:
         """Render đơn luồng (dành cho video ngắn dưới 60s)."""
         full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
@@ -799,7 +916,8 @@ class VideoComposerService:
             mask_width=mask_width,
             mask_height=mask_height,
             backdrop_opacity_hex=backdrop_opacity_hex,
-            target_ratio=target_ratio
+            target_ratio=target_ratio,
+            source_mask_ass=source_mask_ass
         )
 
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
@@ -948,7 +1066,8 @@ class VideoComposerService:
         mask_height: float = 12.0,
         backdrop_opacity_hex: str = "80",
         target_ratio: str = "16:9",
-        max_workers: Optional[int] = None
+        max_workers: Optional[int] = None,
+        source_mask_ass: Optional[str] = None
     ) -> bool:
         """
         Render luồng hình ảnh không tiếng (Visual Stream) với Subtitle Karaoke + Logo + Vùng che.
@@ -974,7 +1093,8 @@ class VideoComposerService:
                 mask_height=mask_height,
                 backdrop_opacity_hex=backdrop_opacity_hex,
                 target_ratio=target_ratio,
-                max_workers=max_workers
+                max_workers=max_workers,
+                source_mask_ass=source_mask_ass
             )
         else:
             return cls._render_visual_stream_single(
@@ -994,7 +1114,8 @@ class VideoComposerService:
                 mask_width=mask_width,
                 mask_height=mask_height,
                 backdrop_opacity_hex=backdrop_opacity_hex,
-                target_ratio=target_ratio
+                target_ratio=target_ratio,
+                source_mask_ass=source_mask_ass
             )
 
     @classmethod
