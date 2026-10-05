@@ -269,7 +269,11 @@ class VideoComposerService:
         task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
 
         vw, vh = cls.get_video_resolution(project.video_path)
-        ass_w, ass_h = vw, vh
+        if has_mask or (mask_height and mask_height > 0):
+            crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=mask_height, target_ratio=crop_ratio)
+            ass_w, ass_h = crop_info["w"], crop_info["h"]
+        else:
+            ass_w, ass_h = (vw // 2) * 2, (vh // 2) * 2
 
         font_sz = font_size if (font_size and font_size > 0) else 14
         margin_v_val = margin_v if margin_v is not None else 8
@@ -398,7 +402,8 @@ class VideoComposerService:
             mask_height=mask_height,
             backdrop_opacity_hex=backdrop_opacity_hex,
             target_ratio=target_ratio,
-            source_mask_ass=source_mask_ass
+            source_mask_ass=source_mask_ass,
+            bottom_cut_percent=mask_height
         )
 
         if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
@@ -467,7 +472,10 @@ class VideoComposerService:
         mask_height: float = 12.0,
         backdrop_opacity_hex: str = "80",
         target_ratio: str = "16:9",
-        source_mask_ass: Optional[str] = None
+        source_mask_ass: Optional[str] = None,
+        bottom_cut_percent: Optional[float] = None,
+        blur_height: Optional[float] = 13.0,
+        sub_bottom_offset: Optional[float] = 0.0
     ) -> Tuple[str, List[str], int, int]:
         """Tạo chuỗi filter_complex chuẩn xác dùng chung cho cả render đơn luồng và song song."""
         # Chuẩn hóa đường dẫn file ASS an toàn tuyệt đối cho FFmpeg trên mọi hệ điều hành (kể cả ổ C:, D:, E: trên Windows hoặc Linux)
@@ -494,43 +502,57 @@ class VideoComposerService:
         last_v = "0:v"
 
         vw, vh = cls.get_video_resolution(video_input_path)
-        render_w, render_h = (vw // 2) * 2, (vh // 2) * 2
+        cut_pct = float(bottom_cut_percent if bottom_cut_percent is not None else 0.0)
 
-        if render_w != vw or render_h != vh:
-            crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x=0:y=0"
-            filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
+        # 🎬 BƯỚC 1: CROP VIDEO (Cắt bỏ % sub Trung ở đáy + cắt đều 2 bên theo tỷ lệ 16:9 hoặc 9:16 Shorts)
+        if cut_pct > 0:
+            crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, target_ratio=target_ratio)
+            render_w = crop_info["w"]
+            render_h = crop_info["h"]
+            crop_x = crop_info["x"]
+            crop_y = crop_info["y"]
+            filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
             last_v = "v_clean"
+        else:
+            render_w = (vw // 2) * 2
+            render_h = (vh // 2) * 2
+            if render_w != vw or render_h != vh:
+                crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x=0:y=0"
+                filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
+                last_v = "v_clean"
 
+        # 🎬 BƯỚC 2: TẠO DẢI NỀN MỜ CHE SUB CŨ TRÊN KHUNG HÌNH (LUÔN HIỆN DIỆN KHI BẬT HAS_MASK, KỂ CẢ KHI CAO ĐỘ = 0 SÁT MÉP CROP)
         if has_mask:
-            if mask_ass_escaped:
-                # 🎬 PHƯƠNG ÁN DYNAMIC MASK: Hộp che mờ ôm khít đúng từng câu chữ Hán cũ theo timing
-                # Không làm nhòe kéo dài cả 2 bên mép video
-                filter_chains.append(f"[{last_v}]subtitles='{mask_ass_escaped}':force_style='Encoding=UTF-8'[v_masked]")
-                last_v = "v_masked"
-            else:
-                m_w = int(round(vw * (mask_width / 100.0)))
-                m_h = int(round(vh * (mask_height / 100.0)))
-                m_x = int(round(vw * (mask_left / 100.0)))
-                m_y = int(round(vh * (mask_top / 100.0)))
+            b_h_val = float(blur_height if blur_height is not None else (mask_height if mask_height and mask_height > 0 else 13.0))
+            b_offset_val = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
 
-                m_w = max(32, min(vw, (m_w // 2) * 2))
-                m_h = max(16, min(vh, (m_h // 2) * 2))
-                m_x = max(0, min(vw - m_w, (m_x // 2) * 2))
-                m_y = max(0, min(vh - m_h, (m_y // 2) * 2))
+            m_w = int(round(render_w * (mask_width / 100.0))) if mask_width else render_w
+            m_h = int(round(render_h * (b_h_val / 100.0)))
+            m_x = max(0, int(round((render_w - m_w) / 2.0)))
 
-                f_h = max(3, int(round(m_h * 0.12)))
-                filter_chains.append(
-                    f"[{last_v}]split=2[v_main][v_crop_src];"
-                    f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
-                    f"avgblur=sizeX=55:sizeY=3,"
-                    f"format=yuva420p,"
-                    f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
-                    f"a='if(lt(Y,{f_h}),255*(Y/{f_h}),if(gt(Y,H-{f_h}),255*((H-Y)/{f_h}),255))'[v_blurred];"
-                    f"[v_main][v_blurred]overlay={m_x}:{m_y}[v_masked]"
-                )
-                last_v = "v_masked"
+            # offset từ đáy khung hình: khi b_offset_val = 0 -> dải mờ dính sát mép cắt crop đáy
+            offset_bottom_px = int(round(render_h * (b_offset_val / 100.0)))
+            m_y = max(0, render_h - offset_bottom_px - m_h)
 
-        # Subtitle Tiếng Việt đặt lên trên cùng, căn giữa vùng che
+            m_w = max(32, min(render_w, (m_w // 2) * 2))
+            m_h = max(16, min(render_h, (m_h // 2) * 2))
+            m_x = max(0, min(render_w - m_w, (m_x // 2) * 2))
+            m_y = max(0, min(render_h - m_h, (m_y // 2) * 2))
+
+            f_h = max(2, int(round(m_h * 0.15)))
+            # Dải mờ Cinema: avgblur chống gợn sóng + làm tối nhẹ r*0.35 g*0.35 b*0.35 che sạch 100% tàn tích chữ Trung
+            filter_chains.append(
+                f"[{last_v}]split=2[v_main][v_crop_src];"
+                f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
+                f"avgblur=sizeX=55:sizeY=5,"
+                f"format=yuva420p,"
+                f"geq=r='r(X,Y)*0.30':g='g(X,Y)*0.30':b='b(X,Y)*0.30':"
+                f"a='if(lt(Y,{f_h}),240*(Y/{f_h}),if(gt(Y,H-{f_h}),240*((H-Y)/{f_h}),240))'[v_blurred];"
+                f"[v_main][v_blurred]overlay={m_x}:{m_y}[v_masked]"
+            )
+            last_v = "v_masked"
+
+        # 🎬 2. Subtitle Tiếng Việt đặt lên trên cùng, căn giữa khung hình đã crop
         filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
         last_v = "v_sub"
 
@@ -573,7 +595,10 @@ class VideoComposerService:
         backdrop_opacity_hex: str = "80",
         target_ratio: str = "16:9",
         max_workers: Optional[int] = None,
-        source_mask_ass: Optional[str] = None
+        source_mask_ass: Optional[str] = None,
+        bottom_cut_percent: Optional[float] = None,
+        blur_height: Optional[float] = 13.0,
+        sub_bottom_offset: Optional[float] = 0.0
     ) -> bool:
         """
         Render luồng hình ảnh song song tối đa (Parallel Segment Rendering).
@@ -600,7 +625,10 @@ class VideoComposerService:
                 mask_height=mask_height,
                 backdrop_opacity_hex=backdrop_opacity_hex,
                 target_ratio=target_ratio,
-                source_mask_ass=source_mask_ass
+                source_mask_ass=source_mask_ass,
+                bottom_cut_percent=bottom_cut_percent,
+                blur_height=blur_height,
+                sub_bottom_offset=sub_bottom_offset
             )
 
         cpu_cores = os.cpu_count() or 4
@@ -657,7 +685,10 @@ class VideoComposerService:
             mask_height=mask_height,
             backdrop_opacity_hex=backdrop_opacity_hex,
             target_ratio=target_ratio,
-            source_mask_ass=source_mask_ass
+            source_mask_ass=source_mask_ass,
+            bottom_cut_percent=bottom_cut_percent,
+            blur_height=blur_height,
+            sub_bottom_offset=sub_bottom_offset
         )
 
         out_p = Path(output_temp_video).resolve()
@@ -816,7 +847,11 @@ class VideoComposerService:
                 mask_width=mask_width,
                 mask_height=mask_height,
                 backdrop_opacity_hex=backdrop_opacity_hex,
-                target_ratio=target_ratio
+                target_ratio=target_ratio,
+                source_mask_ass=source_mask_ass,
+                bottom_cut_percent=bottom_cut_percent,
+                blur_height=blur_height,
+                sub_bottom_offset=sub_bottom_offset
             )
 
         # Ghép nối các phân đoạn bằng Concat Demuxer
@@ -875,7 +910,10 @@ class VideoComposerService:
                 mask_height=mask_height,
                 backdrop_opacity_hex=backdrop_opacity_hex,
                 target_ratio=target_ratio,
-                source_mask_ass=source_mask_ass
+                source_mask_ass=source_mask_ass,
+                bottom_cut_percent=bottom_cut_percent,
+                blur_height=blur_height,
+                sub_bottom_offset=sub_bottom_offset
             )
 
     @classmethod
@@ -898,7 +936,10 @@ class VideoComposerService:
         mask_height: float = 12.0,
         backdrop_opacity_hex: str = "80",
         target_ratio: str = "16:9",
-        source_mask_ass: Optional[str] = None
+        source_mask_ass: Optional[str] = None,
+        bottom_cut_percent: Optional[float] = None,
+        blur_height: Optional[float] = 13.0,
+        sub_bottom_offset: Optional[float] = 0.0
     ) -> bool:
         """Render đơn luồng (dành cho video ngắn dưới 60s)."""
         full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
@@ -917,7 +958,10 @@ class VideoComposerService:
             mask_height=mask_height,
             backdrop_opacity_hex=backdrop_opacity_hex,
             target_ratio=target_ratio,
-            source_mask_ass=source_mask_ass
+            source_mask_ass=source_mask_ass,
+            bottom_cut_percent=bottom_cut_percent,
+            blur_height=blur_height,
+            sub_bottom_offset=sub_bottom_offset
         )
 
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
@@ -1067,7 +1111,10 @@ class VideoComposerService:
         backdrop_opacity_hex: str = "80",
         target_ratio: str = "16:9",
         max_workers: Optional[int] = None,
-        source_mask_ass: Optional[str] = None
+        source_mask_ass: Optional[str] = None,
+        bottom_cut_percent: Optional[float] = None,
+        blur_height: Optional[float] = 13.0,
+        sub_bottom_offset: Optional[float] = 0.0
     ) -> bool:
         """
         Render luồng hình ảnh không tiếng (Visual Stream) với Subtitle Karaoke + Logo + Vùng che.
@@ -1094,7 +1141,10 @@ class VideoComposerService:
                 backdrop_opacity_hex=backdrop_opacity_hex,
                 target_ratio=target_ratio,
                 max_workers=max_workers,
-                source_mask_ass=source_mask_ass
+                source_mask_ass=source_mask_ass,
+                bottom_cut_percent=bottom_cut_percent,
+                blur_height=blur_height,
+                sub_bottom_offset=sub_bottom_offset
             )
         else:
             return cls._render_visual_stream_single(
@@ -1115,7 +1165,10 @@ class VideoComposerService:
                 mask_height=mask_height,
                 backdrop_opacity_hex=backdrop_opacity_hex,
                 target_ratio=target_ratio,
-                source_mask_ass=source_mask_ass
+                source_mask_ass=source_mask_ass,
+                bottom_cut_percent=bottom_cut_percent,
+                blur_height=blur_height,
+                sub_bottom_offset=sub_bottom_offset
             )
 
     @classmethod

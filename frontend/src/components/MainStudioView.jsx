@@ -426,13 +426,16 @@ export default function MainStudioView({ onNavigateTab }) {
         genre: genre,
         provider: 'gemini',
         voice_code: voiceCode,
-        margin_v: finalMarginV, // % khoảng cách từ đáy đến chữ phụ đề
+        margin_v: Math.max(2, Math.round(subBottomOffset + (calcBlurH * 0.45))), // Đặt chữ phụ đề nằm CHÍNH GIỮA dải mờ
         backdrop_opacity_hex: backdropOpacity,
         has_mask: hasMask,
         mask_top: calcMaskTop, // % từ đỉnh xuống dải mờ
         mask_left: calcMaskLeft,
         mask_width: calcMaskWidth, // Độ rộng dải mờ %
-        mask_height: calcBlurH, // Chiều cao dải mờ (Cao Nền) %
+        mask_height: maskHeight, // Chiều cao cắt sub đáy %
+        bottom_cut_percent: maskHeight, // Chiều cao cắt sub đáy %
+        blur_height: calcBlurH, // Chiều cao dải mờ %
+        sub_bottom_offset: subBottomOffset, // Vị trí dải mờ từ đáy khung hình crop lên %
         crop_ratio: cropRatio,
         font_size: subFontSize,
         box_style: 'white_box',

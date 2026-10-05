@@ -239,10 +239,25 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         vw, vh = VideoComposerService.get_video_resolution(project.video_path)
         crop_ratio = getattr(req, "crop_ratio", "16:9")
-        ass_w, ass_h = vw, vh
+        has_mask = getattr(req, "has_mask", True)
+        cut_pct = getattr(req, "bottom_cut_percent", None)
+        if cut_pct is None:
+            cut_pct = getattr(req, "mask_height", 12.0)
+
+        if has_mask or (cut_pct and cut_pct > 0):
+            crop_info = VideoComposerService.calculate_crop(vw, vh, cut_pct, target_ratio=crop_ratio)
+            ass_w = crop_info["w"]
+            ass_h = crop_info["h"]
+        else:
+            ass_w = (vw // 2) * 2
+            ass_h = (vh // 2) * 2
 
         font_sz = getattr(req, "font_size", 14) or 14
-        margin_v_val = getattr(req, "margin_v", 8) if getattr(req, "margin_v", None) is not None else 8
+        blur_h_val = float(getattr(req, "blur_height", 13.0) or 13.0)
+        sub_offset_val = float(getattr(req, "sub_bottom_offset", 0.0) or 0.0)
+        margin_v_val = getattr(req, "margin_v", None)
+        if margin_v_val is None:
+            margin_v_val = int(round(sub_offset_val + (blur_h_val * 0.45)))
         box_pad_val = getattr(req, "box_padding", 8) if getattr(req, "box_padding", None) is not None else 8
 
         highlight_c = req.karaoke_highlight_color if (getattr(req, "karaoke_highlight_color", None) and req.karaoke_highlight_color != "&H00EB6325") else "&H000000FF"
@@ -349,9 +364,12 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     mask_top=req.mask_top,
                     mask_left=req.mask_left,
                     mask_width=req.mask_width,
-                    mask_height=req.mask_height,
+                    mask_height=cut_pct,
                     backdrop_opacity_hex=req.backdrop_opacity_hex,
-                    target_ratio=crop_ratio
+                    target_ratio=crop_ratio,
+                    bottom_cut_percent=cut_pct,
+                    blur_height=blur_h_val,
+                    sub_bottom_offset=sub_offset_val
                 )
                 if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
                     raise RuntimeError(f"GPU/FFmpeg render video karaoke thất bại (file tạm {temp_visual_video.name} không tạo được hoặc 0 bytes). Kiểm tra lại file video gốc hoặc codec FFmpeg.")
