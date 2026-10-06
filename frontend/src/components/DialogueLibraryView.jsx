@@ -3,7 +3,7 @@ import {
   BookOpen, Sparkles, Save, Download, Search, 
   RefreshCw, CheckCircle2, AlertTriangle, Play, FileText, 
   Terminal, ArrowLeft, Clock, Film, Trash2, Edit3, AlignLeft, Columns,
-  ChevronRight, Layers, Bookmark, Check, Volume2
+  ChevronRight, Layers, Bookmark, Check, Volume2, RotateCcw
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
 
@@ -186,6 +186,9 @@ export default function DialogueLibraryView() {
             setIsTranslating(false);
             clearInterval(interval);
             loadProjects();
+          } else if (data.status === 'cancelled') {
+            setIsTranslating(false);
+            clearInterval(interval);
           } else if (data.status === 'failed' || data.status === 'FAILED') {
             setIsTranslating(false);
             clearInterval(interval);
@@ -257,11 +260,31 @@ export default function DialogueLibraryView() {
     }
   };
 
+  const handleCancelTranslate = async () => {
+    if (!taskId) {
+      setIsTranslating(false);
+      return;
+    }
+    try {
+      await fetch(`/api/v1/translate/cancel/${taskId}`, { method: 'POST' });
+      setIsTranslating(false);
+      setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), text: '🛑 Đã dừng tiến trình dịch thuật! Dữ liệu các lô đã dịch xong được bảo toàn nguyên vẹn.', type: 'amber' }]);
+      if (selectedProject) {
+        const updatedItems = await fetchAllDialogues(selectedProject.id);
+        setDialogues(updatedItems);
+      }
+      loadProjects();
+    } catch (e) {
+      console.error(e);
+      setIsTranslating(false);
+    }
+  };
+
   const handleStartTranslate = async () => {
     if (!selectedProject) return;
     setIsTranslating(true);
     setProgress(5);
-    setLogs([]);
+    setLogs([{ time: new Date().toLocaleTimeString(), text: `🚀 Bắt đầu tiến trình dịch thuật cho bộ truyện #${selectedProject.id} (${selectedProject.title})...`, type: 'cyan' }]);
 
     try {
       const res = await fetch('/api/v1/translate/project', {
@@ -287,6 +310,28 @@ export default function DialogueLibraryView() {
 
   const handleTextChange = (id, newText) => {
     setDialogues(prev => prev.map(d => d.id === id ? { ...d, translated_text: newText } : d));
+  };
+
+  const handleResetToDownloaded = async () => {
+    if (!selectedProject) return;
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VỀ LÚC MỚI TẢI XONG?\n\n"${selectedProject.title}" (ID: #${selectedProject.id})\n\nThao tác này sẽ:\n✓ Giữ nguyên file video gốc\n✗ XÓA SẠCH TOÀN BỘ CÂU THOẠI & BẢN DỊCH\n✗ Xóa sạch toàn bộ audio thuyết minh và video render\n\nDự án sẽ trở về trạng thái như vừa tải video xong!`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/v1/projects/${selectedProject.id}/reset`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || 'Đã reset về lúc mới tải xong thành công!');
+        setDialogues([]);
+        loadProjects();
+        setSelectedProject(prev => prev ? { ...prev, status: 'DOWNLOADED', total_dialogues: 0 } : null);
+      } else {
+        alert(`Lỗi khi reset: ${data.detail || 'Không thể reset'}`);
+      }
+    } catch (err) {
+      alert(`Lỗi kết nối: ${err.message}`);
+    }
   };
 
   const handleSaveAll = () => {
@@ -514,6 +559,25 @@ export default function DialogueLibraryView() {
             >
               Chưa Dịch ({dialogues.length - translatedCount})
             </button>
+
+            <button
+              className="btn btn-sm"
+              onClick={handleResetToDownloaded}
+              style={{
+                background: '#fee2e2',
+                color: '#dc2626',
+                border: '1px solid #fca5a5',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontWeight: 700,
+                padding: '5px 10px',
+                fontSize: '12px'
+              }}
+              title="Reset về lúc mới tải xong (giữ lại video gốc, xóa toàn bộ câu thoại và bản dịch)"
+            >
+              <RotateCcw size={12} /> Reset Mới Tải
+            </button>
           </div>
         </div>
 
@@ -733,22 +797,47 @@ export default function DialogueLibraryView() {
             </select>
           </div>
 
-          <button
-            className="btn btn-primary"
-            onClick={handleStartTranslate}
-            disabled={isTranslating}
-            style={{ width: '100%', padding: '12px', fontSize: '13.5px', fontWeight: 800, marginTop: '6px' }}
-          >
-            {isTranslating ? (
-              <>
+          {isTranslating ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled
+                style={{ width: '100%', padding: '12px', fontSize: '13px', fontWeight: 800, cursor: 'wait' }}
+              >
                 <RefreshCw size={15} className="animate-spin" /> Đang Dịch ({progress}%)...
-              </>
-            ) : (
-              <>
-                <Sparkles size={15} /> BẮT ĐẦU DỊCH AIREAD
-              </>
-            )}
-          </button>
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleCancelTranslate}
+                title="Dừng ngay lập tức quá trình dịch và giữ nguyên các lô đã hoàn thành"
+                style={{
+                  padding: '12px 14px',
+                  fontSize: '12.5px',
+                  fontWeight: 900,
+                  background: '#dc2626',
+                  color: '#ffffff',
+                  border: '1px solid #b91c1c',
+                  cursor: 'pointer',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}
+              >
+                🛑 DỪNG
+              </button>
+            </div>
+          ) : (
+            <button
+              className="btn btn-primary"
+              onClick={handleStartTranslate}
+              style={{ width: '100%', padding: '12px', fontSize: '13.5px', fontWeight: 800, marginTop: '6px' }}
+            >
+              <Sparkles size={15} /> BẮT ĐẦU DỊCH AIREAD
+            </button>
+          )}
 
           <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
             <button

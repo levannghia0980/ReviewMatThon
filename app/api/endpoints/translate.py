@@ -74,3 +74,12 @@ def get_translation_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy tác vụ {task_id}")
     return task
+
+
+@router.post("/cancel/{task_id}", summary="Dừng ngay lập tức tác vụ dịch thuật và bảo toàn dữ liệu các lô đã dịch xong")
+def cancel_translation(task_id: str):
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy tác vụ {task_id}")
+    task_manager.cancel_task(task_id)
+    return {"status": "success", "message": f"Đã dừng tác vụ dịch thuật {task_id}."}

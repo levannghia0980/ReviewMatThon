@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, ChevronLeft, ChevronRight, Clock, Globe, Sparkles, FileText, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, Clock, Globe, Sparkles, FileText, CheckCircle2, AlertCircle, Loader2, RotateCcw } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
 
 export default function DialogueModal({ isOpen, onClose, projectId, projectTitle, onUpdate }) {
@@ -74,6 +74,10 @@ export default function DialogueModal({ isOpen, onClose, projectId, projectTitle
           setTransTaskId(null);
           loadDialogues(page);
           if (onUpdate) onUpdate();
+        } else if (data.status === 'cancelled') {
+          setIsTranslating(false);
+          setTransTaskId(null);
+          loadDialogues(page);
         } else if (data.status === 'failed') {
           setIsTranslating(false);
           setTransTaskId(null);
@@ -119,6 +123,45 @@ export default function DialogueModal({ isOpen, onClose, projectId, projectTitle
     } catch (err) {
       setIsTranslating(false);
       alert(`Lỗi: ${err.message}`);
+    }
+  };
+
+  const handleCancelTranslation = async () => {
+    if (!transTaskId) {
+      setIsTranslating(false);
+      return;
+    }
+    try {
+      await fetch(`/api/v1/translate/cancel/${transTaskId}`, { method: 'POST' });
+      setIsTranslating(false);
+      setTransTaskId(null);
+      setTransLogs(prev => [...prev, { text: '🛑 Đã dừng dịch! Dữ liệu các lô đã dịch xong được bảo toàn nguyên vẹn.', type: 'amber' }]);
+      loadDialogues(page);
+    } catch (err) {
+      setIsTranslating(false);
+    }
+  };
+
+  const handleResetToDownloaded = async () => {
+    if (!projectId) return;
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VỀ LÚC MỚI TẢI XONG?\n\n"${projectTitle}" (ID: #${projectId})\n\nThao tác này sẽ:\n✓ Giữ nguyên file video gốc đã tải\n✗ XÓA SẠCH TOÀN BỘ CÂU THOẠI & BẢN DỊCH\n✗ Xóa sạch toàn bộ audio thuyết minh và video render\n\nVideo sẽ trở về trạng thái như vừa tải xong!`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/v1/projects/${projectId}/reset`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || 'Đã reset về lúc mới tải xong thành công!');
+        setDialogues([]);
+        setTotalItems(0);
+        if (onUpdate) onUpdate();
+        onClose();
+      } else {
+        alert(`Lỗi khi reset: ${data.detail || 'Không thể reset'}`);
+      }
+    } catch (err) {
+      alert(`Lỗi kết nối: ${err.message}`);
     }
   };
 
@@ -181,24 +224,66 @@ export default function DialogueModal({ isOpen, onClose, projectId, projectTitle
             </div>
           </div>
 
-          <button
-            className="btn btn-cyan"
-            onClick={handleStartTranslation}
-            disabled={isTranslating || totalItems === 0}
-            style={{ padding: '8px 18px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             {isTranslating ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                <span>Đang Dịch AI ({transProgress}%)...</span>
-              </>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  className="btn btn-cyan"
+                  disabled
+                  style={{ padding: '8px 14px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'wait' }}
+                >
+                  <Loader2 size={16} className="animate-spin" />
+                  <span>Đang Dịch ({transProgress}%)...</span>
+                </button>
+                <button
+                  className="btn"
+                  onClick={handleCancelTranslation}
+                  style={{
+                    padding: '8px 12px',
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    background: '#dc2626',
+                    color: '#ffffff',
+                    border: '1px solid #b91c1c',
+                    cursor: 'pointer'
+                  }}
+                  title="Dừng dịch ngay lập tức"
+                >
+                  🛑 Dừng
+                </button>
+              </div>
             ) : (
-              <>
+              <button
+                className="btn btn-cyan"
+                onClick={handleStartTranslation}
+                style={{ padding: '8px 18px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}
+              >
                 <Sparkles size={16} fill="var(--cyan)" />
                 <span>Bắt Đầu Dịch AI (AIREAD)</span>
-              </>
+              </button>
             )}
-          </button>
+
+            <button
+              className="btn btn-sm"
+              onClick={handleResetToDownloaded}
+              disabled={isTranslating}
+              style={{
+                background: '#fee2e2',
+                color: '#dc2626',
+                border: '1px solid #fca5a5',
+                padding: '8px 12px',
+                fontSize: '12px',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                cursor: 'pointer'
+              }}
+              title="Reset về lúc mới tải xong (xóa toàn bộ câu thoại để bóc tách lại từ đầu)"
+            >
+              <RotateCcw size={13} /> Reset Về Mới Tải
+            </button>
+          </div>
         </div>
 
         {/* Translation Live Progress & Logs Box (When active) */}

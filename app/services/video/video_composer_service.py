@@ -240,13 +240,14 @@ class VideoComposerService:
         crop_ratio: str = "16:9",               # 16:9 (YouTube Ngang) hoặc 9:16 (Shorts/TikTok)
         font_size: Optional[int] = None,        # Cỡ chữ phụ đề nhỏ gọn (px)
         box_style: str = "white_box",           # "white_box" | "dark_box" | "outline_only"
-        box_padding: int = 8                    # Độ to theo chiều dọc / padding của hộp che chữ gốc (px)
+        box_padding: int = 8,                   # Độ to theo chiều dọc / padding của hộp che chữ gốc (px)
+        render_subtitles: bool = True           # True = Chèn Karaoke ASS & che sub; False = Không Sub, chỉ crop & lồng tiếng
     ) -> Dict[str, Any]:
         """
         Sản xuất Video Review Hoàn Thiện:
-        1. Đọc kích thước video gốc MP4 để căn chỉnh tọa độ phụ đề khớp 100%.
-        2. Tạo phụ đề Karaoke ASS chuẩn độ phân giải và font chữ.
-        3. Che sạch 100% phụ đề tiếng Trung cũ bằng Solid Cinema Mask (1-pass duy nhất).
+        1. Đọc kích thước video gốc MP4 để căn chỉnh tọa độ crop khớp 100%.
+        2. Tạo phụ đề Karaoke ASS chuẩn độ phân giải và font chữ (nếu render_subtitles=True).
+        3. Che sạch phụ đề tiếng Trung cũ (nếu render_subtitles=True).
         4. Hòa trộn Vocal Ducking (giữ BGM, triệt tiêu tiếng gốc, lồng tiếng Việt).
         5. Render 1-pass NVENC / CPU xuất file `output/final_videos/{video_id}_final.mp4`.
         """
@@ -263,10 +264,10 @@ class VideoComposerService:
             DialogueSegmentModel.task_id == project_id
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
-        if not dialogues_db:
-            raise ValueError(f"Project #{project_id} chưa có câu thoại nào!")
-
-        task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
+        if render_subtitles:
+            task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
+        else:
+            task_manager.add_log(task_id, "[1/4] ⚡ Chế độ 'Không Sub': Bỏ qua tạo phụ đề Karaoke & dải mờ, chỉ Crop video & lồng tiếng!", "cyan")
 
         vw, vh = cls.get_video_resolution(project.video_path)
         if has_mask or (mask_height and mask_height > 0):
@@ -294,24 +295,30 @@ class VideoComposerService:
         ]
 
         ass_file = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass"
-        KaraokeSubtitleService.create_karaoke_ass_file(
-            segments=segments,
-            output_ass_path=str(ass_file),
-            video_title=project.title,
-            width=ass_w,
-            height=ass_h,
-            font_size=font_sz,
-            margin_v=margin_v_val,
-            highlight_color=karaoke_highlight_color if (karaoke_highlight_color and karaoke_highlight_color != "&H00EB6325") else "&H000000FF",
-            backdrop_opacity_hex=backdrop_opacity_hex,
-            box_style=box_style,
-            box_padding=box_pad_val
-        )
-        task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} (PlayRes: {ass_w}x{ass_h})", "emerald")
+        if render_subtitles:
+            KaraokeSubtitleService.create_karaoke_ass_file(
+                segments=segments,
+                output_ass_path=str(ass_file),
+                video_title=project.title,
+                width=ass_w,
+                height=ass_h,
+                font_size=font_sz,
+                margin_v=margin_v_val,
+                highlight_color=karaoke_highlight_color if (karaoke_highlight_color and karaoke_highlight_color != "&H00EB6325") else "&H000000FF",
+                backdrop_opacity_hex=backdrop_opacity_hex,
+                box_style=box_style,
+                box_padding=box_pad_val
+            )
+            task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} (PlayRes: {ass_w}x{ass_h})", "emerald")
+        else:
+            # Tạo file dummy rỗng nếu chưa có để đảm bảo đường dẫn không lỗi
+            if not ass_file.exists():
+                with open(ass_file, "w", encoding="utf-8") as f:
+                    f.write("")
 
         # Gen file ASS mask che sub gốc: nền dark vừa đúng độ rộng từng dòng sub Hán (BorderStyle=4)
         source_mask_ass = None
-        if has_mask:
+        if has_mask and render_subtitles:
             try:
                 mask_ass_file = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_source_mask.ass"
                 # margin_v_pct: vị trí đáy sub gốc (% từ đáy), nhất thiết phải đúng vị trí sub Hán
@@ -403,7 +410,8 @@ class VideoComposerService:
             backdrop_opacity_hex=backdrop_opacity_hex,
             target_ratio=target_ratio,
             source_mask_ass=source_mask_ass,
-            bottom_cut_percent=mask_height
+            bottom_cut_percent=mask_height,
+            render_subtitles=render_subtitles
         )
 
         if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
@@ -475,7 +483,8 @@ class VideoComposerService:
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
         blur_height: Optional[float] = 13.0,
-        sub_bottom_offset: Optional[float] = 0.0
+        sub_bottom_offset: Optional[float] = 0.0,
+        render_subtitles: bool = True
     ) -> Tuple[str, List[str], int, int]:
         """Tạo chuỗi filter_complex chuẩn xác dùng chung cho cả render đơn luồng và song song."""
         # Chuẩn hóa đường dẫn file ASS an toàn tuyệt đối cho FFmpeg trên mọi hệ điều hành (kể cả ổ C:, D:, E: trên Windows hoặc Linux)
@@ -521,8 +530,8 @@ class VideoComposerService:
                 filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
                 last_v = "v_clean"
 
-        # 🎬 BƯỚC 2: TẠO DẢI NỀN MỜ CHE SUB CŨ TRÊN KHUNG HÌNH (LUÔN HIỆN DIỆN KHI BẬT HAS_MASK, KỂ CẢ KHI CAO ĐỘ = 0 SÁT MÉP CROP)
-        if has_mask:
+        # 🎬 BƯỚC 2: TẠO DẢI NỀN MỜ CHE SUB CŨ TRÊN KHUNG HÌNH (CHỈ KHI BẬT HAS_MASK VÀ RENDER_SUBTITLES=TRUE)
+        if has_mask and render_subtitles:
             b_h_val = float(blur_height if blur_height is not None else (mask_height if mask_height and mask_height > 0 else 13.0))
             b_offset_val = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
 
@@ -560,9 +569,10 @@ class VideoComposerService:
             )
             last_v = "v_masked"
 
-        # 🎬 2. Subtitle Tiếng Việt đặt lên trên cùng, căn giữa khung hình đã crop
-        filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
-        last_v = "v_sub"
+        # 🎬 BƯỚC 3: Subtitle Tiếng Việt đặt lên trên cùng, căn giữa khung hình đã crop (chỉ khi render_subtitles=True)
+        if render_subtitles and ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
+            filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
+            last_v = "v_sub"
 
         logo_inputs = []
         if logo_path and os.path.exists(logo_path):
@@ -606,7 +616,8 @@ class VideoComposerService:
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
         blur_height: Optional[float] = 13.0,
-        sub_bottom_offset: Optional[float] = 0.0
+        sub_bottom_offset: Optional[float] = 0.0,
+        render_subtitles: bool = True
     ) -> bool:
         """
         Render luồng hình ảnh song song tối đa (Parallel Segment Rendering).
@@ -636,7 +647,8 @@ class VideoComposerService:
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
                 blur_height=blur_height,
-                sub_bottom_offset=sub_bottom_offset
+                sub_bottom_offset=sub_bottom_offset,
+                render_subtitles=render_subtitles
             )
 
         cpu_cores = os.cpu_count() or 4
@@ -696,7 +708,8 @@ class VideoComposerService:
             source_mask_ass=source_mask_ass,
             bottom_cut_percent=bottom_cut_percent,
             blur_height=blur_height,
-            sub_bottom_offset=sub_bottom_offset
+            sub_bottom_offset=sub_bottom_offset,
+            render_subtitles=render_subtitles
         )
 
         out_p = Path(output_temp_video).resolve()
@@ -859,7 +872,8 @@ class VideoComposerService:
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
                 blur_height=blur_height,
-                sub_bottom_offset=sub_bottom_offset
+                sub_bottom_offset=sub_bottom_offset,
+                render_subtitles=render_subtitles
             )
 
         # Ghép nối các phân đoạn bằng Concat Demuxer
@@ -921,7 +935,8 @@ class VideoComposerService:
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
                 blur_height=blur_height,
-                sub_bottom_offset=sub_bottom_offset
+                sub_bottom_offset=sub_bottom_offset,
+                render_subtitles=render_subtitles
             )
 
     @classmethod
@@ -947,7 +962,8 @@ class VideoComposerService:
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
         blur_height: Optional[float] = 13.0,
-        sub_bottom_offset: Optional[float] = 0.0
+        sub_bottom_offset: Optional[float] = 0.0,
+        render_subtitles: bool = True
     ) -> bool:
         """Render đơn luồng (dành cho video ngắn dưới 60s)."""
         full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
@@ -969,7 +985,8 @@ class VideoComposerService:
             source_mask_ass=source_mask_ass,
             bottom_cut_percent=bottom_cut_percent,
             blur_height=blur_height,
-            sub_bottom_offset=sub_bottom_offset
+            sub_bottom_offset=sub_bottom_offset,
+            render_subtitles=render_subtitles
         )
 
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
@@ -1122,7 +1139,8 @@ class VideoComposerService:
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
         blur_height: Optional[float] = 13.0,
-        sub_bottom_offset: Optional[float] = 0.0
+        sub_bottom_offset: Optional[float] = 0.0,
+        render_subtitles: bool = True
     ) -> bool:
         """
         Render luồng hình ảnh không tiếng (Visual Stream) với Subtitle Karaoke + Logo + Vùng che.
@@ -1152,7 +1170,8 @@ class VideoComposerService:
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
                 blur_height=blur_height,
-                sub_bottom_offset=sub_bottom_offset
+                sub_bottom_offset=sub_bottom_offset,
+                render_subtitles=render_subtitles
             )
         else:
             return cls._render_visual_stream_single(
@@ -1176,7 +1195,8 @@ class VideoComposerService:
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
                 blur_height=blur_height,
-                sub_bottom_offset=sub_bottom_offset
+                sub_bottom_offset=sub_bottom_offset,
+                render_subtitles=render_subtitles
             )
 
     @classmethod

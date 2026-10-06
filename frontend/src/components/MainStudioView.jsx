@@ -27,6 +27,7 @@ export default function MainStudioView({ onNavigateTab }) {
 
   // Video Mask & Placement Configuration (Mặc định Bật Che Phụ Đề Gốc để chống đè chữ)
   const [hasMask, setHasMask] = useState(true);
+  const [noSub, setNoSub] = useState(false); // Chế độ không sub: không chèn sub, không che dải mờ, chỉ crop & lồng tiếng
   const [maskTop, setMaskTop] = useState(80); // % from top
   const [maskLeft, setMaskLeft] = useState(0); // % left
   const [maskWidth, setMaskWidth] = useState(100); // Giữ để gửi backend
@@ -115,29 +116,25 @@ export default function MainStudioView({ onNavigateTab }) {
     const targetTitle = pTitle || selectedProject?.title || targetId;
     if (!targetId) return;
 
-    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VIDEO NÀY VỀ LÚC MỚI TẢI XONG?\n\n"${targetTitle}" (ID: #${targetId})\n\nThao tác này sẽ:\n✓ GIỮ NGUYÊN 100% FILE VIDEO GỐC ĐÃ TẢI VỀ\n✗ Xóa sạch toàn bộ câu thoại đã bóc tách & bản dịch\n✗ Xóa toàn bộ audio thuyết minh TTS & video render hoàn chỉnh\n\nVideo sẽ trở về trạng thái như lúc mới tải xong để bạn sẵn sàng chạy lại!`)) {
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VIDEO NÀY VỀ TÌNH TRẠNG ĐÃ DỊCH?\n\n"${targetTitle}" (ID: #${targetId})\n\nThao tác này sẽ:\n✓ GIỮ NGUYÊN 100% FILE VIDEO GỐC ĐÃ TẢI\n✓ GIỮ NGUYÊN TOÀN BỘ CÂU THOẠI VÀ BẢN DỊCH TIẾNG VIỆT\n✗ Chỉ dọn dẹp các file âm thanh TTS & video render hoàn chỉnh\n\nVideo sẽ trở về trạng thái ĐÃ DỊCH để bạn sẵn sàng chạy lại TTS / Lồng tiếng / Ghép video mà không cần tải hay dịch lại!`)) {
       return;
     }
 
     try {
-      const res = await fetch(`/api/v1/projects/${targetId}/reset`, { method: 'POST' });
+      const res = await fetch(`/api/v1/projects/${targetId}/reset-to-translated`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
         await loadProjects();
         if (selectedProject?.id === targetId) {
           setSelectedProject(prev => prev ? {
             ...prev,
-            status: 'DOWNLOADED',
-            total_dialogues: 0,
-            translated_dialogues: 0,
+            status: data.status_code || 'TRANSLATED',
             has_final: false,
-            final_video_path: null,
-            srt_path: null,
-            txt_path: null
+            final_video_path: null
           } : null);
           setVideoViewMode('raw');
         }
-        alert(data.message || `Đã reset video #${targetId} về lúc mới tải xong thành công!`);
+        alert(data.message || `Đã reset video #${targetId} về tình trạng đã dịch thành công!`);
       } else {
         alert(`Lỗi khi reset: ${data.detail || 'Không thể reset video'}`);
       }
@@ -149,7 +146,41 @@ export default function MainStudioView({ onNavigateTab }) {
   useEffect(() => {
     loadProjects();
     loadSettings();
+    checkActiveTask();
+
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        checkActiveTask();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleVisibility);
+    };
   }, []);
+
+  const checkActiveTask = async () => {
+    try {
+      const res = await fetch('/api/v1/pipeline/active-task');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.id && (data.status === 'running' || data.status === 'pending')) {
+          setTaskId(data.id);
+          setIsRunning(true);
+          setProgress(data.progress || 0);
+          setCurrentStep(data.step || 1);
+          if (data.logs && data.logs.length > 0) setLogs(data.logs);
+          if (data.meta?.project_id) {
+            loadProjects(data.meta.project_id);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Lỗi kiểm tra active task:', e);
+    }
+  };
 
   const loadSettings = async () => {
     try {
@@ -445,7 +476,8 @@ export default function MainStudioView({ onNavigateTab }) {
         channel_opacity: 0.35,
         logo_position: 'top_left',
         logo_size: 120,
-        batch_size: batchSize
+        batch_size: batchSize,
+        render_subtitles: !noSub
       };
 
       if (selectedProject) {
@@ -695,9 +727,9 @@ export default function MainStudioView({ onNavigateTab }) {
                       alignItems: 'center',
                       gap: '3px'
                     }}
-                    title="Reset về lúc mới tải xong"
+                    title="Reset về tình trạng Đã Dịch (giữ video gốc & toàn bộ kịch bản/bản dịch, xóa file TTS và video render để làm lại)"
                   >
-                    <RotateCcw size={11} /> Reset
+                    <RotateCcw size={11} /> Reset (Về Đã Dịch)
                   </button>
 
                   <button
@@ -726,112 +758,162 @@ export default function MainStudioView({ onNavigateTab }) {
 
             {/* Row 2: Subtitle Elevation & Cắt Sub 9:16 Controls */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', background: '#f8fafc', padding: '6px 10px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-              {/* Subtitle Elevation */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cao Độ Sub:</span>
+              {/* CHỌN CHẾ ĐỘ: CÓ SUB HOẶC KHÔNG SUB (CỰC KỲ RÕ RÀNG, DỄ THẤY) */}
+              <div style={{ display: 'inline-flex', borderRadius: '5px', overflow: 'hidden', border: '1.5px solid #2563eb', boxShadow: '0 1px 4px rgba(37,99,235,0.15)' }}>
                 <button
                   type="button"
-                  onClick={() => setSubBottomOffset(prev => Math.min(85, prev + 1))}
-                  title="Nâng phụ đề lên (Phím ↑)"
-                  style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                  onClick={() => setNoSub(false)}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    border: 'none',
+                    background: !noSub ? '#2563eb' : '#ffffff',
+                    color: !noSub ? '#ffffff' : '#475569',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    transition: 'all 0.15s'
+                  }}
+                  title="Bật phụ đề Karaoke & dải nền mờ che chữ tiếng Trung"
                 >
-                  <ArrowUp size={11} color="#2563eb" />
+                  <span>💬</span>
+                  <span>Có Sub</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSubBottomOffset(prev => Math.max(0, prev - 1))}
-                  title="Hạ phụ đề xuống (Phím ↓)"
-                  style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                  onClick={() => setNoSub(true)}
+                  style={{
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    border: 'none',
+                    borderLeft: '1px solid #2563eb',
+                    background: noSub ? '#d97706' : '#ffffff',
+                    color: noSub ? '#ffffff' : '#b45309',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    transition: 'all 0.15s'
+                  }}
+                  title="Chế độ Không Sub: Bỏ qua phụ đề & dải mờ, chỉ Crop video & lồng tiếng (tiết kiệm thời gian render)"
                 >
-                  <ArrowDown size={11} color="#2563eb" />
+                  <span>⚡</span>
+                  <span>Không Sub</span>
                 </button>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
-                  <input
-                    type="number"
-                    min="0"
-                    max="85"
-                    value={subBottomOffset}
-                    onChange={(e) => setSubBottomOffset(Math.max(0, Math.min(85, parseInt(e.target.value, 10) || 0)))}
-                    style={{ width: '40px', padding: '1px 3px', border: '1.5px solid #2563eb', borderRadius: '4px', fontSize: '11px', fontWeight: 800, textAlign: 'center', color: '#0f172a' }}
-                    title="Nhập trực tiếp % khoảng cách từ đáy (0% - 85%)"
-                  />
-                  <span style={{ fontSize: '11px', fontWeight: 800, color: '#0f172a' }}>%</span>
-                </div>
+              </div>
 
-                {/* Quick Presets */}
-                <div style={{ display: 'inline-flex', gap: '2px', marginLeft: '2px' }}>
-                  {[5, 8, 12, 16, 20].map(p => (
+              {/* Subtitle Elevation & Font Controls (Chỉ hiện khi Có Sub) */}
+              {!noSub && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cao Độ Sub:</span>
                     <button
-                      key={p}
                       type="button"
-                      onClick={() => setSubBottomOffset(p)}
-                      style={{
-                        fontSize: '9.5px',
-                        fontWeight: 700,
-                        padding: '1px 4px',
-                        borderRadius: '3px',
-                        border: '1px solid',
-                        borderColor: subBottomOffset === p ? '#2563eb' : '#cbd5e1',
-                        background: subBottomOffset === p ? '#2563eb' : '#ffffff',
-                        color: subBottomOffset === p ? '#ffffff' : '#475569',
-                        cursor: 'pointer'
-                      }}
-                      title={`Đặt nhanh cao độ ${p}%`}
+                      onClick={() => setSubBottomOffset(prev => Math.min(85, prev + 1))}
+                      title="Nâng phụ đề lên (Phím ↑)"
+                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                     >
-                      {p}%
+                      <ArrowUp size={11} color="#2563eb" />
                     </button>
-                  ))}
-                </div>
-              </div>
+                    <button
+                      type="button"
+                      onClick={() => setSubBottomOffset(prev => Math.max(0, prev - 1))}
+                      title="Hạ phụ đề xuống (Phím ↓)"
+                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                    >
+                      <ArrowDown size={11} color="#2563eb" />
+                    </button>
+                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+                      <input
+                        type="number"
+                        min="0"
+                        max="85"
+                        value={subBottomOffset}
+                        onChange={(e) => setSubBottomOffset(Math.max(0, Math.min(85, parseInt(e.target.value, 10) || 0)))}
+                        style={{ width: '40px', padding: '1px 3px', border: '1.5px solid #2563eb', borderRadius: '4px', fontSize: '11px', fontWeight: 800, textAlign: 'center', color: '#0f172a' }}
+                        title="Nhập trực tiếp % khoảng cách từ đáy (0% - 85%)"
+                      />
+                      <span style={{ fontSize: '11px', fontWeight: 800, color: '#0f172a' }}>%</span>
+                    </div>
 
-              {/* Cỡ Chữ Phụ Đề */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cỡ Chữ:</span>
-                <button
-                  type="button"
-                  onClick={() => setSubFontSize(prev => Math.max(9, prev - 1))}
-                  title="Giảm cỡ chữ"
-                  style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                >
-                  <Minus size={11} color="#2563eb" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSubFontSize(prev => Math.min(24, prev + 1))}
-                  title="Tăng cỡ chữ"
-                  style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                >
-                  <Plus size={11} color="#2563eb" />
-                </button>
-                <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0f172a', minWidth: '30px', textAlign: 'center' }}>
-                  {subFontSize}px
-                </span>
-              </div>
+                    {/* Quick Presets */}
+                    <div style={{ display: 'inline-flex', gap: '2px', marginLeft: '2px' }}>
+                      {[5, 8, 12, 16, 20].map(p => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => setSubBottomOffset(p)}
+                          style={{
+                            fontSize: '9.5px',
+                            fontWeight: 700,
+                            padding: '1px 4px',
+                            borderRadius: '3px',
+                            border: '1px solid',
+                            borderColor: subBottomOffset === p ? '#2563eb' : '#cbd5e1',
+                            background: subBottomOffset === p ? '#2563eb' : '#ffffff',
+                            color: subBottomOffset === p ? '#ffffff' : '#475569',
+                            cursor: 'pointer'
+                          }}
+                          title={`Đặt nhanh cao độ ${p}%`}
+                        >
+                          {p}%
+                        </button>
+                      ))}
+                    </div>
+                  </div>
 
+                  {/* Cỡ Chữ Phụ Đề */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cỡ Chữ:</span>
+                    <button
+                      type="button"
+                      onClick={() => setSubFontSize(prev => Math.max(9, prev - 1))}
+                      title="Giảm cỡ chữ"
+                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                    >
+                      <Minus size={11} color="#2563eb" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSubFontSize(prev => Math.min(24, prev + 1))}
+                      title="Tăng cỡ chữ"
+                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                    >
+                      <Plus size={11} color="#2563eb" />
+                    </button>
+                    <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0f172a', minWidth: '30px', textAlign: 'center' }}>
+                      {subFontSize}px
+                    </span>
+                  </div>
 
-              {/* Chiều Cao Vùng Mờ Sub (Cao Nền) */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '2px 8px', borderRadius: '5px', border: '1.5px solid #2563eb' }}>
-                <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af' }}>Cao Nền:</span>
-                <button
-                  type="button"
-                  onClick={() => setBlurHeight(prev => Math.max(8, prev - 1))}
-                  title="Giảm chiều cao dải mờ che chữ"
-                  style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                >
-                  <Minus size={11} color="#2563eb" />
-                </button>
-                <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#1d4ed8', minWidth: '32px', textAlign: 'center' }}>
-                  {blurHeight}%
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setBlurHeight(prev => Math.min(30, prev + 1))}
-                  title="Tăng chiều cao dải mờ che chữ"
-                  style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                >
-                  <Plus size={11} color="#2563eb" />
-                </button>
-              </div>
+                  {/* Chiều Cao Vùng Mờ Sub (Cao Nền) */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '2px 8px', borderRadius: '5px', border: '1.5px solid #2563eb' }}>
+                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af' }}>Cao Nền:</span>
+                    <button
+                      type="button"
+                      onClick={() => setBlurHeight(prev => Math.max(8, prev - 1))}
+                      title="Giảm chiều cao dải mờ che chữ"
+                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                    >
+                      <Minus size={11} color="#2563eb" />
+                    </button>
+                    <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#1d4ed8', minWidth: '32px', textAlign: 'center' }}>
+                      {blurHeight}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setBlurHeight(prev => Math.min(30, prev + 1))}
+                      title="Tăng chiều cao dải mờ che chữ"
+                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                    >
+                      <Plus size={11} color="#2563eb" />
+                    </button>
+                  </div>
+                </>
+              )}
 
               {/* Cắt Sub & Chuẩn Tỷ Lệ YouTube Controls */}
               {hasMask ? (
@@ -1139,84 +1221,86 @@ export default function MainStudioView({ onNavigateTab }) {
                 </>
               )}
 
-              {/* DYNAMIC SUBTITLE PREVIEW (ĐỒNG BỘ 1:1 VỚI BẢN RENDER VIDEO THÀNH PHẨM) */}
-              {hasMask ? (
-                /* 1. Nền mờ ôm vừa đủ độ rộng sub — CSS max-content, canh giữa */
-                <div
-                  onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
-                  style={{
-                    position: 'absolute',
-                    bottom: `calc(${maskHeight}% + ${subBottomOffset}%)`,
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    width: 'max-content',
-                    maxWidth: '96%',
-                    height: `${blurHeight}%`,
-                    padding: '0 28px',
-                    background: 'rgba(10, 14, 22, 0.68)',
-                    backdropFilter: 'blur(10px) saturate(1.2)',
-                    borderRadius: '6px',
-                    borderTop: '1px solid rgba(255,255,255,0.10)',
-                    borderBottom: '1px solid rgba(255,255,255,0.10)',
-                    boxShadow: '0 2px 24px rgba(0,0,0,0.55)',
-                    cursor: 'ns-resize',
-                    zIndex: 25,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    boxSizing: 'border-box',
-                    overflow: 'hidden'
-                  }}
-                  title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển cao độ dải mờ & phụ đề"
-                >
-                  {/* Chữ Phụ Đề — luôn ở chính giữa nền */}
-                  <span
+              {/* DYNAMIC SUBTITLE PREVIEW (CHỈ HIỆN KHI CÓ SUB, ẨN KHI BẬT KHÔNG SUB) */}
+              {!noSub && (
+                hasMask ? (
+                  /* 1. Nền mờ ôm vừa đủ độ rộng sub — CSS max-content, canh giữa */
+                  <div
+                    onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
                     style={{
-                      position: 'relative',
-                      zIndex: 26,
-                      whiteSpace: 'nowrap',
+                      position: 'absolute',
+                      bottom: `calc(${maskHeight}% + ${subBottomOffset}%)`,
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      width: 'max-content',
+                      maxWidth: '96%',
+                      height: `${blurHeight}%`,
+                      padding: '0 28px',
+                      background: 'rgba(10, 14, 22, 0.68)',
+                      backdropFilter: 'blur(10px) saturate(1.2)',
+                      borderRadius: '6px',
+                      borderTop: '1px solid rgba(255,255,255,0.10)',
+                      borderBottom: '1px solid rgba(255,255,255,0.10)',
+                      boxShadow: '0 2px 24px rgba(0,0,0,0.55)',
+                      cursor: 'ns-resize',
+                      zIndex: 25,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      boxSizing: 'border-box',
+                      overflow: 'hidden'
+                    }}
+                    title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển cao độ dải mờ & phụ đề"
+                  >
+                    {/* Chữ Phụ Đề — luôn ở chính giữa nền */}
+                    <span
+                      style={{
+                        position: 'relative',
+                        zIndex: 26,
+                        whiteSpace: 'nowrap',
+                        fontSize: `${Math.max(13, Math.round(subFontSize * 1.05))}px`,
+                        fontWeight: 900,
+                        color: '#ffffff',
+                        textShadow: '0 0 4px #000, 1px 1px 3px #000, -1px -1px 3px #000',
+                        letterSpacing: '0.4px',
+                        lineHeight: 1.3,
+                        pointerEvents: 'none',
+                        flexShrink: 0
+                      }}
+                    >
+                      Lúc này hắn mới nhận ra điều bất thường... ({subFontSize}px)
+                    </span>
+                  </div>
+                ) : (
+                  /* 2. Chữ Phụ Đề Khi Không Có Dải Mờ Che */
+                  <div
+                    onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
+                    style={{
+                      position: 'absolute',
+                      bottom: `${subBottomOffset}%`,
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      textAlign: 'center',
+                      cursor: 'ns-resize',
+                      zIndex: 25,
+                      userSelect: 'none',
+                      maxWidth: '92%'
+                    }}
+                    title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển cao độ phụ đề"
+                  >
+                    <span style={{
+                      display: 'inline-block',
                       fontSize: `${Math.max(13, Math.round(subFontSize * 1.05))}px`,
                       fontWeight: 900,
-                      color: '#ffffff',
-                      textShadow: '0 0 4px #000, 1px 1px 3px #000, -1px -1px 3px #000',
+                      color: '#FFE600',
+                      textShadow: '0 0 3px #000, 2px 2px 3px #000, -2px -2px 3px #000, 2px -2px 3px #000, -2px 2px 3px #000',
                       letterSpacing: '0.4px',
-                      lineHeight: 1.3,
-                      pointerEvents: 'none',
-                      flexShrink: 0
-                    }}
-                  >
-                    Lúc này hắn mới nhận ra điều bất thường... ({subFontSize}px)
-                  </span>
-                </div>
-              ) : (
-                /* 2. Chữ Phụ Đề Khi Không Có Dải Mờ Che */
-                <div
-                  onMouseDown={(e) => handleMouseDown(e, 'sub-move')}
-                  style={{
-                    position: 'absolute',
-                    bottom: `${subBottomOffset}%`,
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    textAlign: 'center',
-                    cursor: 'ns-resize',
-                    zIndex: 25,
-                    userSelect: 'none',
-                    maxWidth: '92%'
-                  }}
-                  title="Bấm phím ↑ / ↓ hoặc kéo chuột để di chuyển cao độ phụ đề"
-                >
-                  <span style={{
-                    display: 'inline-block',
-                    fontSize: `${Math.max(13, Math.round(subFontSize * 1.05))}px`,
-                    fontWeight: 900,
-                    color: '#FFE600',
-                    textShadow: '0 0 3px #000, 2px 2px 3px #000, -2px -2px 3px #000, 2px -2px 3px #000, -2px 2px 3px #000',
-                    letterSpacing: '0.4px',
-                    whiteSpace: 'nowrap'
-                  }}>
-                    Lúc này hắn mới nhận ra điều bất thường... ({subFontSize}px)
-                  </span>
-                </div>
+                      whiteSpace: 'nowrap'
+                    }}>
+                      Lúc này hắn mới nhận ra điều bất thường... ({subFontSize}px)
+                    </span>
+                  </div>
+                )
               )}
             </div>
 
@@ -1617,11 +1701,15 @@ export default function MainStudioView({ onNavigateTab }) {
                   fontSize: '12.5px',
                   fontWeight: 900,
                   marginTop: '2px',
-                  background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
-                  boxShadow: '0 4px 12px rgba(37, 99, 235, 0.25)'
+                  background: noSub
+                    ? 'linear-gradient(135deg, #d97706 0%, #b45309 100%)'
+                    : 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+                  boxShadow: noSub
+                    ? '0 4px 12px rgba(217, 119, 6, 0.25)'
+                    : '0 4px 12px rgba(37, 99, 235, 0.25)'
                 }}
               >
-                <Zap size={14} /> BẮT ĐẦU TỰ ĐỘNG HÓA 100% (DỊCH ➔ TTS ➔ RENDER)
+                <Zap size={14} /> {noSub ? 'BẮT ĐẦU (DỊCH ➔ TTS ➔ CROP KHÔNG SUB)' : 'BẮT ĐẦU TỰ ĐỘNG HÓA 100% (DỊCH ➔ TTS ➔ RENDER)'}
               </button>
             )}
           </div>
@@ -1731,7 +1819,7 @@ export default function MainStudioView({ onNavigateTab }) {
                           }}
                           onMouseEnter={(e) => { e.currentTarget.style.background = '#fef3c7'; }}
                           onMouseLeave={(e) => { e.currentTarget.style.background = '#fffbeb'; }}
-                          title="Reset về lúc mới tải xong (giữ lại video gốc, xóa câu thoại/audio/video render để làm lại)"
+                          title="Reset về tình trạng Đã Dịch (giữ video gốc & toàn bộ kịch bản/bản dịch, xóa file TTS và video render để làm lại)"
                         >
                           <RotateCcw size={11} /> Reset
                         </button>

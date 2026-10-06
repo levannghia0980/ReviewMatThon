@@ -35,34 +35,39 @@ class TranslationAuditor:
         cls,
         error_segments: List[DialogueSegment],
         genre: str = "cophong",
-        provider: str = "gemini"
+        provider: str = "gemini",
+        max_fix_limit: int = 50
     ) -> Dict[int, str]:
         """
         Tự động vá lỗi (LLM Swept Error Fixer):
-        Gửi danh sách các câu bị sót/lỗi chữ Hán để AI dịch lại chính xác từng câu đơn lẻ.
+        - Giới hạn tối đa 50 câu mỗi lần quét để tránh ngốn thời gian, token và CPU/RAM.
+        - Chạy 1 pass duy nhất dứt khoát, tuyệt đối không lặp vô tận.
+        - Dùng chuẩn đánh số mỏ neo (1. ... 2. ...) khớp 100% với PostProcessor.
         """
         if not error_segments:
             return {}
 
-        prompt_lines = [
-            "Các câu dưới đây bị thiếu bản dịch hoặc bị sót chữ Hán.",
-            "Hãy dịch lại từng câu sang tiếng Việt chuẩn theo đúng thể loại cổ phong:",
-            ""
-        ]
-        for s in error_segments:
-            orig = s.clean_text or s.text or ""
-            prompt_lines.append(f'<s id="{s.id}">{orig}</s>')
+        # Giới hạn số lượng câu để xử lý gọn gàng
+        target_segments = error_segments[:max_fix_limit]
 
-        tagged_prompt = "\n".join(prompt_lines)
+        prompt_lines = []
+        for s in target_segments:
+            orig = (s.clean_text or s.text or "").strip()
+            if not orig:
+                orig = "."
+            prompt_lines.append(f"{s.id}. {orig}")
+
+        numbered_prompt = "\n".join(prompt_lines)
         
         from app.services.translation.llm_translator import translate_batch_pass2_llm
         try:
             fixed_output = await translate_batch_pass2_llm(
-                tagged_text=tagged_prompt,
+                tagged_text=numbered_prompt,
                 genre=genre,
                 provider=provider
             )
             from app.services.postprocessing.post_processor import PostProcessor
-            return PostProcessor.parse_tagged_translation(fixed_output, error_segments)
-        except Exception:
+            return PostProcessor.parse_tagged_translation(fixed_output, target_segments)
+        except Exception as e:
+            print(f"[TranslationAuditor] Warning: Lỗi vá tự động: {e}")
             return {}

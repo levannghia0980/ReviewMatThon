@@ -260,21 +260,28 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             margin_v_val = max(2, int(round(sub_offset_val + (blur_h_val * 0.22))))
         box_pad_val = getattr(req, "box_padding", 8) if getattr(req, "box_padding", None) is not None else 8
 
-        highlight_c = req.karaoke_highlight_color if (getattr(req, "karaoke_highlight_color", None) and req.karaoke_highlight_color != "&H00EB6325") else "&H000000FF"
+        render_subs = getattr(req, "render_subtitles", True)
 
-        KaraokeSubtitleService.create_karaoke_ass_file(
-            segments=segments,
-            output_ass_path=str(ass_file),
-            video_title=project.title,
-            width=ass_w,
-            height=ass_h,
-            font_size=font_sz,
-            highlight_color=highlight_c,
-            backdrop_opacity_hex=req.backdrop_opacity_hex,
-            margin_v=margin_v_val,
-            box_style=getattr(req, "box_style", "white_box"),
-            box_padding=box_pad_val
-        )
+        if render_subs:
+            task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
+            KaraokeSubtitleService.create_karaoke_ass_file(
+                segments=segments,
+                output_ass_path=str(ass_file),
+                video_title=project.title,
+                width=ass_w,
+                height=ass_h,
+                font_size=font_sz,
+                highlight_color=highlight_c,
+                backdrop_opacity_hex=req.backdrop_opacity_hex,
+                margin_v=margin_v_val,
+                box_style=getattr(req, "box_style", "white_box"),
+                box_padding=box_pad_val
+            )
+        else:
+            task_manager.add_log(task_id, "[1/4] ⚡ Chế độ 'Không Sub': Bỏ qua tạo phụ đề Karaoke & dải mờ, chỉ Crop khung hình & lồng tiếng!", "cyan")
+            if not ass_file.exists():
+                with open(ass_file, "w", encoding="utf-8") as f:
+                    f.write("")
 
         temp_visual_video = settings.OUTPUT_FINAL_VIDEOS_DIR / f"temp_{project.video_id}_visual.mp4"
         if temp_visual_video.exists():
@@ -369,12 +376,16 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     target_ratio=crop_ratio,
                     bottom_cut_percent=cut_pct,
                     blur_height=blur_h_val,
-                    sub_bottom_offset=sub_offset_val
+                    sub_bottom_offset=sub_offset_val,
+                    render_subtitles=render_subs
                 )
                 if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
-                    raise RuntimeError(f"GPU/FFmpeg render video karaoke thất bại (file tạm {temp_visual_video.name} không tạo được hoặc 0 bytes). Kiểm tra lại file video gốc hoặc codec FFmpeg.")
+                    raise RuntimeError(f"GPU/FFmpeg render video thất bại (file tạm {temp_visual_video.name} không tạo được hoặc 0 bytes). Kiểm tra lại file video gốc hoặc codec FFmpeg.")
                 video_res_container["success"] = True
-                task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Render Karaoke + Che chữ gốc hoàn tất.", "emerald")
+                if render_subs:
+                    task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Render Karaoke + Che chữ gốc hoàn tất.", "emerald")
+                else:
+                    task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Crop Khung Hình & Mã Hóa hoàn tất (Không Sub).", "emerald")
             except Exception as e:
                 video_res_container["error"] = str(e)
                 task_manager.cancel_task(task_id)  # Dừng ngay audio worker nếu render video lỗi
@@ -686,6 +697,17 @@ def get_task_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy tác vụ {task_id}")
     return task
+
+
+@router.get("/active-task", summary="Lấy tác vụ tự động hóa (auto pipeline) đang chạy nếu có")
+def get_active_pipeline_task():
+    """Giúp Frontend phục hồi thanh tiến trình và log ngay cả khi chuyển tab hoặc mở lại trình duyệt"""
+    tasks = task_manager.list_tasks()
+    for tid, t in reversed(list(tasks.items())):
+        if (tid.startswith("task_auto_") or tid.startswith("task_")) and not tid.startswith("task_trans_"):
+            if t.get("status") in ["running", "pending"]:
+                return t
+    return {"status": "none"}
 
 
 @router.post("/cancel/{task_id}", summary="Hủy tác vụ đang chạy và tự động dọn dẹp các chunk tạm")

@@ -21,6 +21,7 @@ class VideoComposeRequest(BaseModel):
     margin_v: int = Field(default=15, description="Vị trí thanh phụ đề từ dưới đáy màn hình")
     box_style: str = Field(default="white_box", description="Kiểu hộp phụ đề: 'white_box' (Khung Trắng chữ Đen), 'dark_box' (Hộp Đen mờ), 'outline_only' (Trong suốt)")
     box_padding: int = Field(default=8, description="Độ to theo chiều dọc / padding của hộp che chữ gốc (px)")
+    render_subtitles: bool = Field(default=True, description="Có chèn phụ đề Karaoke và dải mờ hay không (False = Không Sub, chỉ crop & lồng tiếng)")
 
 class VideoComposeResponse(BaseModel):
     task_id: str

@@ -432,6 +432,91 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
         "deleted_files": deleted_files[:10]
     }
 
+@router.post("/{project_id}/reset-to-translated", summary="Reset Project về tình trạng ĐÃ DỊCH (giữ video gốc và câu thoại đã dịch, chỉ dọn dẹp TTS audio và video render)")
+def reset_project_to_translated(project_id: int, db: Session = Depends(get_db)):
+    """
+    Reset thông minh: Chỉ dọn dẹp âm thanh TTS thuyết minh và Video render thành phẩm.
+    GIỮ NGUYÊN 100%:
+    - Video gốc đã tải
+    - Toàn bộ câu thoại gốc và bản dịch tiếng Việt trong Database
+    - File SRT/TXT bản dịch
+    Đưa trạng thái dự án về 'TRANSLATED' (hoặc 'TRANSCRIBED' nếu chưa dịch) để người dùng có thể chạy lại TTS/Render mà không phải tải lại hay dịch lại từ đầu.
+    """
+    project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Không tìm thấy project để reset!")
+
+    vid = project.video_id
+    raw_video_abs = os.path.abspath(project.video_path) if project.video_path else None
+    deleted_files = []
+
+    # 1. Quét và dọn các thư mục phái sinh sau dịch (TTS, Voiceover, Final Video, Scratch)
+    scan_dirs = [
+        settings.OUTPUT_VOICEOVER_DIR,
+        settings.OUTPUT_FINAL_VIDEOS_DIR,
+        settings.TEMP_TTS_DIR,
+        settings.BASE_DIR / "scratch",
+    ]
+
+    for target_dir in scan_dirs:
+        if target_dir.exists():
+            for f in list(target_dir.glob(f"*{vid}*")):
+                try:
+                    abs_f = os.path.abspath(str(f))
+                    if raw_video_abs and abs_f == raw_video_abs:
+                        continue
+                    if f.is_file():
+                        f.unlink(missing_ok=True)
+                        deleted_files.append(f.name)
+                    elif f.is_dir():
+                        import shutil
+                        shutil.rmtree(f, ignore_errors=True)
+                        deleted_files.append(f"{f.name}/")
+                except Exception as e:
+                    print(f"Không thể xóa file {f}: {e}")
+
+    # 2. Xóa final_video_path nếu có
+    if project.final_video_path and os.path.exists(project.final_video_path):
+        try:
+            abs_p = os.path.abspath(project.final_video_path)
+            if not (raw_video_abs and abs_p == raw_video_abs):
+                os.remove(project.final_video_path)
+                deleted_files.append(os.path.basename(project.final_video_path))
+        except Exception:
+            pass
+
+    # 3. Kiểm tra xem project có câu thoại đã dịch không để đặt trạng thái chuẩn
+    total_diag = db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project_id).count()
+    translated_diag = db.query(DialogueSegmentModel).filter(
+        DialogueSegmentModel.task_id == project_id,
+        DialogueSegmentModel.translated_text.isnot(None),
+        DialogueSegmentModel.translated_text != ""
+    ).count()
+
+    if translated_diag > 0:
+        project.status = "TRANSLATED"
+    elif total_diag > 0:
+        project.status = "TRANSCRIBED"
+    else:
+        project.status = "DOWNLOADED"
+
+    project.final_video_path = None
+    project.error_message = None
+
+    db.commit()
+    db.refresh(project)
+
+    return {
+        "status": "success",
+        "message": f"Đã reset dự án #{project_id} ({vid}) về tình trạng '{project.status}'! Đã giữ nguyên toàn bộ kịch bản/bản dịch và dọn dẹp {len(deleted_files)} file TTS & video render.",
+        "project_id": project.id,
+        "video_path": project.video_path,
+        "status_code": project.status,
+        "deleted_files_count": len(deleted_files),
+        "deleted_files": deleted_files[:10]
+    }
+
+
 @router.post("/{project_id}/reset", summary="Reset Project về lúc mới tải xong (giữ lại video gốc, xóa toàn bộ sản phẩm phái sinh)")
 def reset_project(project_id: int, db: Session = Depends(get_db)):
     project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()

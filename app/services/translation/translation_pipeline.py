@@ -53,7 +53,65 @@ class TranslationPipelineService:
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
         if not dialogue_models:
-            raise ValueError(f"Project #{project_id} chưa có câu thoại nào để dịch!")
+            # TỰ ĐỘNG BÓC TÁCH STT NẾU CHƯA CÓ CÂU THOẠI (Không bắt người dùng bấm 2 lần)
+            if not project.video_path or not os.path.exists(project.video_path):
+                raise ValueError(f"Project #{project_id} chưa có câu thoại và không tìm thấy file video gốc để bóc tách thoại!")
+            
+            task_manager.update_task(task_id, step=1, progress=8)
+            task_manager.add_log(task_id, "🎙️ Dự án chưa có câu thoại. Đang tự động kích hoạt bóc tách STT từ video gốc...", "cyan")
+            
+            from app.services.audio_extractor import AudioExtractorService
+            from app.services.whisper_service import WhisperService
+            
+            audio_path = project.audio_path
+            if not audio_path or not os.path.exists(audio_path):
+                task_manager.add_log(task_id, "   🎵 Trích xuất Audio 16kHz PCM WAV...", "cyan")
+                audio_path = AudioExtractorService.extract_audio_16k_wav(project.video_path)
+                project.audio_path = audio_path
+                db.commit()
+
+            task_manager.add_log(task_id, "   🎙️ Khử ồn & làm sạch âm thanh (Vocal Denoise)...", "cyan")
+            clean_audio_path = AudioExtractorService.get_clean_audio_for_asr(audio_path)
+
+            engine = getattr(settings, "ASR_ENGINE", "capcut").lower()
+            engine_name = "CapCut Cloud STT" if engine == "capcut" else "Groq Whisper"
+            task_manager.add_log(task_id, f"   🤖 Đang nhận diện lời thoại bằng {engine_name}...", "cyan")
+
+            extracted_dialogues, srt_p, txt_p, json_p = WhisperService.transcribe(
+                audio_path=clean_audio_path,
+                language=project.source_language or "zh",
+                clean_text=True,
+                task_id=task_id
+            )
+
+            if not extracted_dialogues:
+                raise ValueError("Không nhận diện được câu thoại nào từ video!")
+
+            project.srt_path = srt_p
+            project.txt_path = txt_p
+            project.json_path = json_p
+            project.status = "TRANSCRIBED"
+            db.commit()
+
+            for d in extracted_dialogues:
+                db.add(DialogueSegmentModel(
+                    task_id=project.id,
+                    index=d.id,
+                    start_time=d.start,
+                    end_time=d.end,
+                    duration=d.duration,
+                    original_text=d.text,
+                    clean_text=d.clean_text,
+                    confidence=d.confidence,
+                    status="RAW"
+                ))
+            db.commit()
+            task_manager.add_log(task_id, f"   ✔ Đã bóc tách thành công {len(extracted_dialogues)} câu thoại!", "emerald")
+
+            # Nạp lại danh sách vừa bóc tách
+            dialogue_models = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id
+            ).order_by(DialogueSegmentModel.index.asc()).all()
 
         safe_title = re_clean_name = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip()
         if not re_clean_name:
@@ -108,6 +166,11 @@ class TranslationPipelineService:
         entities_file = settings.OUTPUT_ENTITIES_DIR / f"{project.video_id}_{re_clean_name}_entities.json"
 
         for b_idx, batch in enumerate(batches):
+            # CHỐT AN TOÀN HỦY TIẾN TRÌNH (Cancel Check): Nếu người dùng nhấn dừng thì dọn sạch những gì lô này đang làm
+            if task_manager.is_cancelled(task_id):
+                task_manager.add_log(task_id, f"🛑 Đã phát hiện yêu cầu DỪNG tại Lô #{b_idx + 1}. Hủy bỏ xử lý và dọn dẹp lô dở dang...", "amber")
+                raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_idx + 1}")
+
             b_num = b_idx + 1
             clean_batch_text = BatchManager.pack_dialogues_to_clean_text(batch)
             tagged_batch_text = BatchManager.pack_dialogues_to_tagged_text(batch)
@@ -124,6 +187,10 @@ class TranslationPipelineService:
                 provider=provider
             )
 
+            if task_manager.is_cancelled(task_id):
+                task_manager.add_log(task_id, f"🛑 Đã dừng tiến trình dịch thuật ở Lô #{b_num}.", "amber")
+                raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
+
             new_found_count = 0
             for ent in new_entities:
                 raw = ent.get("raw", "").strip()
@@ -131,7 +198,6 @@ class TranslationPipelineService:
                     accumulated_entities[raw] = ent
                     new_found_count += 1
                 elif raw and raw in accumulated_entities:
-                    # Giữ nguyên bản dịch cũ để bảo toàn xuyên suốt
                     pass
 
             # Lưu entities tích lũy ra file json
@@ -142,7 +208,7 @@ class TranslationPipelineService:
                 sample_new = [f"{e.get('raw','')}->{e.get('viet','')}" for e in new_entities[:4]]
                 task_manager.add_log(task_id, f"      ✔ LLM 1 phát hiện thêm {new_found_count} thực thể mới: {', '.join(sample_new)}", "emerald")
 
-            # Tạo bảng thực thể cho LLM 2 (Chỉ lấy các thực thể thực sự xuất hiện trong lô này)
+            # Tạo bảng thực thể cho LLM 2
             entity_lines = []
             for raw, ent in accumulated_entities.items():
                 if raw and (raw in clean_batch_text or raw in tagged_batch_text):
@@ -152,9 +218,10 @@ class TranslationPipelineService:
                     entity_lines.append(f"- {raw} ➔ {viet} ({etype}{': ' + desc if desc else ''})")
             entity_table_text = "\n".join(entity_lines)
 
-            # --- ĐỢI 5 GIÂY TRƯỚC KHI GỬI LLM 2 ---
-            task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Đợi 5 giây trước khi gửi LLM 2 dịch...", "gray")
-            await asyncio.sleep(5)
+            # Đợi nhẹ 3s giữa các call (tiết kiệm thời gian nhưng vẫn chống rate limit)
+            await asyncio.sleep(3)
+            if task_manager.is_cancelled(task_id):
+                raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
 
             # --- LLM 2: DỊCH VĂN PHONG CHUẨN AIREAD ---
             task_manager.add_log(task_id, f"   ✨ [Lô #{b_num}/{len(batches)}] LLM 2: Dịch kịch bản văn phong AIRead với bảng {len(entity_lines)} thực thể xuất hiện trong lô...", "cyan")
@@ -167,6 +234,9 @@ class TranslationPipelineService:
                 entity_table_text=entity_table_text,
                 provider=provider
             )
+
+            if task_manager.is_cancelled(task_id):
+                raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
 
             # Lưu ngay bản thô LLM vào output/03_dich_ai_llm/
             batch_raw_file = settings.OUTPUT_DICH_AI_LLM_DIR / f"{project.video_id}_batch_{b_num:02d}_output.txt"
@@ -194,10 +264,10 @@ class TranslationPipelineService:
             pct = int(30 + (b_num / len(batches)) * 45)
             task_manager.update_task(task_id, progress=pct)
 
-            # --- ĐỢI 5 GIÂY NGHỈ GIỮA CÁC LÔ TRƯỚC KHI TÌM THỰC THỂ LÔ TIẾP THEO ---
+            # Nghỉ nhẹ 3 giây giữa các lô
             if b_idx < len(batches) - 1:
-                task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Đã xong. Đợi 5 giây trước khi bóc tách thực thể Lô #{b_num + 1}...", "gray")
-                await asyncio.sleep(5)
+                task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Đã xong. Đợi 3 giây trước khi xử lý Lô #{b_num + 1}...", "gray")
+                await asyncio.sleep(3)
 
         task_manager.add_log(task_id, f"   ✔ Hoàn tất dịch toàn bộ {len(batches)} lô với tổng {len(accumulated_entities)} thực thể xuyên suốt.", "emerald")
 
@@ -216,19 +286,22 @@ class TranslationPipelineService:
             f.write("\n".join(post_processed_lines))
 
         # =====================================================================
-        # GIAI ĐOẠN 5: TRANSLATION AUDITOR (QUÉT SÓT CHỮ HÁN & VÁ LỖI)
+        # GIAI ĐOẠN 5: TRANSLATION AUDITOR (QUÉT SÓT CHỮ HÁN & VÁ LỖI AN TOÀN)
         # =====================================================================
         task_manager.update_task(task_id, step=5, progress=88)
-        task_manager.add_log(task_id, "[5/5] 🔍 AUDITOR: Kiểm tra rò rỉ chữ Hán (Hanzi Leak Audit)...", "cyan")
+        task_manager.add_log(task_id, "[5/5] 🔍 AUDITOR: Kiểm tra rò rỉ chữ Hán & soát câu sót...", "cyan")
 
         valid_segs, error_segs = TranslationAuditor.audit_dialogues(translated_segments)
         if error_segs:
-            task_manager.add_log(task_id, f"   ⚠️ Phát hiện {len(error_segs)} câu cần vá lỗi chữ Hán. Đang kích hoạt LLM Swept Error Fixer...", "amber")
-            fixed_map = await TranslationAuditor.fix_errors_with_llm(error_segs, genre=genre, provider=provider)
-            for s in translated_segments:
-                if s.id in fixed_map:
-                    s.translated_text = fixed_map[s.id]
-            task_manager.add_log(task_id, f"   ✔ Đã tự động vá lỗi thành công {len(fixed_map)} câu thoại!", "emerald")
+            task_manager.add_log(task_id, f"   ⚠️ Phát hiện {len(error_segs)} câu cần kiểm tra/vá lỗi. Kích hoạt vá nhanh (tối đa 50 câu, 1 pass duy nhất)...", "amber")
+            fixed_map = await TranslationAuditor.fix_errors_with_llm(error_segs, genre=genre, provider=provider, max_fix_limit=50)
+            if fixed_map:
+                for s in translated_segments:
+                    if s.id in fixed_map:
+                        s.translated_text = fixed_map[s.id]
+                task_manager.add_log(task_id, f"   ✔ Đã tự động vá lỗi thành công {len(fixed_map)} câu thoại!", "emerald")
+            else:
+                task_manager.add_log(task_id, "   ℹ️ Bỏ qua vá lỗi tự động để tránh nghẽn luồng; tiếp tục hoàn tất bản dịch.", "gray")
         else:
             task_manager.add_log(task_id, "   ✔ Bản dịch sạch 100%, không rò rỉ bất kỳ chữ Hán nào!", "emerald")
 
