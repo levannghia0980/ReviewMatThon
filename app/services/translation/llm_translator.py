@@ -215,10 +215,10 @@ async def translate_batch_pass2_llm(
 
     system_prompt = f"""BẠN LÀ BIÊN TẬP VIÊN DỊCH THUẬT LỒNG TIẾNG VIDEO CAO CẤP (DUBBING & VOICEOVER) TRUNG - VIỆT.
 Nhiệm vụ: Chuyển ngữ kịch bản lời thoại video tiếng Trung sang tiếng Việt để LỒNG TIẾNG CHO VIDEO.
-Văn phong: Thoát ý, mượt mà, giàu cảm xúc, truyền cảm, thuần Việt tự nhiên, chuẩn văn phong tiểu thuyết và kịch bản lồng tiếng.
+Văn phong: Thoát ý, mượt mà, giàu cảm xúc, truyền cảm, thuần Việt tự nhiên, chuẩn văn phong kịch bản lồng tiếng.
 TUYỆT ĐỐI CẤM dịch bám chữ convert máy móc hoặc dùng từ Hán-Việt tối nghĩa thô cứng.
 KHUYẾN KHÍCH sử dụng từ ngữ gợi cảm, trau chuốt, câu văn giàu nhạc điệu, xuôi tai, biểu đạt trọn vẹn thần thái nhân vật.
-ĐẶC BIỆT: Khống chế nhịp câu vừa vặn với lời thoại video (tỷ lệ khoảng 1.0 đến tối đa 2.2 lần số từ gốc), không bôi chữ lan man, câu văn gãy gọn và uyển chuyển.
+ĐẶC BIỆT: KHỐNG CHẾ ĐỘ PHÌNH ĐỒNG BỘ 1.4 LẦN (1.2 đến 1.6 lần số chữ Hán gốc). Tuyệt đối cấm câu dài gấp đôi (> 1.6 lần) với câu từ 5 chữ trở lên, câu ngắn 1-4 chữ được phép 2-3 lần. Không bôi chữ lan man, câu văn gãy gọn để ôm trọn khung [Start - End] của nhân vật.
 Tuyệt đối không để sót chữ Hán hay tiếng Anh.
 
 === QUY CHUẨN THỂ LOẠI CHUẨN AIREAD ({norm_genre.upper()}) ===
@@ -229,13 +229,9 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
 
     prompt_parts = []
 
-    # 0. Tiêu đề video và quy tắc tự động sửa lỗi từ đồng âm ASR cho mọi video
-    title_section = f"=== TIÊU ĐỀ VIDEO / TÁC PHẨM GỐC ===\n{project_title.strip()}\n\n" if (project_title and project_title.strip()) else ""
-    prompt_parts.append(f"""{title_section}=== NGUYÊN TẮC TỰ ĐỘNG PHÁT HIỆN & PHỤC HỒI LỖI TỪ ĐỒNG ÂM ASR (SPEECH-TO-TEXT AUTO-CORRECTION) ===
-Kịch bản tiếng Trung đầu vào được bóc tách từ giọng nói video bằng AI thính giác (ASR), do đó có thể xuất hiện các chữ Hán bị nghe nhầm sang chữ đồng âm hoặc gần âm Pinyin (homophones):
-- ĐỐI CHIẾU MẠCH TRUYỆN & THỂ LOẠI: Luôn kết hợp ngữ cảnh đối thoại, bối cảnh phân cảnh và tiêu đề tác phẩm (nếu có).
-- PHÁT HIỆN TỪ LỆCH CẢNH: Khi một từ ngữ xuất hiện phi lý, ngô nghê, hoặc không ăn nhập với mạch câu chuyện (đặc biệt: tên nhân vật, chức vị, môn phái, chiêu thức võ công, cảnh giới tu luyện bị AI nghe nhầm thành từ sinh hoạt đời thường), bạn BẮT BUỘC tự động suy luận chữ Hán đồng âm chuẩn xác trong tiếng Trung theo đúng ngữ cảnh đó và dịch thẳng sang Tiếng Việt chuẩn xác.
-- TUYỆT ĐỐI KHÔNG dịch máy móc theo mặt chữ bị nghe nhầm; bản dịch phải thông suốt, tự nhiên, đúng 100% tinh thần tác phẩm.""")
+    # 0. Tiêu đề video / phim (đối chiếu ngữ cảnh)
+    if project_title and project_title.strip():
+        prompt_parts.append(f"=== TIÊU ĐỀ PHIM / VIDEO GỐC ===\n{project_title.strip()}")
     
     # 1. Bảng thực thể khóa tên riêng (nếu có)
     if entity_table_text and entity_table_text.strip():
@@ -249,30 +245,12 @@ Kịch bản tiếng Trung đầu vào được bóc tách từ giọng nói vid
     prompt_parts.append(f"""=== KỊCH BẢN ĐẦU VÀO CẦN DỊCH LỒNG TIẾNG ===
 {tagged_text.strip()}""")
 
-    # 4. MỆNH LỆNH BẢO TOÀN THỨ TỰ ĐÁNH SỐ & QUY CHUẨN DỊCH LỒNG TIẾNG CHUẨN AIREAD (Recency Effect)
-    prompt_parts.append("""=== NGUYÊN TẮC DỊCH THUẬT LỒNG TIẾNG & BẢO TOÀN THỨ TỰ (BẮT BUỘC TUÂN THỦ 100%) ===
-1. VĂN PHONG DỊCH THOÁT Ý & TRUYỀN CẢM (CHUẨN LỒNG TIẾNG VIDEO):
-   - Bản dịch dùng để lồng tiếng (dubbing & voiceover), đòi hỏi lời văn PHẢI MƯỢT MÀ, GIÀU CẢM XÚC, CÓ NHẠC ĐIỆU VÀ CÓ HỒN.
-   - BẮT BUỘC dịch THOÁT Ý, THUẦN VIỆT TỰ NHIÊN, trau chuốt câu từ sao cho đọc lên êm tai, lột tả sâu sắc thần thái nhân vật và không khí phân cảnh.
-   - TUYỆT ĐỐI CẤM dịch bám chữ cơ học (convert thô) làm câu văn cụt lủn, cộc lốc hoặc gượng gạo.
-   - BỔ SUNG TỪ NGỮ ĐẦY ĐỦ Ý: Khi câu văn gốc bị thiếu ý, rút gọn hay lược bớt thành phần khiến câu dịch tiếng Việt có nguy cơ bị cụt ngủn, hụt hẫng, tối nghĩa hay khó hiểu, BẮT BUỘC chủ động thêm các từ đi kèm, từ nối, từ phụ trợ hoặc thành phần bổ ngữ để câu văn tròn ý, sáng rõ, mạch lạc và tự nhiên nhất.
-   - Với động vật thông thường (chó, mèo, gia súc...), dịch đúng từ ngữ tiếng Việt tự nhiên (chó hoang, mèo hoang, đàn chó...); cấm máy móc dịch thành 'lưu lang cẩu' hay ép chó mèo đời thường là 'sủng vật'.
-2. NGUYÊN TẮC XƯNG HÔ GỐC & GIỮ XUYÊN SUỐT BỐI PHẬN:
-   - BÁM SÁT TỪ GỐC & TÔN TRỌNG KHOẢNG CÁCH: Từ gốc là đại từ trung tính (你, 我) hoặc xưng hô khách sáo, xa cách, đối địch (kể cả giữa người thân): BẮT BUỘC dịch trung tính chuẩn cổ phong (Ta, Ngươi, Huynh đài, Các hạ, Tại hạ...). TUYỆT ĐỐI KHÔNG tự suy diễn đưa về xưng hô bối phận gia đình hay thân mật làm sai lệch nguyên tác. Khi gặp từ khó, tối nghĩa hoặc mơ hồ quan hệ: BẮT BUỘC quy về "Ta — Ngươi".
-   - CHUẨN BỐI PHẬN & GIỮ XUYÊN SUỐT: Đã xác định xưng hô hoặc bối phận ban đầu thì BẮT BUỘC GIỮ XUYÊN SUỐT toàn truyện (ví dụ: đã xưng với dì là "con" thì luôn là "con", cấm lúc xưng "con" lúc nhảy sang "em"). CẤM tự ý đổi xưng hô tùy tiện.
-   - CẤM TOÀN BỘ ĐẠI TỪ HIỆN ĐẠI trong cổ phong (cấm chú, bác, cô, dì, anh trai, chị gái, em trai, em gái, tôi, bạn, tớ, mình...).
-3. NHỊP ĐIỆU CÂU THOẠI & ĐỘ DÀI PHÙ HỢP:
-   - Giữ độ dài câu văn vừa vặn, nhịp nhàng (thông thường dao động từ 1.0 đến khoảng 2.0 - 2.2 lần số từ gốc).
-   - Câu văn gãy gọn, tự nhiên, không rườm rà lan man nhưng cũng KHÔNG ĐƯỢC CẮT GỌT QUÁ MỨC làm mất đi cảm xúc và sự êm ái của câu văn.
-4. BẢO TOÀN THỨ TỰ ĐÁNH SỐ 1:1:
-   - MỖI dòng đầu vào "X. [Nội dung]" ➔ BẮT BUỘC trả về ĐÚNG 1 dòng đầu ra "X. [Bản dịch tiếng Việt]" với CHÍNH XÁC số thứ tự "X".
-   - TUYỆT ĐỐI CẤM gộp số, CẤM bỏ sót số (kể cả câu ngắn 1-2 từ), CẤM tự ý đổi số thứ tự.
-   - Dòng nào chỉ có dấu chấm (ví dụ "56. .") thì đầu ra cũng giữ nguyên là số thứ tự và dấu chấm ("56. .").
-5. QUY TẮC DẤU CUỐI DÒNG:
-   - Vế câu ngắn là trạng ngữ, thán từ hoặc vế câu dở dang của cùng một người nói chuẩn bị nối tiếp vào câu kế tiếp (như: "Đúng lúc này,", "Nghe vậy,", "Lúc này,"): BẮT BUỘC kết thúc bằng DẤU PHẨY (,) để biểu thị câu chưa trọn ý.
-   - Các câu đã trọn vẹn ngữ nghĩa hoặc câu thoại/đối đáp độc lập của nhân vật: BẮT BUỘC kết thúc bằng dấu chấm (.), hỏi (?) hoặc than (!).
-   - TUYỆT ĐỐI KHÔNG được để hai dấu liên tiếp như '.,'.
-6. CHỈ TRẢ VỀ DANH SÁCH ĐƯỢC ĐÁNH SỐ (1. ... \n 2. ...), TUYỆT ĐỐI KHÔNG KÈM LỜI CHÀO, LỜI MỞ ĐẦU HAY LỜI GIẢI THÍCH NÀO KHÁC.""")
+    # 4. Mệnh lệnh thực thi ngắn gọn, súc tích (chống lặp lại quy tắc đã có ở System Prompt)
+    prompt_parts.append("""=== MỆNH LỆNH THỰC THI (LỒNG TIẾNG PHIM) ===
+Dịch toàn bộ kịch bản trên sang tiếng Việt lồng tiếng phim:
+1. Khống chế độ phình đồng bộ ~1.4 lần số chữ Hán gốc (dao động 1.2 - 1.6 lần; câu >= 5 chữ tuyệt đối không dài gấp đôi; câu 1-4 chữ được phép 2-3 lần) để ôm trọn khung [Start - End].
+2. Bảo toàn đánh số thứ tự 1:1 ('1. ...\\n2. ...'), tuyệt đối cấm gộp câu, cấm bỏ sót số.
+3. Chỉ trả về danh sách đánh số, tuyệt đối không kèm lời chào, lời mở đầu hay giải thích.""")
 
     user_prompt = "\n\n".join(prompt_parts)
 

@@ -2,14 +2,15 @@
 """
 app/services/translation/profiles.py
 =========================================
-BỘ PROFILE VĂN PHONG VÀ BẢN SẮC THỂ LOẠI CHO TRANSLATOR AIREAD (LỒNG TIẾNG VIDEO & AUDIO)
+BỘ PROFILE VĂN PHONG VÀ BẢN SẮC THỂ LOẠI CHO TRANSLATOR AIREAD (LỒNG TIẾNG VIDEO & DUBBING)
 
-CẤU TRÚC CHUẨN MỰC (v3):
-1. YÊU CẦU BẢN SẮC & LỜI DẪN TRUYỆN (Ngôi thứ 3 - CẤM TUYỆT ĐỐI DÙNG 'Y').
+CẤU TRÚC CHUẨN MỰC (v4 - TINH CHỈNH ĐỒNG BỘ CHO LỒNG TIẾNG PHIM VIDEO):
+1. YÊU CẦU BẢN SẮC & LỜI DẪN THOẠI (Ngôi thứ 3 - CẤM TUYỆT ĐỐI DÙNG 'Y').
 2. DANH SÁCH CẤM TUYỆT ĐỐI TOÀN BỘ XƯNG HÔ HIỆN ĐẠI (Không phân loại để tránh AI hiểu nhầm chỉ cấm trong nhà).
 3. NGUYÊN TẮC THAY THẾ CHỐNG Ô NHIỄM (Bề trên/người già khó chọn từ thì bắt buộc dùng "Ta").
 4. BẢNG XƯNG HÔ CỔ ĐẠI NÊN DÙNG / BẮT BUỘC DÙNG (Kèm ví dụ đối chiếu trực quan).
 5. THUẬT NGỮ BẢN SẮC THỂ LOẠI & QUY CHUẨN ĐỊA DANH.
+6. COMMON RULES ĐẶC THÙ LỒNG TIẾNG PHIM: Khống chế độ phình từ ngữ chuẩn 1.4 lần (ôm khít Start - End, không xé lẻ câu, không cắt cụt đuôi).
 """
 
 import logging
@@ -19,16 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 # =====================================================================
-# KHỐI QUY TẮC XƯNG HÔ CỔ PHONG DÙNG CHUNG (BÊ NGUYÊN XI TỪ AIREAD)
+# KHỐI QUY TẮC XƯNG HÔ CỔ PHONG DÙNG CHUNG
 # =====================================================================
 
 def _co_phong_addressing_block(danh_xung_bo_sung: str = "") -> str:
-    """Khung xưng hô cổ phong chuẩn mực: ngắn gọn, đúng trọng tâm, bám sát từ gốc và giữ xuyên suốt bối phận."""
+    """Khung xưng hô cổ phong chuẩn mực: ngắn gọn, đúng trọng tâm, tôn trọng quan hệ và giữ xuyên suốt bối phận."""
     extra = f"\n   - Danh xưng thể loại: {danh_xung_bo_sung.strip()}" if danh_xung_bo_sung and danh_xung_bo_sung.strip() else ""
     return f"""3. QUY CHUẨN XƯNG HÔ CỔ PHONG (BẮT BUỘC):
-   - BÁM SÁT TỪ GỐC & TÔN TRỌNG KHOẢNG CÁCH:
-     + Từ gốc là đại từ trung tính (你, 我) hoặc xưng hô khách sáo, xa cách, đối địch (kể cả giữa người thân): BẮT BUỘC dịch trung tính chuẩn cổ phong (Ta, Ngươi, Huynh đài, Các hạ, Tại hạ...). TUYỆT ĐỐI KHÔNG tự suy diễn đưa về xưng hô bối phận gia đình hay thân mật làm sai lệch nguyên tác.
-     + Khi gặp từ khó, tối nghĩa hoặc mơ hồ quan hệ: BẮT BUỘC quy về "Ta — Ngươi", không tự biến tấu danh xưng phức tạp.
+   - TÔN TRỌNG SẮC THÁI QUAN HỆ & BỐI CẢNH:
+     + Xưng hô đúng với ngữ cảnh câu chuyện: người lạ, đối thủ, khách sáo, đối địch dùng trung tính chuẩn cổ phong (Ta, Ngươi, Huynh đài, Các hạ, Tại hạ...). Bằng hữu, huynh đệ, đồng môn dùng xưng hô tự nhiên (Huynh đệ, Huynh — Đệ, Sư huynh — Sư đệ...). TUYỆT ĐỐI KHÔNG tự suy diễn đưa về xưng hô bối phận gia đình thân mật khi nguyên tác chỉ là quan hệ xã giao.
+     + BỘ BA ĐẠI TỪ CỐT LÕI (TA — NGƯƠI — HẮN): Ưu tiên sử dụng tối đa "Ta" (ngôi 1), "Ngươi" (ngôi 2) và "Hắn" (ngôi 3) trong mọi cuộc hội thoại và lời dẫn. Áp dụng phổ biến trong cả giao tiếp xã giao, đối đầu lẫn thân cận kết hợp danh xưng ("phu quân của ta", "sư phụ của ta", "nhóc con ngươi làm cái gì vậy", "tiểu tử ngươi...", "ngươi đứng lại cho ta"...). Khi gặp bất kỳ ngữ cảnh mơ hồ hoặc chưa rõ bối phận: MẶC ĐỊNH 100% QUY VỀ "TA — NGƯƠI — HẮN".
    - CHUẨN BỐI PHẬN & GIỮ XUYÊN SUỐT:
      + Đã xác định xưng hô hoặc bối phận ban đầu thì BẮT BUỘC GIỮ XUYÊN SUỐT toàn truyện (ví dụ: đã xưng với dì là "con" thì luôn là "con", cấm lúc xưng "con" lúc nhảy sang "em").
      + CHỈ ĐƯỢC ĐỔI XƯNG HÔ khi diễn biến cốt truyện có bước chuyển biến quan hệ rõ rệt (người lạ sau bái sư, kết nghĩa huynh đệ...). Cấm tự ý đổi xưng hô tùy tiện.
@@ -41,9 +42,11 @@ def _co_phong_addressing_block(danh_xung_bo_sung: str = "") -> str:
      + 姑娘 / 小姐 / 丫头 / 妹 → Cô nương / Tiểu thư / Nha đầu / Muội muội (CẤM: em gái, cô bé, chị).
      + 师傅 / 师父 → Sư phụ / Sư phó (CẤM: thầy, bác tài).
      + 跟班 / 小跟班 / 玩伴 / 宠物 (chỉ ĐỘNG VẬT/LINH THÚ) → Sủng vật / Linh sủng / Bạn đồng hành (CẤM: nha đầu, người hầu, nô tì).
-   - LỜI DẪN NGÔI 3: Dùng hắn, nàng, gã, thị, đối phương, thiếu niên, lão giả... TUYỆT ĐỐI CẤM DÙNG "Y".
-   - CẤM TOÀN BỘ ĐẠI TỪ HIỆN ĐẠI: Cấm chú, bác, cô, dì, thím, mợ, dượng, cậu, cháu, ông, bà, bố, ba, má, thầy, anh trai, chị gái, em trai, em gái, con trai, con gái, tôi, bạn, tớ, mình, chúng mình, bọn em, tụi mình, các bạn, mày, tao, tụi mày, chú mày.{extra}"""
-
+   - LỜI DẪN NGÔI 3 & GỌI NHÂN VẬT (NAM/NỮ): BẮT BUỘC dùng 'hắn' (nam), 'nàng' (nữ), tên riêng, chàng trai, thiếu niên, lão giả, đối phương... TUYỆT ĐỐI CẤM 'cậu' / 'cậu ấy' / 'cậu ta' / 'anh ấy' / 'cô ấy'; TUYỆT ĐỐI CẤM DÙNG "Y" (cấm cả lời kể lẫn lời thoại).
+   - CẤM TOÀN BỘ ĐẠI TỪ & DANH XƯNG HIỆN ĐẠI (CẤM 100%):
+     + ĐẠI TỪ ĐƠN LẺ HIỆN ĐẠI: Cấm tôi, bạn, tớ, mình, cậu, bồ, chú, bác, cô, dì, thím, mợ, dượng, cháu, ông, bà, bố, ba, má, thầy, mày, tao. (Quy về: Ta, Ngươi, Huynh đài, Các hạ, Thúc thúc, Bá phụ...).
+     + ĐẠI TỪ NHÓM / SỐ NHIỀU HIỆN ĐẠI: Cấm chúng mình, chúng tớ, chúng tôi, tụi mình, tụi tớ, bọn mình, bọn tớ, bọn em, tụi em, các bạn, các cậu, hai cậu, mấy cậu, mấy bạn, tụi mày, bọn mày, chúng mày, tụi nó, bọn nó. (Bắt buộc quy về: Chúng ta, Bọn ta, Các ngươi, Chư vị, Bọn họ...).
+     + CẶP DANH XƯNG GIA ĐÌNH HIỆN ĐẠI: Cấm anh trai, chị gái, em trai, em gái, con trai, con gái, chú mày, anh bạn, bác tài. (Bắt buộc dùng: Huynh, Đệ, Tỷ, Muội, Ca ca, Tỷ tỷ, Muội muội, Tiểu tử, Huynh đệ...){extra}"""
 
 
 # =====================================================================
@@ -159,26 +162,66 @@ SCI_FI_APOCALYPSE_PROFILE = {
 
 
 # =====================================================================
-# BỘ QUY TẮC CHUYỂN NGỮ CỐT LÕI (COMMON RULES CHO TOÀN BỘ HỆ THỐNG) — CHUẨN AIREAD
+# BỘ QUY TẮC CHUYỂN NGỮ CỐT LÕI (COMMON RULES CHO LỒNG TIẾNG VIDEO & DUBBING)
 # =====================================================================
-COMMON_RULES = (
-    "QUY TẮC CỐT LÕI (áp dụng mọi thể loại):\n"
-    "1. TÊN RIÊNG: Dùng đúng 100% bản dịch đã có trong Bảng thực thể cho tên nhân vật, địa danh, môn phái, bảo vật. Mỗi từ CHỈ MỘT bản dịch tiếng Việt duy nhất, hòa vào câu văn — CẤM ghi dạng song ngữ kiểu \"Chữ Hán (bản dịch)\", cấm sót chữ Hán/Pinyin, CẤM TIẾNG ANH.\n"
-    "2. DỊCH THOÁT Ý, BIẾN ĐỔI TỪ NGỮ THEO VĂN HỌC VIỆT & BỔ SUNG TỪ NGỮ ĐẦY ĐỦ Ý: TUYỆT ĐỐI CẤM dịch bám sát từng từ, dịch từng chữ hay convert rồi ghép lại cơ học gây tối nghĩa, gượng gạo, lố lăng. BẮT BUỘC hiểu sâu trọn vẹn ngữ cảnh của cả câu và đoạn văn để dịch thoát ý; ưu tiên dịch nghĩa bóng, hàm ý mở rộng và cách diễn đạt phổ thông quen thuộc trong văn học và khẩu ngữ lồng tiếng Việt Nam. ĐƯỢC PHÉP và KHUYẾN KHÍCH chủ động biến đổi, tái cấu trúc từ và cụm từ, linh hoạt thay thế bằng các từ/cụm từ tiếng Việt giàu sức gợi cảm, truyền cảm, trau chuốt và biểu cảm hơn để câu văn hay hơn, xuôi tai hơn, lột tả trọn vẹn và đúng nhất thần thái cùng ý đồ tác giả. ĐẶC BIỆT: Khi câu văn gốc bị thiếu ý, rút gọn hay lược bớt thành phần khiến câu dịch tiếng Việt có nguy cơ bị cụt ngủn, hụt hẫng, tối nghĩa hay khó hiểu, BẮT BUỘC chủ động thêm các từ đi kèm, từ nối, từ phụ trợ hoặc thành phần bổ ngữ để câu văn tròn ý, sáng rõ, mạch lạc, có nhạc điệu và tự nhiên nhất.\n"
-    "3. VĂN PHONG LỒNG TIẾNG & ĐỘ DÀI NHỊP THOẠI TỰ NHIÊN: Kịch bản dùng để thu âm lồng tiếng (dubbing / voiceover) trực tiếp cho video, yêu cầu lời thoại và lời dẫn phải có nhạc điệu, có hồn, sống động, tự nhiên, đọc lên êm tai và truyền cảm. Cho phép độ dài câu văn co giãn tự nhiên theo dòng cảm xúc (thông thường từ 1.0 đến khoảng 2.0 - 2.2 lần số từ gốc). TUYỆT ĐỐI KHÔNG cắt gọt thô bạo làm câu văn cụt lủn, cộc lốc hoặc mất đi cảm xúc và sự uyển chuyển; nhưng cũng tránh bôi chữ lê thê dài dòng vô căn cứ để vừa vặn với nhịp thở của video.\n"
-    "4. CẤU TRÚC CÂU & NGỮ PHÁP TIẾNG VIỆT CHUẨN MỰC: BẮT BUỘC sắp xếp và tổ chức câu văn theo đúng cấu trúc ngữ pháp và thói quen diễn đạt tự nhiên của tiếng Việt (Chủ ngữ - Vị ngữ rõ ràng, mạch lạc, có nhịp điệu văn chương uyển chuyển). TUYỆT ĐỐI KHÔNG bê nguyên xi trật tự đảo ngữ, câu lủng củng hay cấu trúc ngữ pháp rườm rà của tiếng Trung sang tiếng Việt. Toàn bộ bản dịch là 100% tiếng Việt chuẩn mực, đúng chính tả, trôi chảy; TUYỆT ĐỐI CẤM TIẾNG ANH và bất kỳ từ ngoại lai hay ký tự lạ nào trong toàn bộ văn bản.\n"
-    "5. CẢNH GIỚI TU LUYỆN, ĐỘNG VẬT & THUẬT NGỮ BẢN SẮC: BẮT BUỘC dịch cảnh giới/công pháp/tầng thứ theo chuẩn Hán-Việt (Luyện Linh tam cảnh / tứ cảnh, Luyện Khí nhị trọng / tam trọng / tầng hai, Kim Đan ngũ chuyển, Đệ tam cảnh...); TUYỆT ĐỐI CẤM dùng 'cảnh giới thứ hai / thứ ba / thứ tư / thứ N' hay 'Luyện Khí thứ 2, thứ 3...' (cấm dịch: 'cảnh giới thứ ba đột phá cảnh giới thứ tư'). Khi nói về động vật / chim chóc / linh thú / sủng vật (như Hắc Ưng, chó mèo, linh thú...), các từ gốc chỉ bạn đồng hành / sủng vật BẮT BUỘC dịch là 'sủng vật / linh sủng / bạn đồng hành bên người', TUYỆT ĐỐI CẤM dịch nhầm thành người ('nha đầu', 'nha hoàn', 'người hầu', 'nô tì', 'tiểu đồng'). Với động vật thông thường (chó, mèo, gia súc...), dịch đúng từ ngữ tiếng Việt tự nhiên (chó hoang, mèo hoang, đàn chó...); cấm máy móc dịch thành 'lưu lang cẩu' hay ép gọi chó mèo đời thường là 'sủng vật'. Giữ nguyên thuật ngữ Hán-Việt quen thuộc (tu vi, đan điền, tán tu...), không ép thuần Việt hóa gượng gạo.\n"
-    "6. NGUYÊN TẮC XƯNG HÔ GỐC & GIỮ XUYÊN SUỐT BỐI PHẬN (BẮT BUỘC TUÂN THỦ):\n"
-    "   - BÁM SÁT TỪ GỐC & KHOẢNG CÁCH QUAN HỆ: Xưng hô khoảng cách (khách sáo, kính trọng, xa cách, dè chừng, đối địch...) dùng cho cả người thân lẫn người lạ. BẮT BUỘC giữ đúng tính chất trung tính của từ gốc (cổ đại dùng Ta, Ngươi, Huynh đài, Các hạ...; hiện đại dùng Tôi, Anh, Chị...). CẤM tự suy diễn ép về xưng hô thân mật hay gán ghép bối phận làm sai lệch nguyên tác. Khó dịch hoặc mơ hồ thì quy về 'Ta — Ngươi' (cổ đại) hoặc 'Tôi — Anh/Chị' (hiện đại).\n"
-    "   - CHUẨN BỐI PHẬN & GIỮ XUYÊN SUỐT: Đã xưng hô thế nào thì GIỮ XUYÊN SUỐT toàn truyện (ví dụ: xưng với dì là 'con' thì luôn là 'con', cấm lúc 'con' lúc 'em'). CHỈ ĐƯỢC ĐỔI XƯNG HÔ khi diễn biến quan hệ thực sự thay đổi rõ rệt (người lạ sau bái sư, kết nghĩa...).\n"
-    "7. TỰ ĐỘNG PHÁT HIỆN & KHẮC PHỤC LỖI TỪ ĐỒNG ÂM ASR (SPEECH-TO-TEXT): Kịch bản gốc tiếng Trung được bóc tách từ âm thanh video bằng AI thính giác (ASR), do đó thường xuyên xuất hiện hiện tượng nghe nhầm sang chữ Hán đồng âm hoặc gần âm Pinyin (homophones) — đặc biệt là tên nhân vật, địa danh, tông môn, võ học hoặc thuật ngữ bối cảnh bị nghe nhầm thành từ sinh hoạt thông thường. BẮT BUỘC biên tập viên quan sát toàn bộ ngữ cảnh mạch truyện và tiêu đề tác phẩm: nếu một từ trong câu xuất hiện phi lý, lủng củng hoặc không ăn nhập với bối cảnh thể loại, PHẢI tự động truy nguyên từ đồng âm chuẩn xác trong tiếng Trung theo ngữ cảnh đó và dịch thẳng sang tiếng Việt đúng nghĩa; TUYỆT ĐỐI CẤM dịch ngô nghê bám theo chữ Hán bị AI thính giác nghe nhầm.\n"
-    "8. BẢO TOÀN ĐÁNH SỐ ĐỊNH DẠNG 1:1: Mỗi dòng câu thoại đầu vào tương ứng chính xác với 1 dòng bản dịch đầu ra giữ nguyên số thứ tự. Tuyệt đối KHÔNG gộp dòng, không bỏ sót dòng, không chèn gạch đầu dòng (-) hay dấu ngoặc kép thừa vào câu."
-)
+COMMON_RULES = """QUY TẮC DỊCH THUẬT LỒNG TIẾNG CỐT LÕI (BẮT BUỘC ÁP DỤNG TOÀN DIỆN):
+1. TÊN RIÊNG: Dùng đúng 100% bản dịch trong Bảng thực thể cho tên nhân vật, địa danh, môn phái, bảo vật. Mỗi từ chỉ một bản dịch duy nhất, hòa vào câu văn — CẤM ghi song ngữ kiểu "Chữ Hán (bản dịch)", cấm sót chữ Hán/Pinyin, CẤM TIẾNG ANH.
+
+2. DỊCH ĐÚNG NGHĨA BÓNG & HÀM Ý NGỮ CẢNH (TUYỆT ĐỐI CẤM DỊCH NGHĨA ĐEN TRẦN TRỤI):
+   - BẮT BUỘC hiểu sâu trọn vẹn ngữ cảnh của cả câu và phân cảnh để nắm bắt NGHĨA BÓNG, ẩn dụ, ngụ ý nghệ thuật và thái độ nhân vật. TUYỆT ĐỐI CẤM dịch nghĩa đen từng từ (literal translation) khi gặp thành ngữ 4 chữ, ngạn ngữ, khẩu ngữ hoặc lối nói ẩn dụ của tiếng Hán.
+   - CHUYỂN HÓA VĂN HỌC LỒNG TIẾNG: Bắt buộc chuyển ngữ thành các thành ngữ, quán ngữ tương đương trong khẩu ngữ lồng tiếng tiếng Việt, thoát ý uyển chuyển, tự nhiên, xuôi tai. Khán giả nghe vào hiểu ngay lập tức mà không cần suy đoán ngô nghê.
+   - Khi một từ/cụm từ có thể hiểu theo cả nghĩa đen và nghĩa bóng, LUÔN ƯU TIÊN NGHĨA BÓNG phù hợp với diễn biến tâm lý và bối cảnh.
+
+3. QUY TẮC KHỐNG CHẾ ĐỘ PHÌNH TỪ NGỮ ĐỒNG BỘ 1.4 LẦN (CHUẨN LỒNG TIẾNG PHIM KHỚP KHẨU HÌNH [START - END]):
+   - NGUYÊN TẮC CỐT LÕI: Kịch bản dùng để LỒNG TIẾNG PHIM (DUBBING VIDEO), mỗi dòng câu nói phải ôm trọn chính xác vào khung thời lượng [Start - End] của nhân vật, tốc độ đọc đồng đều và tuyệt đối không để xảy ra tình trạng câu đọc như rap, câu đọc rề rà hay bị cắt cụt đuôi câu.
+   - CÔNG THỨC ĐỘ PHÌNH CHUẨN (~1.4 LẦN):
+     + Đếm số chữ Hán của câu gốc (bỏ dấu câu).
+     + Mỗi chữ Hán ứng với khoảng 1.4 tiếng (từ) tiếng Việt. Dao động cho phép nghiêm ngặt: từ 1.2 đến 1.6 lần số chữ gốc.
+     + Bảng chuẩn tham chiếu:
+       • 5 chữ Hán   ➔ khoảng 6 - 8 tiếng Việt (chuẩn: 7 tiếng).
+       • 10 chữ Hán  ➔ khoảng 12 - 15 tiếng Việt (chuẩn: 14 tiếng).
+       • 15 chữ Hán  ➔ khoảng 18 - 23 tiếng Việt (chuẩn: 21 tiếng).
+       • 20 chữ Hán  ➔ khoảng 24 - 30 tiếng Việt (chuẩn: 28 tiếng).
+   - ĐỒNG BỘ ĐỘ PHÌNH - CÂU TỪ 5 CHỮ TRỞ LÊN:
+     + TUYỆT ĐỐI KHÔNG ĐƯỢC DÀI GẤP ĐÔI (Cấm > 1.6 lần số chữ gốc).
+     + KHÔNG ĐƯỢC NGẮN HƠN số chữ gốc (Cấm < 1.2 lần).
+     + Mục tiêu tối thượng: Mọi câu dài đều phải có CÙNG ĐỘ PHÌNH ĐỒNG BỘ (~1.4 lần). Tuyệt đối không để câu thì cụt ngủn, câu thì bôi dài ngoằng!
+   - NGOẠI LỆ DUY NHẤT (CÂU SIÊU NGẮN 1 - 4 CHỮ HÁN):
+     + Chỉ các câu cực ngắn (1 đến 4 chữ Hán) mới được phép dài gấp 2 - 3 lần để thêm từ ngữ khí/trợ từ tự nhiên:
+       Ví dụ: 走 (1 chữ) ➔ Chạy mau đi! (3 tiếng); 站住 (2 chữ) ➔ Đứng lại đó! (3 tiếng); 救命 (2 chữ) ➔ Cứu mạng với! (3 tiếng).
+   - TUYỆT ĐỐI CẤM GHÉP CÂU VỤN VẶT: Mỗi câu thoại có mốc thời gian riêng biệt trên video, BẮT BUỘC dịch tương ứng 1:1 từng câu, CẤM gộp câu của dòng này sang dòng khác làm lệch khẩu hình và phụ đề.
+
+4. TÁI CẤU TRÚC CỤM TỪ & NGỮ PHÁP CÂU THUẦN VIỆT (CẤM GIỮ NGUYÊN THỨ TỰ TỪ TIẾNG TRUNG):
+   - TUYỆT ĐỐI CẤM giữ nguyên thứ tự từng từ từ trái qua phải của câu tiếng Trung. BẮT BUỘC đảo và sắp xếp lại trật tự theo đúng cú pháp THUẦN VIỆT:
+     + ĐẢO TRẬT TỰ CỤM TỪ: Tiếng Trung đặt định ngữ/tính từ trước danh từ; tiếng Việt BẮT BUỘC đặt Danh từ chính đứng trước — Tính từ, bổ ngữ miêu tả đứng sau. CẤM giữ nguyên trật tự từ Hán làm cụm từ bị ngược ngạo, tối nghĩa.
+     + SẮP XẾP LẠI CÂU VĂN: Tổ chức câu theo trật tự Chủ ngữ - Vị ngữ - Bổ ngữ tự nhiên của tiếng Việt. Đưa trạng ngữ nơi chốn, thời gian về đúng vị trí thích hợp (thường sau động từ hoặc tách bạch ở đầu câu bằng dấu phẩy; CẤM chèn trạng ngữ lủng củng vào giữa chủ ngữ và vị ngữ).
+     + HÓA GIẢI CẤU TRÚC HÁN NGỮ ĐẶC THÙ: Chuyển hóa triệt để câu chữ '把' (đem/lấy...), câu chữ '被' (bị/được...), câu chữ '以', cấu trúc so sánh hay đảo ngữ tiếng Hán thành câu văn tiếng Việt trôi chảy, gãy gọn, xuôi tai, không gượng ép. Bản dịch phải đọc tự nhiên như người Việt nói chuyện, triệt tiêu 100% mùi vị convert.
+
+5. ĐỊNH DẠNG LỒNG TIẾNG VIDEO & BẢO TOÀN THỨ TỰ 1:1:
+   - BẢO TOÀN ĐÁNH SỐ THỨ TỰ 1:1: MỖI dòng đầu vào "X. [Nội dung]" ➔ BẮT BUỘC trả về ĐÚNG 1 dòng đầu ra "X. [Bản dịch tiếng Việt]" với CHÍNH XÁC số thứ tự "X".
+   - TUYỆT ĐỐI CẤM gộp số, CẤM bỏ sót số, CẤM tự ý đổi số thứ tự. Dòng nào chỉ có dấu chấm (ví dụ "56. .") thì đầu ra cũng giữ nguyên là số thứ tự và dấu chấm ("56. .").
+   - TUYỆT ĐỐI CẤM dùng gạch đầu dòng (-), CẤM bọc ngoặc kép ("..."), CẤM in đậm/nghiêng (**...**).
+   - QUY TẮC DẤU CUỐI DÒNG:
+     + Vế câu ngắn là trạng ngữ, thán từ hoặc vế câu dở dang đang nói dở chưa hết ý chuẩn bị nối vào câu kế tiếp (như: "Đúng lúc này,", "Nghe vậy,", "Lúc này,"): BẮT BUỘC kết thúc bằng DẤU PHẨY (,).
+     + Các câu đã trọn vẹn ngữ nghĩa hoặc câu thoại/đối đáp độc lập: BẮT BUỘC kết thúc bằng dấu chấm (.), hỏi (?) hoặc than (!). CẤM hai dấu liên tiếp như '.,'.
+   - Số/tiền/thời gian: Viết bằng chữ để giọng đọc AI TTS phát âm tự nhiên (ví dụ: 'ba nghìn' thay vì '3000', 'mười vạn' thay vì '10 vạn').
+
+6. TỰ ĐỘNG PHÁT HIỆN & PHỤC HỒI LỖI TỪ ĐỒNG ÂM ASR (SPEECH-TO-TEXT AUTO-CORRECTION):
+   - Kịch bản tiếng Trung đầu vào được bóc tách từ giọng nói video bằng AI thính giác (ASR), do đó thường xuyên xuất hiện hiện tượng nghe nhầm sang chữ Hán đồng âm hoặc gần âm Pinyin (homophones) — đặc biệt là tên nhân vật, chức vị, môn phái, chiêu thức võ công hoặc cảnh giới bị nghe nhầm thành từ sinh hoạt đời thường.
+   - BẮT BUỘC đối chiếu ngữ cảnh phân cảnh, quan hệ đối thoại và tiêu đề tác phẩm: Nếu một từ xuất hiện phi lý, ngô nghê hoặc lệch cảnh, PHẢI tự động suy luận chữ Hán đồng âm chuẩn xác trong tiếng Trung theo đúng ngữ cảnh đó và dịch thẳng sang tiếng Việt chuẩn xác.
+   - TUYỆT ĐỐI KHÔNG dịch máy móc theo mặt chữ bị nghe nhầm.
+
+7. CHUẨN BỐI PHẬN & GIỮ XUYÊN SUỐT XƯNG HÔ:
+   - BẮT BUỘC tuân thủ 100% quy chuẩn xưng hô của thể loại truyện đã nêu ở trên.
+   - Đã xác định xưng hô hoặc bối phận ban đầu thì BẮT BUỘC GIỮ XUYÊN SUỐT toàn bộ kịch bản; chỉ được đổi xưng hô khi diễn biến quan hệ thực sự có bước chuyển biến rõ rệt (người lạ sau bái sư, kết nghĩa huynh đệ...). Cấm tự ý đổi xưng hô tùy tiện.
+
+8. TRIỆT TIÊU 100% SÓT CHỮ HÁN, CHỐNG LẶP TỪ & CẤM RÒ RỈ CHÚ THÍCH TỪ ĐIỂN:
+   - CẤM SÓT CHỮ HÁN ĐƠN LẺ: Tuyệt đối không để sót bất kỳ chữ Hán đơn lẻ, Pinyin hay cụm từ ngoại lai nào xen lẫn trong câu tiếng Việt.
+   - CHỐNG LẶP TỪ & LẶP NGHĨA KHI DỊCH TỪ GHÉP: Khi gặp các cấu trúc từ ghép hoặc từ đồng nghĩa tiếng Hán (ví dụ: 佩刀放回腰间), BẮT BUỘC dịch gộp thoát ý tự nhiên. TUYỆT ĐỐI CẤM dịch chắp vá từng chữ làm sinh ra câu lặp từ ngớ ngẩn (CẤM: 'đao đeo bên mình đao đeo lại bên hông', 'thiên vị thiên vị'...).
+   - TUYỆT ĐỐI CẤM RÒ RỈ CHÚ THÍCH TỪ ĐIỂN: Cấm rò rỉ các đoạn giải thích như '(chỉ [Tên]...)', '(nghĩa là...)', '(tên gốc...)'.
+   - CHỈ XUẤT DANH SÁCH ĐƯỢC ĐÁNH SỐ (1. ... \\n 2. ...), TUYỆT ĐỐI KHÔNG KÈM LỜI CHÀO, LỜI MỞ ĐẦU HAY LỜI GIẢI THÍCH NGOÀI LỀ NÀO KHÁC."""
 
 
-# =====================================================================
-# BẢNG TẬP HỢP TẤT CẢ CONTEXT PROFILES
-# =====================================================================
 CONTEXT_PROFILES = {
     "xianxia": XIANXIA_PROFILE,
     "wuxia": WUXIA_PROFILE,
@@ -266,19 +309,18 @@ def _rut_gon_nhac_xung_ho(genre_rules: str) -> str:
 
 
 def build_standard_system_prompt(genre: Optional[str] = None, author_notes_block: str = "") -> str:
-    """Tạo System Prompt CHUẨN DUY NHẤT cho toàn bộ hệ thống dịch lồng tiếng video."""
+    """Tạo System Prompt CHUẨN DUY NHẤT cho toàn bộ hệ thống dịch lồng tiếng phim video."""
     prof = get_profile_by_genre(genre)
     genre_rules = prof.get("description", "")
     author_section = f"\n\n{author_notes_block.strip()}" if author_notes_block and author_notes_block.strip() else ""
 
     return (
-        f"Bạn là BIÊN TẬP VIÊN DỊCH THUẬT LỒNG TIẾNG VIDEO CAO CẤP (DUBBING & VOICEOVER) TRUNG - VIỆT.\n"
+        f"Bạn là BIÊN TẬP VIÊN DỊCH THUẬT LỒNG TIẾNG PHIM VIDEO CAO CẤP (DUBBING & VOICEOVER) TRUNG - VIỆT.\n"
         f"Nhiệm vụ: Chuyển ngữ kịch bản lời thoại video tiếng Trung sang tiếng Việt để LỒNG TIẾNG CHO VIDEO.\n"
-        f"Văn phong: Thoát ý, mượt mà, giàu cảm xúc, truyền cảm, thuần Việt tự nhiên, chuẩn văn phong tiểu thuyết và kịch bản lồng tiếng.\n"
+        f"Văn phong: Thoát ý, mượt mà, giàu cảm xúc, truyền cảm, thuần Việt tự nhiên, chuẩn văn phong kịch bản lồng tiếng.\n"
         f"TUYỆT ĐỐI CẤM dịch bám chữ convert máy móc hoặc dùng từ Hán-Việt tối nghĩa thô cứng.\n"
         f"KHUYẾN KHÍCH sử dụng từ ngữ gợi cảm, trau chuốt, câu văn giàu nhạc điệu, xuôi tai, biểu đạt trọn vẹn thần thái nhân vật.\n"
-        f"ĐẶC BIỆT: Khi câu văn gốc bị thiếu ý hoặc rút gọn, BẮT BUỘC chủ động thêm từ phụ trợ, từ nối để câu tròn ý, không cụt ngủn.\n"
-        f"Khống chế nhịp câu vừa vặn với lời thoại video (tỷ lệ khoảng 1.0 đến tối đa 2.2 lần số từ gốc), không bôi chữ lan man, câu văn gãy gọn và uyển chuyển.\n\n"
+        f"ĐẶC BIỆT: KHỐNG CHẾ ĐỘ PHÌNH ĐỒNG BỘ 1.4 LẦN (1.2 đến 1.6 lần số chữ Hán gốc). Tuyệt đối cấm câu dài gấp đôi (> 1.6 lần) với câu từ 5 chữ trở lên, câu ngắn 1-4 chữ được phép 2-3 lần. Không bôi chữ lan man, câu văn gãy gọn và uyển chuyển để ôm trọn khung [Start - End] của nhân vật.\n\n"
         f"=== QUY CHUẨN THỂ LOẠI (BẢN SẮC & QUY TẮC XƯNG HÔ CHUẨN AIREAD) ===\n"
         f"{genre_rules}\n\n"
         f"=== QUY TẮC CỐT LÕI DỊCH THUẬT CHUẨN AIREAD CHO LỒNG TIẾNG VIDEO ===\n"
@@ -312,7 +354,7 @@ def build_user_translation_prompt(
 === QUY TẮC DỊCH THUẬT CHUẨN AIREAD CHO LỒNG TIẾNG VIDEO ===
 {COMMON_RULES}
 {nhac_lai_block}
-BẮT ĐẦU DỊCH NGAY BÂY GIỜ. Dịch kịch bản gốc ở trên sang tiếng Việt lồng tiếng thoát ý, mượt mà, giàu nhạc điệu và cảm xúc, thuần Việt tự nhiên, đọc lên êm tai, vừa vặn nhịp thở thoại video, đúng quy chuẩn thể loại và xưng hô đã nêu."""
+BẮT ĐẦU DỊCH NGAY BÂY GIỜ. Dịch kịch bản gốc ở trên sang tiếng Việt lồng tiếng thoát ý, mượt mà, giàu nhạc điệu và cảm xúc, thuần Việt tự nhiên, đọc lên êm tai, tuân thủ nghiêm ngặt công thức độ phình 1.4 lần để ôm trọn nhịp khẩu hình video, đúng quy chuẩn thể loại và xưng hô đã nêu."""
 
 
 def get_profile_description(genre: Optional[str] = None) -> str:

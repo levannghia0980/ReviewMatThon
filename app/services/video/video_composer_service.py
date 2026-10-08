@@ -363,7 +363,7 @@ class VideoComposerService:
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=segments,
                     bgm_volume_when_speaking=0.03,
-                    bgm_volume_normal=0.70,
+                    bgm_volume_normal=0.03,  # Tạm để bằng khi đang nói (0.03 thay vì 0.70) để giấu tiếng Trung
                     voiceover_volume=1.05
                 )
                 audio_source = str(mixed_path)

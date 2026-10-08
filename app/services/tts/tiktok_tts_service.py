@@ -489,13 +489,9 @@ class TikTokTTSService:
                 fitted_seg = raw_seg
                 actual_speed = 1.0
 
-            # KHÓA CHẶT THỜI LƯỢNG (HARD CLAMP):
-            # Với câu thông thường (>= 0.8s), cắt nhẹ đuôi để vừa khít target_dur.
-            # Với câu ngắn (< 0.8s), TUYỆT ĐỐI KHÔNG CẮT NGANG để bảo toàn 100% chữ, không bị nuốt lời.
-            target_ms = int(target_dur * 1000)
-            if target_dur >= 0.80 and len(fitted_seg) > target_ms:
-                fade_ms = min(15, max(1, target_ms // 4))
-                fitted_seg = fitted_seg[:target_ms].fade_out(fade_ms)
+            # BẢO TOÀN 100% ÂM THANH - TUYỆT ĐỐI KHÔNG CẮT CỤT ĐUÔI CÂU:
+            # Nhờ Prompt khống chế chuẩn độ phình 1.4 lần, câu đã ôm vừa khít khung thời lượng.
+            # Giữ trọn vẹn từng từ ngữ đến hết câu, không bao giờ dùng lệnh chém đuôi âm thanh.
 
             seg_dur_sec = len(fitted_seg) / 1000.0
 

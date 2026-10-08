@@ -260,6 +260,9 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             margin_v_val = max(2, int(round(sub_offset_val + (blur_h_val * 0.22))))
         box_pad_val = getattr(req, "box_padding", 8) if getattr(req, "box_padding", None) is not None else 8
 
+        raw_highlight = getattr(req, "karaoke_highlight_color", None)
+        highlight_c = raw_highlight if (raw_highlight and raw_highlight != "&H00EB6325") else "&H000000FF"
+
         render_subs = getattr(req, "render_subtitles", True)
 
         if render_subs:
@@ -340,7 +343,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         output_mixed_audio=str(mixed_audio_file),
                         dialogue_segments=segments,
                         bgm_volume_when_speaking=0.03,
-                        bgm_volume_normal=0.70,
+                        bgm_volume_normal=0.03,  # Tạm để bằng khi đang nói (0.03 thay vì 0.70) để giấu tiếng Trung
                         voiceover_volume=1.05
                     )
                     audio_res_container["audio_path"] = str(mixed_path)

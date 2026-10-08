@@ -14,14 +14,14 @@ class AudioMixerService:
         output_mixed_audio: str,
         dialogue_segments: Optional[List[DialogueSegment]] = None,
         bgm_volume_when_speaking: float = 0.03,
-        bgm_volume_normal: float = 0.70,
+        bgm_volume_normal: float = 0.03,  # Tạm để bằng khi đang nói (0.03 thay vì 0.70) để giấu âm gốc tiếng Trung
         voiceover_volume: float = 1.05
     ) -> str:
         """
         Kỹ thuật Smart Audio Mixing & Vocal Suppression:
         - Giữ trọn vẹn nhạc nền (BGM) và hiệu ứng âm thanh (SFX) từ video gốc.
         - Khi có giọng lồng tiếng tiếng Việt: Tự động giảm (ducking) âm lượng track gốc xuống 3% để triệt tiêu tiếng Trung gốc.
-        - Khi không có lời thoại (khoảng lặng): Nhạc nền tự động đẩy về mức 70% tự nhiên.
+        - Khi không có lời thoại (khoảng lặng): Tạm để mức 3% (gốc: 70%) để giấu hoàn toàn tiếng Trung trước khi vào thoại.
         - Giọng lồng tiếng tiếng Việt to rõ, áp dụng bộ lọc Alimiter chống vỡ tiếng 100%.
         """
         src_orig = Path(original_video_or_audio)
