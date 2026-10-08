@@ -352,8 +352,9 @@ class GroqWhisperService:
                     words_raw, s_start, s_end, time_offset=0.0
                 )
                 if true_start is not None and true_end is not None:
-                    s_start = true_start
-                    s_end = true_end
+                    # Giữ khoảng lấy hơi đầu câu (100ms) và nhả âm tự nhiên cuối câu (150ms)
+                    s_start = max(s_start, round(true_start - 0.10, 3))
+                    s_end = min(s_end, round(true_end + 0.15, 3))
                     word_fixed += 1
                 else:
                     # Nếu segment không có bất kỳ từ nào được căn chỉnh âm thanh -> Câu ma từ nhạc nền/im lặng
@@ -454,8 +455,9 @@ class GroqWhisperService:
                             time_offset=cur_start
                         )
                         if true_start is not None and true_end is not None:
-                            s_start = true_start
-                            s_end = true_end
+                            # Giữ khoảng lấy hơi đầu câu (100ms) và nhả âm tự nhiên cuối câu (150ms)
+                            s_start = max(s_start, round(true_start - 0.10, 3))
+                            s_end = min(s_end, round(true_end + 0.15, 3))
                         else:
                             # Bỏ qua câu ma không có từ âm thanh
                             continue

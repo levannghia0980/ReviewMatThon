@@ -466,20 +466,16 @@ class CapCutTTSService:
             else:
                 next_orig_start = orig_end_sec + 2.0
 
-            # Khung không gian thời gian thực tế cho phép:
-            # Nếu câu tiếp theo chưa bắt đầu (có khoảng lặng phía sau), cho phép câu thoại ngân vang tự nhiên
-            # vào khoảng trống mà không bị ép tăng tốc độ cơ học.
+            # Khung thời lượng mục tiêu:
+            target_dur = max(0.35, orig_frame_dur - 0.02)
             if next_orig_start > start_sec:
-                available_space = max(0.35, (next_orig_start - start_sec) - 0.025)
-            else:
-                available_space = max(0.35, orig_frame_dur)
+                target_dur = min(target_dur, max(0.30, (next_orig_start - start_sec) - 0.02))
 
             # Co giãn thích ứng (Adaptive Time Stretch):
-            # Chỉ tăng tốc khi câu nói vượt quá không gian khả dụng (nguy cơ bị đè vào câu kế tiếp)
-            if auto_fit_timeline and raw_dur_sec > available_space:
-                speed_factor = raw_dur_sec / available_space
-                # Giới hạn tăng tốc tối đa an toàn 1.25x để câu nói luôn tròn vành rõ chữ, tự nhiên, không bị biến dạng
-                speed_factor = min(1.25, max(1.0, speed_factor))
+            if auto_fit_timeline and raw_dur_sec > target_dur:
+                speed_factor = raw_dur_sec / target_dur
+                # Giới hạn tăng tốc tối đa linh hoạt 1.8x để câu ngắn vẫn ôm kịp khung
+                speed_factor = min(1.8, max(1.0, speed_factor))
                 fitted_seg = cls.time_stretch_by_factor(raw_seg, speed_factor)
                 actual_speed = speed_factor
             else:

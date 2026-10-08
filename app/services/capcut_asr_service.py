@@ -57,7 +57,7 @@ class CapCutASRService:
                     language=lang_code,
                     translation_language="vi-VN",
                     use_translation=use_translation,
-                    words_per_line=30
+                    words_per_line=60
                 )
 
                 tasks = (stt_res.get("data") or {}).get("tasks") or []
@@ -93,11 +93,21 @@ class CapCutASRService:
                 raw_segments = []
                 for idx, u in enumerate(utts, 1):
                     words = u.get("words", [])
-                    w_start_ms = words[0]["start_time"] if words else u.get("start_time", 0)
-                    w_end_ms = words[-1]["end_time"] if words else u.get("end_time", 0)
+                    utt_start_ms = u.get("start_time")
+                    utt_end_ms = u.get("end_time")
 
-                    start_sec = round((w_start_ms / 1000.0) + time_offset, 3)
-                    end_sec = round((w_end_ms / 1000.0) + time_offset, 3)
+                    if words:
+                        w_first_ms = words[0].get("start_time", 0)
+                        w_last_ms = words[-1].get("end_time", w_first_ms + 300)
+                        # Giữ khoảng lấy hơi đầu câu và nhả âm tự nhiên cuối câu
+                        real_start_ms = min(w_first_ms, utt_start_ms) if utt_start_ms is not None else w_first_ms
+                        real_end_ms = max(w_last_ms, utt_end_ms) if utt_end_ms is not None else w_last_ms
+                    else:
+                        real_start_ms = utt_start_ms if utt_start_ms is not None else 0
+                        real_end_ms = utt_end_ms if utt_end_ms is not None else (real_start_ms + 1000)
+
+                    start_sec = round((real_start_ms / 1000.0) + time_offset, 3)
+                    end_sec = round((real_end_ms / 1000.0) + time_offset, 3)
                     if end_sec <= start_sec:
                         end_sec = round(start_sec + 0.3, 3)
                     dur_sec = round(end_sec - start_sec, 3)
