@@ -61,29 +61,20 @@ class PostProcessor:
         if not extracted_pairs:
             return translations
 
-        # --- CHIẾN LƯỢC ĐỐI SOÁT & CĂN CHỈNH ID THÔNG MINH ---
-        extracted_ids = [p[0] for p in extracted_pairs]
-
-        # TH1: Khớp số lượng 100% nhưng LLM tự đánh số lại từ 1..N (ví dụ Lô bắt đầu từ 301 nhưng LLM trả về 1..300)
-        if len(extracted_pairs) == len(original_segments) and set(extracted_ids) != expected_id_set:
-            # Map trực tiếp 1-1 theo chỉ số thứ tự tuần tự
-            for idx, orig_seg in enumerate(original_segments):
-                translations[orig_seg.id] = extracted_pairs[idx][1]
-            return translations
-
-        # TH2: Ưu tiên gán đúng 100% theo ID đích danh
-        for seg_id, text in extracted_pairs:
-            if seg_id in expected_id_set and seg_id not in translations:
-                translations[seg_id] = text
-
-        # Nếu đã có bản dịch theo đúng ID, trả về ngay (chống tuyệt đối việc dồn dòng)
-        if translations:
-            return translations
-
-        # TH3: Fallback trường hợp đặc biệt LLM tự ý đánh lại ID từ 1..N
+        # --- CHIẾN LƯỢC ĐỐI SOÁT & CĂN CHỈNH ID THÔNG MINH (CHỐNG LỆCH DÒNG TUYỆT ĐỐI) ---
+        # TH1 (Chiếm 99%): Số dòng dịch trích xuất được KHỚP ĐÚNG 100% số lượng câu gốc của lô.
+        # Luôn map 1-1 theo thứ tự xuất hiện tuần tự (Positional 1:1 Mapping).
+        # Cơ chế này bảo vệ 100% tuyệt đối trước việc LLM gõ nhầm số (ví dụ gõ nhầm 71. thành 11., hoặc tự đánh số lại từ 1..N).
         if len(extracted_pairs) == len(original_segments):
             for idx, orig_seg in enumerate(original_segments):
                 translations[orig_seg.id] = extracted_pairs[idx][1]
+            return translations
+
+        # TH2: Số lượng dòng trích xuất bị thừa hoặc thiếu so với câu gốc:
+        # Gán theo ID đích danh để bảo vệ tính chính xác của các câu có ID hợp lệ
+        for seg_id, text in extracted_pairs:
+            if seg_id in expected_id_set and seg_id not in translations:
+                translations[seg_id] = text
 
         return translations
 

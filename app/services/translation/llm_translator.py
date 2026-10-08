@@ -218,7 +218,7 @@ Nhiệm vụ: Chuyển ngữ kịch bản lời thoại video tiếng Trung sang
 Văn phong: Thoát ý, mượt mà, giàu cảm xúc, truyền cảm, thuần Việt tự nhiên, chuẩn văn phong kịch bản lồng tiếng.
 TUYỆT ĐỐI CẤM dịch bám chữ convert máy móc hoặc dùng từ Hán-Việt tối nghĩa thô cứng.
 KHUYẾN KHÍCH sử dụng từ ngữ gợi cảm, trau chuốt, câu văn giàu nhạc điệu, xuôi tai, biểu đạt trọn vẹn thần thái nhân vật.
-ĐẶC BIỆT: KHỐNG CHẾ ĐỘ PHÌNH ĐỒNG BỘ 1.4 LẦN (1.2 đến 1.6 lần số chữ Hán gốc). Tuyệt đối cấm câu dài gấp đôi (> 1.6 lần) với câu từ 5 chữ trở lên, câu ngắn 1-4 chữ được phép 2-3 lần. Không bôi chữ lan man, câu văn gãy gọn để ôm trọn khung [Start - End] của nhân vật.
+ĐẶC BIỆT: CÂU VĂN SÚC TÍCH, GÃY GỌN, GIÀU CẢM XÚC. Không bôi chữ rườm rà lan man, câu văn thanh thoát để vừa vặn nhịp nói của nhân vật và người kể chuyện.
 Tuyệt đối không để sót chữ Hán hay tiếng Anh.
 
 === QUY CHUẨN THỂ LOẠI CHUẨN AIREAD ({norm_genre.upper()}) ===
@@ -248,7 +248,7 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
     # 4. Mệnh lệnh thực thi ngắn gọn, súc tích (chống lặp lại quy tắc đã có ở System Prompt)
     prompt_parts.append("""=== MỆNH LỆNH THỰC THI (LỒNG TIẾNG PHIM) ===
 Dịch toàn bộ kịch bản trên sang tiếng Việt lồng tiếng phim:
-1. Khống chế độ phình đồng bộ ~1.4 lần số chữ Hán gốc (dao động 1.2 - 1.6 lần; câu >= 5 chữ tuyệt đối không dài gấp đôi; câu 1-4 chữ được phép 2-3 lần) để ôm trọn khung [Start - End].
+1. Câu từ súc tích, gãy gọn, thoát ý tự nhiên, vừa vặn nhịp nói video, tuyệt đối không bôi chữ lan man.
 2. Bảo toàn đánh số thứ tự 1:1 ('1. ...\\n2. ...'), tuyệt đối cấm gộp câu, cấm bỏ sót số.
 3. Chỉ trả về danh sách đánh số, tuyệt đối không kèm lời chào, lời mở đầu hay giải thích.""")
 

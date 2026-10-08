@@ -10,7 +10,7 @@ CẤU TRÚC CHUẨN MỰC (v4 - TINH CHỈNH ĐỒNG BỘ CHO LỒNG TIẾNG PHI
 3. NGUYÊN TẮC THAY THẾ CHỐNG Ô NHIỄM (Bề trên/người già khó chọn từ thì bắt buộc dùng "Ta").
 4. BẢNG XƯNG HÔ CỔ ĐẠI NÊN DÙNG / BẮT BUỘC DÙNG (Kèm ví dụ đối chiếu trực quan).
 5. THUẬT NGỮ BẢN SẮC THỂ LOẠI & QUY CHUẨN ĐỊA DANH.
-6. COMMON RULES ĐẶC THÙ LỒNG TIẾNG PHIM: Khống chế độ phình từ ngữ chuẩn 1.4 lần (ôm khít Start - End, không xé lẻ câu, không cắt cụt đuôi).
+6. COMMON RULES ĐẶC THÙ LỒNG TIẾNG PHIM: Câu từ súc tích, gãy gọn, vừa vặn nhịp đọc (ôm khít Start - End, không xé lẻ câu, không cắt cụt đuôi).
 """
 
 import logging
@@ -172,24 +172,14 @@ COMMON_RULES = """QUY TẮC DỊCH THUẬT LỒNG TIẾNG CỐT LÕI (BẮT BU�
    - CHUYỂN HÓA VĂN HỌC LỒNG TIẾNG: Bắt buộc chuyển ngữ thành các thành ngữ, quán ngữ tương đương trong khẩu ngữ lồng tiếng tiếng Việt, thoát ý uyển chuyển, tự nhiên, xuôi tai. Khán giả nghe vào hiểu ngay lập tức mà không cần suy đoán ngô nghê.
    - Khi một từ/cụm từ có thể hiểu theo cả nghĩa đen và nghĩa bóng, LUÔN ƯU TIÊN NGHĨA BÓNG phù hợp với diễn biến tâm lý và bối cảnh.
 
-3. QUY TẮC KHỐNG CHẾ ĐỘ PHÌNH TỪ NGỮ ĐỒNG BỘ 1.4 LẦN (CHUẨN LỒNG TIẾNG PHIM KHỚP KHẨU HÌNH [START - END]):
-   - NGUYÊN TẮC CỐT LÕI: Kịch bản dùng để LỒNG TIẾNG PHIM (DUBBING VIDEO), mỗi dòng câu nói phải ôm trọn chính xác vào khung thời lượng [Start - End] của nhân vật, tốc độ đọc đồng đều và tuyệt đối không để xảy ra tình trạng câu đọc như rap, câu đọc rề rà hay bị cắt cụt đuôi câu.
-   - CÔNG THỨC ĐỘ PHÌNH CHUẨN (~1.4 LẦN):
-     + Đếm số chữ Hán của câu gốc (bỏ dấu câu).
-     + Mỗi chữ Hán ứng với khoảng 1.4 tiếng (từ) tiếng Việt. Dao động cho phép nghiêm ngặt: từ 1.2 đến 1.6 lần số chữ gốc.
-     + Bảng chuẩn tham chiếu:
-       • 5 chữ Hán   ➔ khoảng 6 - 8 tiếng Việt (chuẩn: 7 tiếng).
-       • 10 chữ Hán  ➔ khoảng 12 - 15 tiếng Việt (chuẩn: 14 tiếng).
-       • 15 chữ Hán  ➔ khoảng 18 - 23 tiếng Việt (chuẩn: 21 tiếng).
-       • 20 chữ Hán  ➔ khoảng 24 - 30 tiếng Việt (chuẩn: 28 tiếng).
-   - ĐỒNG BỘ ĐỘ PHÌNH - CÂU TỪ 5 CHỮ TRỞ LÊN:
-     + TUYỆT ĐỐI KHÔNG ĐƯỢC DÀI GẤP ĐÔI (Cấm > 1.6 lần số chữ gốc).
-     + KHÔNG ĐƯỢC NGẮN HƠN số chữ gốc (Cấm < 1.2 lần).
-     + Mục tiêu tối thượng: Mọi câu dài đều phải có CÙNG ĐỘ PHÌNH ĐỒNG BỘ (~1.4 lần). Tuyệt đối không để câu thì cụt ngủn, câu thì bôi dài ngoằng!
-   - NGOẠI LỆ DUY NHẤT (CÂU SIÊU NGẮN 1 - 4 CHỮ HÁN):
-     + Chỉ các câu cực ngắn (1 đến 4 chữ Hán) mới được phép dài gấp 2 - 3 lần để thêm từ ngữ khí/trợ từ tự nhiên:
-       Ví dụ: 走 (1 chữ) ➔ Chạy mau đi! (3 tiếng); 站住 (2 chữ) ➔ Đứng lại đó! (3 tiếng); 救命 (2 chữ) ➔ Cứu mạng với! (3 tiếng).
-   - TUYỆT ĐỐI CẤM GHÉP CÂU VỤN VẶT: Mỗi câu thoại có mốc thời gian riêng biệt trên video, BẮT BUỘC dịch tương ứng 1:1 từng câu, CẤM gộp câu của dòng này sang dòng khác làm lệch khẩu hình và phụ đề.
+3. NGUYÊN TẮC CÂU TỪ LỒNG TIẾNG SÚC TÍCH, GÃY GỌN (VỪA VẶN NHỊP NÓI CỦA VIDEO):
+   - NGUYÊN TẮC CỐT LÕI: Kịch bản dùng để LỒNG TIẾNG PHIM (DUBBING VIDEO), mỗi dòng câu nói phải vừa vặn với nhịp nói của nhân vật và người kể chuyện, đảm bảo tốc độ đọc tự nhiên, êm tai, không bị nói vội vã hay rề rà.
+   - SÚC TÍCH & GÃY GỌN:
+     + Câu văn phải thanh thoát, cô đọng, giàu nhạc điệu, biểu đạt trọn vẹn ý nghĩa mà không bôi thêm từ đệm, từ nối rườm rà.
+     + TUYỆT ĐỐI CẤM kéo dài dòng văn lan man, cấm dịch rườm rà giải thích dài dòng.
+     + TUYỆT ĐỐI CẤM dịch cụt lủn làm mất nghĩa hoặc mất đi cảm xúc, ngữ khí của nhân vật.
+   - KHÔNG ĐẾM CHỮ CƠ HỌC: Tập trung vào dòng chảy cảm xúc và khẩu ngữ tự nhiên của tiếng Việt lồng tiếng, dịch thoát ý uyển chuyển để người nghe cảm thụ trọn vẹn nội dung.
+   - BẢO TOÀN CÂU NÓI ĐỘC LẬP: Mỗi câu thoại tương ứng 1:1 với một mốc thời gian trên video, tuyệt đối không gộp câu hay bỏ sót câu.
 
 4. TÁI CẤU TRÚC CỤM TỪ & NGỮ PHÁP CÂU THUẦN VIỆT (CẤM GIỮ NGUYÊN THỨ TỰ TỪ TIẾNG TRUNG):
    - TUYỆT ĐỐI CẤM giữ nguyên thứ tự từng từ từ trái qua phải của câu tiếng Trung. BẮT BUỘC đảo và sắp xếp lại trật tự theo đúng cú pháp THUẦN VIỆT:
@@ -320,7 +310,7 @@ def build_standard_system_prompt(genre: Optional[str] = None, author_notes_block
         f"Văn phong: Thoát ý, mượt mà, giàu cảm xúc, truyền cảm, thuần Việt tự nhiên, chuẩn văn phong kịch bản lồng tiếng.\n"
         f"TUYỆT ĐỐI CẤM dịch bám chữ convert máy móc hoặc dùng từ Hán-Việt tối nghĩa thô cứng.\n"
         f"KHUYẾN KHÍCH sử dụng từ ngữ gợi cảm, trau chuốt, câu văn giàu nhạc điệu, xuôi tai, biểu đạt trọn vẹn thần thái nhân vật.\n"
-        f"ĐẶC BIỆT: KHỐNG CHẾ ĐỘ PHÌNH ĐỒNG BỘ 1.4 LẦN (1.2 đến 1.6 lần số chữ Hán gốc). Tuyệt đối cấm câu dài gấp đôi (> 1.6 lần) với câu từ 5 chữ trở lên, câu ngắn 1-4 chữ được phép 2-3 lần. Không bôi chữ lan man, câu văn gãy gọn và uyển chuyển để ôm trọn khung [Start - End] của nhân vật.\n\n"
+        f"ĐẶC BIỆT: CÂU VĂN SÚC TÍCH, GÃY GỌN, GIÀU CẢM XÚC. Không bôi chữ rườm rà lan man, câu văn thanh thoát để vừa vặn nhịp nói của nhân vật và người kể chuyện.\n\n"
         f"=== QUY CHUẨN THỂ LOẠI (BẢN SẮC & QUY TẮC XƯNG HÔ CHUẨN AIREAD) ===\n"
         f"{genre_rules}\n\n"
         f"=== QUY TẮC CỐT LÕI DỊCH THUẬT CHUẨN AIREAD CHO LỒNG TIẾNG VIDEO ===\n"
@@ -354,7 +344,7 @@ def build_user_translation_prompt(
 === QUY TẮC DỊCH THUẬT CHUẨN AIREAD CHO LỒNG TIẾNG VIDEO ===
 {COMMON_RULES}
 {nhac_lai_block}
-BẮT ĐẦU DỊCH NGAY BÂY GIỜ. Dịch kịch bản gốc ở trên sang tiếng Việt lồng tiếng thoát ý, mượt mà, giàu nhạc điệu và cảm xúc, thuần Việt tự nhiên, đọc lên êm tai, tuân thủ nghiêm ngặt công thức độ phình 1.4 lần để ôm trọn nhịp khẩu hình video, đúng quy chuẩn thể loại và xưng hô đã nêu."""
+BẮT ĐẦU DỊCH NGAY BÂY GIỜ. Dịch kịch bản gốc ở trên sang tiếng Việt lồng tiếng thoát ý, mượt mà, giàu nhạc điệu và cảm xúc, thuần Việt tự nhiên, đọc lên êm tai, câu từ súc tích gãy gọn vừa vặn nhịp video, đúng quy chuẩn thể loại và xưng hô đã nêu."""
 
 
 def get_profile_description(genre: Optional[str] = None) -> str:

@@ -471,18 +471,20 @@ class TikTokTTSService:
             else:
                 next_orig_start = orig_end_sec + 2.0
 
-            # Khung thời lượng mục tiêu: KHÍT CHẶT KHUNG START - END CỦA CÂU GỐC
-            # Chừa 20ms micro-pause ở cuối để dứt câu tự nhiên và không dính vào câu sau
-            target_dur = max(0.35, orig_frame_dur - 0.02)
+            # Khung không gian thời gian thực tế cho phép:
+            # Nếu câu tiếp theo chưa bắt đầu (có khoảng lặng phía sau), cho phép câu thoại ngân vang tự nhiên
+            # vào khoảng trống mà không bị ép tăng tốc độ cơ học.
             if next_orig_start > start_sec:
-                target_dur = min(target_dur, max(0.30, (next_orig_start - start_sec) - 0.02))
+                available_space = max(0.35, (next_orig_start - start_sec) - 0.025)
+            else:
+                available_space = max(0.35, orig_frame_dur)
 
             # Co giãn thích ứng (Adaptive Time Stretch):
-            # Nếu thời gian nói dài hơn gốc -> TĂNG TỐC ĐỘ để vừa khít khung thời gian lấy được
-            if auto_fit_timeline and raw_dur_sec > target_dur:
-                speed_factor = raw_dur_sec / target_dur
-                # Giới hạn tăng tốc tối đa an toàn 1.8x để câu nói rõ chữ, không bị thé giọng
-                speed_factor = min(1.8, max(1.0, speed_factor))
+            # Chỉ tăng tốc khi câu nói vượt quá không gian khả dụng (nguy cơ bị đè vào câu kế tiếp)
+            if auto_fit_timeline and raw_dur_sec > available_space:
+                speed_factor = raw_dur_sec / available_space
+                # Giới hạn tăng tốc tối đa an toàn 1.25x để câu nói luôn tròn vành rõ chữ, tự nhiên, không bị biến dạng
+                speed_factor = min(1.25, max(1.0, speed_factor))
                 fitted_seg = cls.time_stretch_by_factor(raw_seg, speed_factor)
                 actual_speed = speed_factor
             else:
@@ -490,7 +492,6 @@ class TikTokTTSService:
                 actual_speed = 1.0
 
             # BẢO TOÀN 100% ÂM THANH - TUYỆT ĐỐI KHÔNG CẮT CỤT ĐUÔI CÂU:
-            # Nhờ Prompt khống chế chuẩn độ phình 1.4 lần, câu đã ôm vừa khít khung thời lượng.
             # Giữ trọn vẹn từng từ ngữ đến hết câu, không bao giờ dùng lệnh chém đuôi âm thanh.
 
             seg_dur_sec = len(fitted_seg) / 1000.0
