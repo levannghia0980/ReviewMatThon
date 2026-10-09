@@ -61,24 +61,19 @@ class KaraokeSubtitleService:
         highlight_color: Optional[str] = None,
         outline_color: Optional[str] = None,
         backdrop_opacity_hex: str = "80",       # Hộp nền mờ
-        margin_v: int = 10,                     # Cao độ phụ đề từ đáy (px hoặc %)
+        margin_v: Optional[int] = None,         # Cao độ phụ đề từ đáy (px hoặc %)
         box_style: str = "white_box",           # "white_box", "dark_box", "outline_only"
-        box_padding: int = 8                    # Độ to theo chiều dọc / padding của hộp che chữ gốc (px)
+        box_padding: int = 8,                   # Độ to theo chiều dọc / padding của hộp che chữ gốc (px)
+        blur_height: Optional[float] = None,    # Chiều cao dải mờ (%)
+        sub_bottom_offset: Optional[float] = None # Khoảng cách từ đáy khung hình lên đáy dải mờ (%)
     ) -> str:
         """
         Tạo file phụ đề ASS chuẩn Điện ảnh Review (Static Text Vàng Kim - Tối ưu Render Siêu Tốc):
         - Chữ Vàng kim nổi bật (&H0000E6FF: #FFE600) + Viền đen bóng mờ sắc nét.
         - Text tĩnh hiển thị trọn vẹn cả câu (không chạy Karaoke \kf để CPU/GPU render nhanh gấp 5 lần).
-        - Phụ đề trong suốt / viền nổi để hòa hợp hoàn hảo với dải mờ Blur/Dark Overlay của FFmpeg.
-        - Tôn trọng 100% kích cỡ font_size và margin_v người dùng đã chọn trên giao diện.
+        - Phụ đề căn CHÍNH GIỮA 100% tâm dải mờ Blur/Frosted Glass của FFmpeg, không lệch lên trên hay xuống dưới.
         """
-        # 1. Chuẩn hóa margin_v theo lựa chọn của người dùng (tính theo tâm dải mờ)
-        if margin_v <= 100:
-            actual_margin_v = max(4, int(round(height * (margin_v / 100.0))))
-        else:
-            actual_margin_v = int(margin_v)
-
-        # 2. Scale font_size theo độ phân giải màn hình ASS (PlayResY)
+        # 1. Scale font_size theo độ phân giải màn hình ASS (PlayResY)
         ref_h = 360.0
         scale_factor = max(1.0, height / ref_h)
 
@@ -87,7 +82,30 @@ class KaraokeSubtitleService:
         else:
             effective_font_size = int(round(font_size * (height / 1080.0))) if height != 1080 else font_size
 
-        # actual_margin_v đã được tính toán đồng bộ chuẩn xác từ đáy đến đáy dòng chữ để cả khối chữ nằm chính giữa dải mờ
+        # 2. CĂN TÂM QUANG HỌC: ĐẶT DÒNG CHỮ NẰM CHÍNH GIỮA 100% TÂM DẢI MỜ
+        # Alignment=2 (Bottom-Center): actual_margin_v là khoảng cách từ đáy khung hình lên ĐÁY dòng chữ.
+        # Tâm dòng chữ = actual_margin_v + (effective_font_size / 2).
+        # Tâm dải mờ = box_bottom_px + (box_height_px / 2).
+        # => actual_margin_v = Tâm dải mờ - (effective_font_size / 2) - visual_offset.
+        b_offset = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
+        b_height = float(blur_height if blur_height is not None else 13.0)
+
+        box_bottom_px = height * (b_offset / 100.0)
+        box_height_px = height * (b_height / 100.0)
+        box_center_y = box_bottom_px + (box_height_px / 2.0)
+
+        # Tính margin_v để tâm chữ trùng khít tâm dải mờ (bù 1-2px độ dày viền chữ outline cho cân đối)
+        calculated_margin_v = int(round(box_center_y - (effective_font_size / 2.0) - (effective_font_size * 0.06)))
+
+        if sub_bottom_offset is not None or blur_height is not None:
+            actual_margin_v = max(2, calculated_margin_v)
+        elif margin_v is not None:
+            if margin_v <= 100:
+                actual_margin_v = max(4, int(round(height * (margin_v / 100.0))))
+            else:
+                actual_margin_v = int(margin_v)
+        else:
+            actual_margin_v = max(2, calculated_margin_v)
 
         # Scale box_padding từ preview sang độ phân giải thực tế
         if box_padding is not None and box_padding <= 25:
@@ -132,8 +150,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             text = re.sub(r'^(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\{\s*\d+\s*\}|【\s*\d+\s*】)\s*[\.\:\-\–\—\s]*', '', text)
             text = re.sub(r'^(?:câu|thoại|đoạn|stt|dòng|line)\s*\d+\s*[\.\:\-\–\—\)\/\]\s]*\s*', '', text, flags=re.IGNORECASE)
             text = re.sub(r'^\d+\/\d+\s*[\.\:\-\–\—\s]*', '', text)
-            text = re.sub(r'^\d+\s*[\.\:\-\–\—\)\/\]]+\s*', '', text)
             text = re.sub(r'^[^\w\s\(\[\{]+', '', text).strip()
+            # Dọn dẹp triệt để các dị tật dấu câu kép như ,. hoặc ., hoặc ,, ở đuôi phụ đề
+            text = re.sub(r'[\,\.]+\,', ',', text)
+            text = re.sub(r'[\,\.]+\.', '.', text)
             if not text:
                 continue
 
@@ -153,6 +173,81 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f.write(full_ass_content)
 
         return str(out_path)
+
+    @classmethod
+    def slice_ass_for_interval(
+        cls,
+        source_ass_path: str,
+        output_slice_path: str,
+        start_sec: float,
+        dur_sec: float
+    ) -> str:
+        """
+        Cắt lát file .ass tổng thành file .ass cục bộ độc lập cho 1 phân đoạn video [start_sec, start_sec + dur_sec].
+        - Chỉ giữ lại những câu thoại có giao cắt với khoảng [start_sec, start_sec + dur_sec].
+        - Chuyển đổi timestamp về hệ tọa độ tương đối của phân đoạn:
+            local_start = max(0.0, orig_start - start_sec)
+            local_end   = min(dur_sec, orig_end - start_sec)
+        - Đảm bảo khi FFmpeg render phân đoạn độc lập, subtitle hiển thị chuẩn xác 100%,
+          tuyệt đối không bị reset về 00:00:00 của toàn bộ video.
+        """
+        if not source_ass_path or not os.path.exists(source_ass_path) or os.path.getsize(source_ass_path) == 0:
+            return ""
+
+        end_sec = start_sec + dur_sec
+
+        def _parse_ass_timestamp(ts: str) -> float:
+            try:
+                parts = ts.strip().split(":")
+                hrs = float(parts[0])
+                mins = float(parts[1])
+                secs = float(parts[2])
+                return hrs * 3600.0 + mins * 60.0 + secs
+            except Exception:
+                return 0.0
+
+        header_lines = []
+        dialogue_lines = []
+        in_events = False
+
+        with open(source_ass_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.lower() == "[events]":
+                    in_events = True
+                    header_lines.append(line)
+                    continue
+
+                if not in_events:
+                    header_lines.append(line)
+                else:
+                    if stripped.startswith("Format:"):
+                        header_lines.append(line)
+                    elif stripped.startswith("Dialogue:"):
+                        # Dialogue: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+                        parts = line.split(",", 9)
+                        if len(parts) == 10:
+                            s_time = _parse_ass_timestamp(parts[1])
+                            e_time = _parse_ass_timestamp(parts[2])
+
+                            # Kiểm tra xem câu có nằm trong khoảng phân đoạn không
+                            if e_time > start_sec and s_time < end_sec:
+                                local_start = max(0.0, s_time - start_sec)
+                                local_end = min(dur_sec, e_time - start_sec)
+                                if local_end > local_start:
+                                    parts[1] = format_ass_time(local_start)
+                                    parts[2] = format_ass_time(local_end)
+                                    dialogue_lines.append(",".join(parts))
+                    else:
+                        header_lines.append(line)
+
+        out_p = Path(output_slice_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_p, "w", encoding="utf-8") as f:
+            f.writelines(header_lines)
+            f.writelines(dialogue_lines)
+
+        return str(out_p)
 
     @classmethod
     def create_source_mask_ass(

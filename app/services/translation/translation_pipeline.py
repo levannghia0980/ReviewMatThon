@@ -113,6 +113,15 @@ class TranslationPipelineService:
                 DialogueSegmentModel.task_id == project_id
             ).order_by(DialogueSegmentModel.index.asc()).all()
 
+        # Khử trùng lặp tuyệt đối theo index (phòng vệ chống dữ liệu rác x2)
+        unique_dialogues = []
+        seen_idx = set()
+        for d in dialogue_models:
+            if d.index not in seen_idx:
+                seen_idx.add(d.index)
+                unique_dialogues.append(d)
+        dialogue_models = unique_dialogues
+
         safe_title = re_clean_name = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip()
         if not re_clean_name:
             re_clean_name = f"project_{project.id}"
@@ -319,16 +328,49 @@ class TranslationPipelineService:
             "chớp mắt một cái", "ngay tại lúc này"
         }
 
-        def _is_dependent_clause(text: str) -> bool:
+        def _is_short_clause(text: str) -> bool:
+            """Chỉ xét câu ngắn dưới 6 từ mới được xem là vế trạng ngữ hoặc bổ trợ dở dang."""
+            return len(text.strip().split()) <= 6
+
+        def _is_forward_dependent(text: str) -> bool:
+            """Câu hiện tại là vế mở đầu/trạng ngữ ngắn hướng về câu sau (kết thúc bằng dấu phẩy)."""
             t = text.strip()
-            # 1. Kết thúc bằng dấu phẩy do LLM nhận diện cùng 1 người nói chưa hết ý
+            if not _is_short_clause(t):
+                return False
             if t.endswith(",") or t.endswith("，"):
                 return True
-            # 2. Hoặc là trạng ngữ/thán từ mở đầu kinh điển (kể cả khi LLM lỡ đóng dấu chấm)
             clean_t = re.sub(r'[\.\,\!\?\…\s]+$', '', t).strip().lower()
-            if clean_t in INTRO_CONNECTIVES:
-                return True
-            return False
+            return clean_t in INTRO_CONNECTIVES
+
+        def _is_backward_dependent(text: str) -> bool:
+            """Câu sau là vế bổ ngữ ngắn hướng về câu trước (bắt đầu bằng dấu phẩy)."""
+            t = text.strip()
+            if not _is_short_clause(t):
+                return False
+            return t.startswith(",") or t.startswith("，")
+
+        def _is_same_speaker_context(text_a: str, text_b: str) -> bool:
+            """Kiểm tra xem 2 câu có cùng 1 ngôi nói hay không (chống gộp lẫn giữa dẫn truyện & thoại nhân vật)."""
+            t_a = text_a.strip()
+            t_b = text_b.strip()
+
+            # 1. Nhận diện thoại trực tiếp (dấu ngoặc kép, ngoặc vuông thoại)
+            is_dialogue_a = bool(re.search(r'[\"“”\'‘’「」『』]', t_a))
+            is_dialogue_b = bool(re.search(r'[\"“”\'‘’「」『』]', t_b))
+            if is_dialogue_a != is_dialogue_b:
+                return False  # 1 câu là dẫn truyện, 1 câu là thoại nhân vật -> CẤM GỘP
+
+            # 2. Nhận diện cấu trúc chuyển đổi ngôi dẫn sang thoại: 'hắn nói:', 'cười bảo:'
+            if re.search(r'(?:nói|bảo|quát|hét|hỏi|than|đáp|lẩm bẩm|thì thầm|hô lên)\s*[\:\,\—\-]\s*$', t_a, re.IGNORECASE):
+                return False
+
+            # 3. Nhận diện chuyển đổi đại từ xưng hô đối đáp giữa 2 câu
+            is_second_person_b = bool(re.match(r'^(?:ngươi|mày|các ngươi|cậu|bạn|anh|chị|chú|bác|đạo hữu|sư huynh|sư muội)\b', t_b, re.IGNORECASE))
+            is_third_person_a = bool(re.search(r'^(?:hắn|y|nàng|gã|bọn họ|họ|tiểu tử)\b', t_a, re.IGNORECASE))
+            if is_third_person_a and is_second_person_b:
+                return False
+
+            return True
 
         merged_segments = []
         i = 0
@@ -353,19 +395,26 @@ class TranslationPipelineService:
                 gap = next_seg.start - curr_end
 
                 # Điều kiện gộp an toàn:
-                # 1. Câu hiện tại là vế bổ trợ (kết thúc dấu phẩy hoặc thuộc cụm mở đầu)
-                # 2. Khoảng cách thời gian gần khít (gap <= 0.40s)
-                # 3. Chuỗi gộp không quá 3 câu
-                # 4. Tổng thời lượng gộp không vượt quá 6.0s
-                if (_is_dependent_clause(curr_text) and 
-                    gap <= 0.40 and 
-                    chain_count < 3 and 
-                    (next_seg.end - curr_start) <= 6.0):
+                # 1. Có dấu phẩy chỉ định câu ngắn (câu trước kết thúc phẩy HOẶC câu sau bắt đầu phẩy)
+                # 2. CÙNG 1 NGÔI NÓI (không đổi từ dẫn truyện sang thoại hoặc giữa 2 người)
+                # 3. Khoảng cách thời gian gần khít (gap <= 0.40s)
+                # 4. Chuỗi gộp không quá 3 câu, tổng thời lượng <= 6.0s
+                can_merge = False
+                if (_is_forward_dependent(curr_text) or _is_backward_dependent(next_text)):
+                    if _is_same_speaker_context(curr_text, next_text):
+                        if gap <= 0.40 and chain_count < 3 and (next_seg.end - curr_start) <= 6.0:
+                            can_merge = True
 
-                    # Nếu đang là dấu chấm thì chuyển thành dấu phẩy
-                    curr_text = re.sub(r'[\.\,\s]+$', '', curr_text).strip() + ","
-                    clean_next_text = next_text[0].lower() + next_text[1:] if len(next_text) > 1 else next_text.lower()
-                    curr_text = f"{curr_text} {clean_next_text}".strip()
+                if can_merge:
+                    # Nối 2 câu: chuẩn hóa dấu phẩy ở giữa
+                    curr_text_clean = re.sub(r'[\.\,\s]+$', '', curr_text).strip()
+                    next_text_clean = re.sub(r'^[\,\s]+', '', next_text).strip()
+                    if next_text_clean:
+                        clean_next_text = next_text_clean[0].lower() + next_text_clean[1:] if len(next_text_clean) > 1 else next_text_clean.lower()
+                    else:
+                        clean_next_text = ""
+
+                    curr_text = f"{curr_text_clean}, {clean_next_text}".strip()
                     curr_orig = f"{curr_orig}，{next_orig}".strip()
                     curr_end = next_seg.end
                     chain_count += 1
@@ -376,6 +425,11 @@ class TranslationPipelineService:
             # Chuẩn hóa dấu cuối: nếu còn dấu phẩy ở đuôi câu kết thì đổi thành dấu chấm
             if curr_text.endswith(",") or curr_text.endswith("，"):
                 curr_text = curr_text.rstrip(",，").strip() + "."
+            # Chuẩn hóa dấu đầu câu nếu còn sót
+            if curr_text.startswith(",") or curr_text.startswith("，"):
+                curr_text = curr_text.lstrip(",，").strip()
+                if curr_text:
+                    curr_text = curr_text[0].upper() + curr_text[1:]
 
             curr.translated_text = curr_text
             curr.start = curr_start
@@ -409,7 +463,13 @@ class TranslationPipelineService:
             if isinstance(obj, DialogueSegmentModel):
                 db.expunge(obj)
 
+        seen_trans_ids = set()
+        clean_final_segments = []
         for s in translated_segments:
+            if s.id in seen_trans_ids:
+                continue
+            seen_trans_ids.add(s.id)
+            clean_final_segments.append(s)
             db.add(DialogueSegmentModel(
                 task_id=proj_id,
                 index=s.id,
@@ -428,7 +488,7 @@ class TranslationPipelineService:
 
         # Xuất File SRT Tiếng Việt
         srt_lines = []
-        for s in translated_segments:
+        for s in clean_final_segments:
             srt_lines.append(f"{s.id}\n{format_timestamp(s.start)} --> {format_timestamp(s.end)}\n{s.translated_text}\n")
 
         srt_path = settings.OUTPUT_TRANSCRIPTS_DIR / f"{proj_video_id}_{re_clean_name}_vi.srt"

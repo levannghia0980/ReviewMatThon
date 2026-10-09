@@ -3,23 +3,32 @@ from typing import List, Dict, Any, Tuple
 from app.schemas.transcript import DialogueSegment
 
 class BatchManager:
-    @staticmethod
-    def pack_dialogues_to_tagged_text(segments: List[DialogueSegment]) -> str:
+    CYCLIC_MARKS = ["。", "！", "？"]
+
+    CYCLE_TAGS = ["@", "#", "$"]
+
+    @classmethod
+    def pack_dialogues_to_tagged_text(cls, segments: List[DialogueSegment]) -> str:
         """
-        Đóng gói danh sách câu thoại thành định dạng đánh số mỏ neo (1. 2. ... N.) kèm dấu chấm kết câu.
-        Định dạng này chống nuốt dòng, bảo toàn 100% ID và tiết kiệm 30% token so với thẻ XML.
+        Đóng gói danh sách câu thoại thành định dạng số thứ tự tự nhiên: 1. 2. 3. ... N.
+        Đơn giản, tự nhiên, chống gộp câu, mỗi câu là 1 số cố định phục vụ lồng tiếng video.
+        Làm sạch 100% các ký tự xuống dòng bên trong mỗi câu.
         Format:
-        1. 田里明明长满了猪都不吃的野草。
+        1. 全球诡异爆发
+        2. 人类被赶出城市...
+        ...
+        100. 说是一老人的传承还有三个月就要开启了
         """
         lines = []
-        for s in segments:
+        for idx, s in enumerate(segments):
             text = (s.clean_text or s.text or "").strip()
+            # Làm sạch hoàn toàn ký tự xuống dòng và tab bên trong câu
+            text = re.sub(r'[\r\n\t]+', ' ', text).strip()
             if not text:
-                text = "."
-            else:
-                text = text.rstrip("。，,.!！？?") + "。"
-            lines.append(f"{s.id}. {text}")
+                text = "..."
+            lines.append(f"{idx + 1}. {text}")
         return "\n".join(lines)
+
 
     @staticmethod
     def pack_dialogues_to_clean_text(segments: List[DialogueSegment]) -> str:

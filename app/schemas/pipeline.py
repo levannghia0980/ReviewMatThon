@@ -25,6 +25,7 @@ class FullAutoPipelineRequest(BaseModel):
     mask_width: float = Field(default=70.0, description="Chiều rộng vùng che (%)")
     mask_height: float = Field(default=12.0, description="Chiều cao vùng che (%)")
     bottom_cut_percent: Optional[float] = Field(default=None, description="Tỷ lệ cắt đáy video (%) để xóa sub Trung Quốc cũ")
+    top_cut_percent: Optional[float] = Field(default=0.0, description="Tỷ lệ cắt mép trên video (%)")
     blur_height: Optional[float] = Field(default=13.0, description="Chiều cao dải mờ che sub cũ (%)")
     sub_bottom_offset: Optional[float] = Field(default=0.0, description="Khoảng cách từ đáy khung hình crop lên dải mờ (%)")
     karaoke_highlight_color: str = Field(default="&H0000D7FF", description="Màu highlight chữ karaoke")

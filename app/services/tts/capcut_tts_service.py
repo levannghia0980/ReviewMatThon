@@ -287,6 +287,15 @@ class CapCutTTSService:
             DialogueSegmentModel.task_id == project_id
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
+        # Khử trùng lặp tuyệt đối theo index (phòng vệ đa tầng)
+        seen_d_idx = set()
+        unique_dialogues = []
+        for d in dialogues:
+            if d.index not in seen_d_idx:
+                seen_d_idx.add(d.index)
+                unique_dialogues.append(d)
+        dialogues = unique_dialogues
+
         if not dialogues:
             raise ValueError(f"Project #{project_id} chưa có câu thoại nào!")
 
@@ -389,12 +398,11 @@ class CapCutTTSService:
         if task_manager.is_cancelled(task_id):
             raise RuntimeError("Tiến trình đã bị người dùng hủy bỏ!")
 
-        # Giải mã In-Memory Buffer sang AudioSegment
+        # Giải mã In-Memory Buffer sang AudioSegment và gọt bỏ mặc định 125ms khoảng lặng thừa
         for d_id, audio_bytes in raw_audio_bytes_map.items():
             if audio_bytes and len(audio_bytes) > 100:
                 seg = _load_audio_from_bytes(audio_bytes, format="mp3")
-                if len(seg) > 100:
-                    raw_results_map[d_id] = seg
+                raw_results_map[d_id] = seg[:-125]
 
         # Bổ sung đệm im lặng cho các câu chỉ có dấu chấm / khoảng lặng
         for s_id in silent_dialogue_ids:
@@ -421,7 +429,7 @@ class CapCutTTSService:
                     try:
                         rescued_seg = cls.synthesize_chunk(clean_text, voice_code=voice_code)
                         if rescued_seg and len(rescued_seg) > 100:
-                            raw_results_map[m.id] = rescued_seg
+                            raw_results_map[m.id] = rescued_seg[:-125]
                             task_manager.add_log(task_id, f"✔ Cứu hộ thành công câu #{m.index}!", "emerald")
                     except Exception as e:
                         logger.error(f"Lỗi cứu hộ câu #{m.index}: {e}")
@@ -455,27 +463,18 @@ class CapCutTTSService:
 
             # 1. Điểm bắt đầu lý tưởng theo mốc ASR gốc
             ideal_start_sec = float(d.start_time)
-            start_sec = max(ideal_start_sec, current_timeline_sec)
+            
+            # Khóa chặt điểm bắt đầu vào đúng mốc thời gian gốc để khớp 100% với phụ đề
+            start_sec = ideal_start_sec
 
             orig_end_sec = float(d.end_time) if (d.end_time and d.end_time > ideal_start_sec) else (ideal_start_sec + raw_dur_sec)
-            orig_frame_dur = max(0.05, orig_end_sec - ideal_start_sec)
+            
+            # Khung thời lượng mục tiêu: Vừa khít trọn vẹn 100% từ start đến end của phụ đề gốc
+            target_dur = max(0.1, orig_end_sec - ideal_start_sec)
 
-            # Mốc bắt đầu của câu kế tiếp trong video (nếu có)
-            if idx_d + 1 < len(dialogues):
-                next_orig_start = float(dialogues[idx_d + 1].start_time)
-            else:
-                next_orig_start = orig_end_sec + 2.0
-
-            # Khung thời lượng mục tiêu:
-            target_dur = max(0.35, orig_frame_dur - 0.02)
-            if next_orig_start > start_sec:
-                target_dur = min(target_dur, max(0.30, (next_orig_start - start_sec) - 0.02))
-
-            # Co giãn thích ứng (Adaptive Time Stretch):
+            # Co giãn thích ứng (Adaptive Time Stretch) - Không giới hạn 1.8x để đảm bảo ép vừa khít tuyệt đối
             if auto_fit_timeline and raw_dur_sec > target_dur:
                 speed_factor = raw_dur_sec / target_dur
-                # Giới hạn tăng tốc tối đa linh hoạt 1.8x để câu ngắn vẫn ôm kịp khung
-                speed_factor = min(1.8, max(1.0, speed_factor))
                 fitted_seg = cls.time_stretch_by_factor(raw_seg, speed_factor)
                 actual_speed = speed_factor
             else:
@@ -492,8 +491,8 @@ class CapCutTTSService:
             d.speed_ratio = round(actual_speed, 2)
             d.status = "DUBBED"
 
-            # Cập nhật mốc timeline (chừa 20ms micro-pause) để câu sau không bao giờ bị đè
-            current_timeline_sec = start_sec + seg_dur_sec + 0.02
+            # Cập nhật mốc timeline khớp theo âm thanh thực tế
+            current_timeline_sec = start_sec + seg_dur_sec
 
             # Dán trực tiếp vào NumPy Master Buffer (chuẩn Mono 24kHz int16)
             try:

@@ -229,141 +229,132 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
 
     prompt_parts = []
 
-    # 0. Tiêu đề video / phim (đối chiếu ngữ cảnh)
-    if project_title and project_title.strip():
-        prompt_parts.append(f"=== TIÊU ĐỀ PHIM / VIDEO GỐC ===\n{project_title.strip()}")
-    
-    # 1. Bảng thực thể khóa tên riêng (nếu có)
-    if entity_table_text and entity_table_text.strip():
-        prompt_parts.append(f"=== BẢNG TÊN RIÊNG & THỰC THỂ KHÓA CỨNG (DÙNG ĐÚNG 100%) ===\n{entity_table_text.strip()}")
-
-    # 2. Ngữ cảnh nối tiếp từ trước (nếu có)
-    if context_text and context_text.strip():
-        prompt_parts.append(f"=== NGỮ CẢNH NỐI TIẾP TRƯỚC ĐÓ ===\n{context_text.strip()}")
-
-    # 3. Kịch bản đầu vào cần dịch
-    prompt_parts.append(f"""=== KỊCH BẢN ĐẦU VÀO CẦN DỊCH LỒNG TIẾNG ===
+    # 1. PHẦN 1: KỊCH BẢN ĐẦU VÀO CẦN DỊCH (ĐẶT Ở ĐẦU)
+    prompt_parts.append(f"""=== PHẦN 1: KỊCH BẢN ĐẦU VÀO CẦN DỊCH LỒNG TIẾNG ===
 {tagged_text.strip()}""")
 
-    # 4. Mệnh lệnh thực thi ngắn gọn, súc tích (chống lặp lại quy tắc đã có ở System Prompt)
-    prompt_parts.append("""=== MỆNH LỆNH THỰC THI (LỒNG TIẾNG PHIM) ===
-Dịch toàn bộ kịch bản trên sang tiếng Việt lồng tiếng phim:
-1. Câu từ súc tích, gãy gọn, thoát ý tự nhiên, vừa vặn nhịp nói video, tuyệt đối không bôi chữ lan man.
-2. Bảo toàn đánh số thứ tự 1:1 ('1. ...\\n2. ...'), tuyệt đối cấm gộp câu, cấm bỏ sót số.
-3. Chỉ trả về danh sách đánh số, tuyệt đối không kèm lời chào, lời mở đầu hay giải thích.""")
+    # 2. PHẦN 2: BẢNG TÊN RIÊNG & THỰC THỂ KHÓA CỨNG (NẾU CÓ)
+    if entity_table_text and entity_table_text.strip():
+        prompt_parts.append(f"""=== PHẦN 2: BẢNG TÊN RIÊNG & THỰC THỂ KHÓA CỨNG (DÙNG ĐÚNG 100%) ===
+{entity_table_text.strip()}""")
+
+    # 3. PHẦN 3: YÊU CẦU THỂ LOẠI & VĂN PHONG LỒNG TIẾNG
+    title_info = f"Phim/Video: {project_title.strip()}\n" if project_title else ""
+    prompt_parts.append(f"""=== PHẦN 3: YÊU CẦU THỂ LOẠI & VĂN PHONG LỒNG TIẾNG ===
+{title_info}- Thể loại: {norm_genre.upper()}
+- Yêu cầu: Thoát ý, mượt mà, thuần Việt, chuẩn kịch bản lồng tiếng video.
+- Câu từ súc tích, gãy gọn, giàu cảm xúc, vừa vặn nhịp nói video, tuyệt đối không bôi chữ lan man.""")
+
+    # 4. PHẦN 4: MỆNH LỆNH QUAN TRỌNG NHẤT (ĐẶT Ở CUỐI CÙNG THEO RECENCY BIAS)
+    lines_in = [l.strip() for l in tagged_text.splitlines() if l.strip()]
+    expected_count = len(lines_in)
+
+    prompt_parts.append(f"""=== PHẦN 4: MỆNH LỆNH QUAN TRỌNG NHẤT - BẮT BUỘC TUÂN THỦ 100% (ĐỌC KỸ TRƯỚC KHI XUẤT) ===
+1. QUY TẮC ĐÁNH SỐ THỨ TỰ 1:1 PHỤC VỤ LỒNG TIẾNG VIDEO (SỐNG CÒN):
+   - Kịch bản đầu vào ở Phần 1 có CHÍNH XÁC {expected_count} câu, được đánh số thứ tự tuần tự từ 1. đến {expected_count}.
+   - BẢN DỊCH TRẢ VỀ BẮT BUỘC PHẢI CÓ ĐỦ CHÍNH XÁC {expected_count} DÒNG, ĐÁNH SỐ TỪ 1. ĐẾN {expected_count}. TUYỆT ĐỐI KHÔNG ĐƯỢC THIẾU BẤT KỲ MỘT SỐ NÀO!
+   - ĐỊNH DẠNG ĐẦU RA 1:1 BẮT BUỘC:
+     1. Lời dịch câu 1...
+     2. Lời dịch câu 2...
+     ...
+     {expected_count}. Lời dịch câu {expected_count}...
+   - QUY TẮC BẢO TOÀN CÂU VỤN / CÂU RÁC / TỪ CẢM THÁN:
+     * Dù câu gốc cực ngắn (1-2 chữ như "走", "停", "哦", tiếng thở, tiếng rên, từ cảm thán), VẪN BẮT BUỘC PHẢI ĐÁNH SỐ CỦA NÓ (Ví dụ: "41. Đi thôi." hoặc nếu là câu rác không cần dịch thì để "41. ...").
+     * TUYỆT ĐỐI CẤM gộp 2 câu vào 1 số.
+     * TUYỆT ĐỐI CẤM tách 1 câu thành 2 số.
+     * TUYỆT ĐỐI CẤM bỏ qua bất kỳ số thứ tự nào.
+   - QUY TẮC CẤM TÁCH VẾ CÂU TRẠNG NGỮ (CHỐNG TỰ PHÁT SINH SỐ MỚI):
+     * Một dòng đầu vào (ví dụ '63. 就在这时，虾仁忽然看到...') dù có chứa nhiều vế câu hay trạng ngữ ngăn cách bằng dấu phẩy, BẮT BUỘC PHẢI DỊCH TRỌN VẸN TRONG 1 DÒNG DUY NHẤT VỚI 1 SỐ THỨ TỰ (Ví dụ: '63. Ngay lúc này, Hà Nhân chợt nhìn thấy...').
+     * TUYỆT ĐỐI CẤM tách vế trạng ngữ ra một dòng riêng làm phát sinh thêm số thứ tự mới!
+     * Mỗi số thứ tự N ở bản dịch PHẢI tương ứng đúng 100% với duy nhất câu thứ N ở kịch bản gốc.
+   - QUY TẮC DẤU PHẨY CÂU NGẮN (HỖ TRỢ GỘP CÂU LỒNG TIẾNG):
+     * CHỈ ÁP DỤNG CHO CÂU NGẮN (dưới 6 từ): Nếu là trạng ngữ/thán từ/vế mở đầu dở dang của cùng 1 người nói/dẫn truyện -> Kết thúc bằng DẤU PHẨY (,) ở cuối dòng (ví dụ: 'Lúc này,'). Nếu là vế bổ ngữ ngắn của câu trước cùng người nói -> Bắt đầu bằng DẤU PHẨY (,) ở đầu dòng.
+     * TUYỆT ĐỐI CẤM PHẨY CÂU DÀI: Câu dài (từ 6 từ trở lên) hoặc câu đã đủ chủ vị BẮT BUỘC kết thúc bằng dấu chấm (.), hỏi (?) hoặc than (!), cấm phẩy linh tinh.
+     * CẤM PHẨY KHI ĐỔI NGÔI NÓI: Lời dẫn truyện và lời nhân vật, hoặc 2 nhân vật đối thoại khác nhau BẮT BUỘC dùng dấu chấm (.), tuyệt đối cấm dùng dấu phẩy nối kết.
+2. CHỈ TRẢ VỀ DANH SÁCH TỪ 1. ĐẾN {expected_count}., tuyệt đối không chèn tiêu đề phân đoạn, không kèm lời chào hay giải thích ngoài lề.""")
 
     user_prompt = "\n\n".join(prompt_parts)
 
     provider = provider or settings.TRANSLATION_PROVIDER or "gemini"
 
-    if provider == "gemini":
-        keys = get_active_gemini_keys()
-        if not keys:
-            raise ValueError("Chưa cấu hình GEMINI_API_KEY trong file .env!")
-        
-        api_key = keys[0]
-        if api_key.startswith("gsk_"):
-            raise ValueError("LỖI API KEY: Bạn đang nhập nhầm Groq Key (gsk_...) vào ô Gemini! Vui lòng lấy Google Gemini API Key (bắt đầu bằng AIzaSy...) miễn phí tại https://aistudio.google.com/app/apikey và dán vào ô Gemini trong Tab Cài Đặt.")
-        model_name = model or settings.GEMINI_MODEL or "gemini-3.1-flash-lite"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": [
-                {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
-            ],
-            "generationConfig": {
-                "temperature": 0.3,
-                "topP": 0.95
+    # Hàm nội bộ gọi LLM
+    async def _execute_single_call(u_prompt: str) -> str:
+        if provider == "gemini":
+            keys = get_active_gemini_keys()
+            if not keys:
+                raise ValueError("Chưa cấu hình GEMINI_API_KEY trong file .env!")
+            api_key = keys[0]
+            model_name = model or settings.GEMINI_MODEL or "gemini-3.1-flash-lite"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+            headers = {"Content-Type": "application/json"}
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{u_prompt}"}]}],
+                "generationConfig": {"temperature": 0.2, "topP": 0.95}
             }
-        }
-        
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await post_gemini_with_retry(client, url, headers, payload)
-            if resp.status_code != 200:
-                raise RuntimeError(f"Gemini Translation API Lỗi HTTP {resp.status_code}: {resp.text}")
-            data = resp.json()
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await post_gemini_with_retry(client, url, headers, payload)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Gemini API Lỗi HTTP {resp.status_code}: {resp.text}")
+                data = resp.json()
+                candidates = data.get("candidates") or []
+                if candidates and "content" in candidates[0]:
+                    return candidates[0]["content"]["parts"][0]["text"].strip()
+                raise RuntimeError(f"Gemini API không trả về nội dung: {data}")
+        else:
+            keys = get_active_openrouter_keys()
+            if not keys:
+                raise ValueError("Chưa cấu hình OPENROUTER_API_KEY trong file .env!")
+            api_key = keys[0]
+            model_name = model or settings.OPENROUTER_MODEL or "google/gemini-2.5-flash"
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": u_prompt}
+                ],
+                "temperature": 0.2
+            }
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await post_openrouter_with_retry(client, url, headers, payload)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"OpenRouter API Lỗi HTTP {resp.status_code}: {resp.text}")
+                data = resp.json()
+                choices = data.get("choices") or []
+                if choices and "message" in choices[0]:
+                    return choices[0]["message"]["content"].strip()
+                raise RuntimeError(f"OpenRouter API không trả về nội dung: {data}")
 
-            # NẾU VÀ CHỈ NẾU BỊ LLM CHẶN (SAFETY BLOCK): Tạm thời bật Unblock rồi tự tắt ngay
-            from app.services.unblock.unblock_pipeline import is_response_safety_blocked
-            if is_response_safety_blocked(data):
-                import logging
-                logging.getLogger(__name__).warning("⚠️ [Unblock] Phát hiện LLM kích hoạt Safety Policy! Tạm thời bật Unblock che từ nhạy cảm...")
-                from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, unmask_text_with_dictionary
-                masked_tagged_text, mapping_table, _ = await mask_text_with_dictionary(tagged_text)
-                retry_user_prompt = user_prompt.replace(tagged_text.strip(), masked_tagged_text.strip())
-                retry_payload = {
-                    "contents": [
-                        {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{retry_user_prompt}"}]}
-                    ],
-                    "generationConfig": payload["generationConfig"]
-                }
-                resp_retry = await post_gemini_with_retry(client, url, headers, retry_payload)
-                if resp_retry.status_code == 200:
-                    retry_data = resp_retry.json()
-                    candidates = retry_data.get("candidates") or []
-                    if candidates and "content" in candidates[0]:
-                        raw_ans = candidates[0]["content"]["parts"][0]["text"].strip()
-                        unmasked_ans = unmask_text_with_dictionary(raw_ans, mapping_table)
-                        logging.getLogger(__name__).info("✔ [Unblock] Đã dịch an toàn thành công và tự động tắt Unblock.")
-                        return unmasked_ans
+    # VÒNG LẶP AUTO-RETRY NẾU SỐ LƯỢNG DÒNG KHÔNG BẰNG CHÍNH XÁC N
+    current_prompt = user_prompt
+    for attempt in range(1, 4):
+        ans = await _execute_single_call(current_prompt)
+        # Đếm số dòng bắt đầu bằng số thứ tự
+        matched_nums = set()
+        for line in ans.splitlines():
+            m = re.match(r'^\s*(\d+)[\.\:\-\)\s]+', line)
+            if m:
+                matched_nums.add(int(m.group(1)))
 
-            candidates = data.get("candidates") or []
-            if candidates and "content" in candidates[0]:
-                return candidates[0]["content"]["parts"][0]["text"].strip()
-            raise RuntimeError(f"Gemini API không trả về nội dung (Safety/Empty): {data}")
-            
-    else:
-        keys = get_active_openrouter_keys()
-        if not keys:
-            raise ValueError("Chưa cấu hình OPENROUTER_API_KEY trong file .env!")
-        
-        api_key = keys[0]
-        model_name = model or settings.OPENROUTER_MODEL or "google/gemini-2.5-flash"
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.3
-        }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await post_openrouter_with_retry(client, url, headers, payload)
-            if resp.status_code != 200:
-                raise RuntimeError(f"OpenRouter Translation API Lỗi HTTP {resp.status_code}: {resp.text}")
-            data = resp.json()
+        if len(matched_nums) == expected_count and max(matched_nums) == expected_count:
+            return ans
 
-            from app.services.unblock.unblock_pipeline import is_response_safety_blocked
-            if is_response_safety_blocked(data):
-                import logging
-                logging.getLogger(__name__).warning("⚠️ [Unblock] Phát hiện OpenRouter chặn nội dung (Safety)! Tạm thời bật Unblock...")
-                from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, unmask_text_with_dictionary
-                masked_tagged_text, mapping_table, _ = await mask_text_with_dictionary(tagged_text)
-                retry_user_prompt = user_prompt.replace(tagged_text.strip(), masked_tagged_text.strip())
-                retry_payload = {
-                    "model": payload["model"],
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": retry_user_prompt}
-                    ],
-                    "temperature": 0.3
-                }
-                resp_retry = await post_openrouter_with_retry(client, url, headers, retry_payload)
-                if resp_retry.status_code == 200:
-                    retry_data = resp_retry.json()
-                    choices = retry_data.get("choices") or []
-                    if choices and "message" in choices[0]:
-                        raw_ans = choices[0]["message"]["content"].strip()
-                        unmasked_ans = unmask_text_with_dictionary(raw_ans, mapping_table)
-                        logging.getLogger(__name__).info("✔ [Unblock] Đã dịch an toàn thành công và tự động tắt Unblock.")
-                        return unmasked_ans
-
-            choices = data.get("choices") or []
-            if choices and "message" in choices[0]:
-                return choices[0]["message"]["content"].strip()
-            raise RuntimeError(f"OpenRouter API không trả về nội dung: {data}")
+        # Nếu thiếu hoặc thừa số, bắt dịch lại ngay
+        if attempt < 3:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"⚠️ [Strict Validation] Lần {attempt}: Gửi {expected_count} câu nhưng LLM trả về {len(matched_nums)} số! "
+                f"Tự động yêu cầu dịch lại ngay lập tức..."
+            )
+            retry_note = (
+                f"\n\n[CẢNH BÁO LỖI Ở LẦN TRƯỚC]: Lần trước bạn trả về {len(matched_nums)} câu, KHÔNG KHỚP với {expected_count} câu gốc! "
+                f"HÃY DỊCH LẠI VÀ BẮT BUỘC XUẤT ĐỦ CHÍNH XÁC TỪ 1. ĐẾN {expected_count}. "
+                f"DÙ LÀ CÂU RÁC HOẶC TỪ CẢM THÁN CŨNG PHẢI ĐÁNH SỐ VÀO!"
+            )
+            current_prompt = user_prompt + retry_note
+        else:
+            return ans
 
 # Backward compatibility aliases
 translate_dialogue_batch_llm = translate_batch_pass2_llm

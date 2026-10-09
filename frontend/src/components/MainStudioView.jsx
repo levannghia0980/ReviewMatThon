@@ -32,6 +32,7 @@ export default function MainStudioView({ onNavigateTab }) {
   const [maskLeft, setMaskLeft] = useState(0); // % left
   const [maskWidth, setMaskWidth] = useState(100); // Giữ để gửi backend
   const [maskHeight, setMaskHeight] = useState(8); // % height cắt sub đáy
+  const [topCutPercent, setTopCutPercent] = useState(0); // % height cắt trên đỉnh
   const [blurHeight, setBlurHeight] = useState(13); // % height dải mờ che sub cũ (tùy chỉnh cao nền)
   const [cropRatio, setCropRatio] = useState('16:9'); // '16:9' (YouTube Ngang Chuẩn) | '9:16' (Shorts/TikTok)
   const [backdropOpacity, setBackdropOpacity] = useState('CC'); // 80% opacity mặc định khi bật che
@@ -362,6 +363,9 @@ export default function MainStudioView({ onNavigateTab }) {
     if (interactionMode === 'crop-bottom') {
       const newHeight = Math.max(1, Math.min(45, 100 - currentMouseY));
       setMaskHeight(Math.round(newHeight));
+    } else if (interactionMode === 'crop-top') {
+      const newTop = Math.max(0, Math.min(35, currentMouseY));
+      setTopCutPercent(Math.round(newTop));
     } else if (interactionMode === 'sub-move') {
       const rawBottom = 100 - currentMouseY;
       if (hasMask) {
@@ -465,6 +469,7 @@ export default function MainStudioView({ onNavigateTab }) {
         mask_width: calcMaskWidth, // Độ rộng dải mờ %
         mask_height: maskHeight, // Chiều cao cắt sub đáy %
         bottom_cut_percent: maskHeight, // Chiều cao cắt sub đáy %
+        top_cut_percent: topCutPercent, // Chiều cao cắt trên đỉnh %
         blur_height: calcBlurH, // Chiều cao dải mờ %
         sub_bottom_offset: subBottomOffset, // Vị trí dải mờ từ đáy khung hình crop lên %
         crop_ratio: cropRatio,
@@ -580,7 +585,7 @@ export default function MainStudioView({ onNavigateTab }) {
   };
 
   const videoAspect = parseVideoRatio();
-  const remainH = Math.max(10, 100 - maskHeight);
+  const remainH = Math.max(10, 100 - maskHeight - topCutPercent);
   // Tỷ lệ khung hình: YouTube Ngang chuẩn là 16/9, Shorts/TikTok là 9/16
   const ratioVal = cropRatio === '9:16' ? (9 / 16) : (16 / 9);
   // targetW tính theo % container
@@ -955,6 +960,42 @@ export default function MainStudioView({ onNavigateTab }) {
                     </button>
                   </div>
 
+                  {/* Độ cao cắt mép trên */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '3px 8px', borderRadius: '5px', border: '1px solid #93c5fd' }}>
+                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                      ✂ Cắt Trên:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTopCutPercent(prev => Math.max(0, prev - 1))}
+                      title="Giảm độ cao cắt trên"
+                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
+                    >
+                      -
+                    </button>
+                    <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#2563eb', minWidth: '28px', textAlign: 'center' }}>
+                      {topCutPercent}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTopCutPercent(prev => Math.min(30, prev + 1))}
+                      title="Tăng độ cao cắt trên"
+                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
+                    >
+                      +
+                    </button>
+
+                    <input
+                      type="range"
+                      min={0}
+                      max={30}
+                      value={topCutPercent}
+                      onChange={(e) => setTopCutPercent(parseInt(e.target.value, 10) || 0)}
+                      title="Kéo chọn % chiều cao cắt trên đỉnh"
+                      style={{ width: '55px', height: '4px', accentColor: '#2563eb', cursor: 'pointer' }}
+                    />
+                  </div>
+
                   {/* Độ cao cắt sub đáy */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '3px 8px', borderRadius: '5px', border: '1px solid #93c5fd' }}>
                     <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af', display: 'flex', alignItems: 'center', gap: '3px' }}>
@@ -987,7 +1028,7 @@ export default function MainStudioView({ onNavigateTab }) {
                       value={maskHeight}
                       onChange={(e) => setMaskHeight(parseInt(e.target.value, 10))}
                       title="Kéo chọn % chiều cao cắt sub đáy"
-                      style={{ width: '65px', height: '4px', accentColor: '#2563eb', cursor: 'pointer' }}
+                      style={{ width: '55px', height: '4px', accentColor: '#2563eb', cursor: 'pointer' }}
                     />
                   </div>
 
@@ -1139,11 +1180,59 @@ export default function MainStudioView({ onNavigateTab }) {
                     </div>
                   )}
 
+                  {/* 2.5 VÙNG CẮT MÉP TRÊN (ĐỎ CẢNH BÁO) */}
+                  {topCutPercent > 0 && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        height: `${topCutPercent}%`,
+                        left: 0,
+                        right: 0,
+                        background: 'rgba(239, 68, 68, 0.32)',
+                        borderBottom: '2px dashed #ef4444',
+                        pointerEvents: 'none',
+                        zIndex: 20,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center'
+                      }}
+                    >
+                      <span style={{
+                        fontSize: '11px',
+                        fontWeight: 800,
+                        color: '#ffffff',
+                        background: 'rgba(185, 28, 28, 0.88)',
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+                        letterSpacing: '0.3px'
+                      }}>
+                        ✂ VÙNG CẮT MÉP TRÊN (-{topCutPercent}%)
+                      </span>
+                    </div>
+                  )}
+
+                  {/* THANH KÉO ĐỘ CAO CẮT MÉP TRÊN */}
+                  <div
+                    onMouseDown={(e) => handleMouseDown(e, 'crop-top')}
+                    style={{
+                      position: 'absolute',
+                      top: `calc(${topCutPercent}% - 8px)`,
+                      left: 0,
+                      right: 0,
+                      height: '16px',
+                      cursor: 'ns-resize',
+                      zIndex: 35
+                    }}
+                    title="Kéo mép này lên/xuống để chọn độ cao cắt mép trên"
+                  />
+
                   {/* 3. VÙNG CẮT SUB Ở MÉP ĐÁY (ĐỎ CẢNH BÁO) */}
                   <div
                     style={{
                       position: 'absolute',
-                      top: `${remainH}%`,
+                      top: `calc(100% - ${maskHeight}%)`,
                       bottom: 0,
                       left: 0,
                       right: 0,
@@ -1175,7 +1264,7 @@ export default function MainStudioView({ onNavigateTab }) {
                     onMouseDown={(e) => handleMouseDown(e, 'crop-bottom')}
                     style={{
                       position: 'absolute',
-                      top: `calc(${remainH}% - 8px)`,
+                      top: `calc(100% - ${maskHeight}% - 8px)`,
                       left: 0,
                       right: 0,
                       height: '16px',
@@ -1189,7 +1278,7 @@ export default function MainStudioView({ onNavigateTab }) {
                   <div
                     style={{
                       position: 'absolute',
-                      top: 0,
+                      top: `${topCutPercent}%`,
                       height: `${remainH}%`,
                       left: `${targetLeft}%`,
                       width: `${targetW}%`,

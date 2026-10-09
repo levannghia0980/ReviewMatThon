@@ -1,9 +1,12 @@
-from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Text, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.db.session import Base
 
 class DialogueSegmentModel(Base):
     __tablename__ = "dialogue_segments"
+    __table_args__ = (
+        UniqueConstraint("task_id", "index", name="uq_task_dialogue_index"),
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     task_id = Column(Integer, ForeignKey("project_tasks.id", ondelete="CASCADE"), nullable=False, index=True)

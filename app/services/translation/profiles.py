@@ -165,51 +165,29 @@ SCI_FI_APOCALYPSE_PROFILE = {
 # BỘ QUY TẮC CHUYỂN NGỮ CỐT LÕI (COMMON RULES CHO LỒNG TIẾNG VIDEO & DUBBING)
 # =====================================================================
 COMMON_RULES = """QUY TẮC DỊCH THUẬT LỒNG TIẾNG CỐT LÕI (BẮT BUỘC ÁP DỤNG TOÀN DIỆN):
-1. TÊN RIÊNG: Dùng đúng 100% bản dịch trong Bảng thực thể cho tên nhân vật, địa danh, môn phái, bảo vật. Mỗi từ chỉ một bản dịch duy nhất, hòa vào câu văn — CẤM ghi song ngữ kiểu "Chữ Hán (bản dịch)", cấm sót chữ Hán/Pinyin, CẤM TIẾNG ANH.
+1. KHÓA TÊN RIÊNG & THUẦN VIỆT 100%:
+   - Dùng đúng 100% bản dịch trong Bảng thực thể. Sạch 100% chữ Hán, Pinyin, tiếng Anh. Cấm chú thích kiểu "Chữ Hán (nghĩa là...)".
+   - ĐẢO NGỮ THUẦN VIỆT: Đặt Danh từ chính trước — Tính từ/bổ ngữ sau. Hóa giải câu chữ '把', '被', '以', so sánh đảo ngữ tiếng Hán thành câu văn tiếng Việt trôi chảy, xuôi tai.
+   - NGHĨA BÓNG & QUÁN NGỮ: Bắt buộc hiểu ngụ ý ngữ cảnh và thành ngữ 4 chữ để dịch thành khẩu ngữ lồng tiếng tự nhiên, cấm dịch nghĩa đen thô cứng.
 
-2. DỊCH ĐÚNG NGHĨA BÓNG & HÀM Ý NGỮ CẢNH (TUYỆT ĐỐI CẤM DỊCH NGHĨA ĐEN TRẦN TRỤI):
-   - BẮT BUỘC hiểu sâu trọn vẹn ngữ cảnh của cả câu và phân cảnh để nắm bắt NGHĨA BÓNG, ẩn dụ, ngụ ý nghệ thuật và thái độ nhân vật. TUYỆT ĐỐI CẤM dịch nghĩa đen từng từ (literal translation) khi gặp thành ngữ 4 chữ, ngạn ngữ, khẩu ngữ hoặc lối nói ẩn dụ của tiếng Hán.
-   - CHUYỂN HÓA VĂN HỌC LỒNG TIẾNG: Bắt buộc chuyển ngữ thành các thành ngữ, quán ngữ tương đương trong khẩu ngữ lồng tiếng tiếng Việt, thoát ý uyển chuyển, tự nhiên, xuôi tai. Khán giả nghe vào hiểu ngay lập tức mà không cần suy đoán ngô nghê.
-   - Khi một từ/cụm từ có thể hiểu theo cả nghĩa đen và nghĩa bóng, LUÔN ƯU TIÊN NGHĨA BÓNG phù hợp với diễn biến tâm lý và bối cảnh.
+2. CÂU TỪ LỒNG TIẾNG KHÔNG CỤT LỦN & ĐÚNG NHỊP NÓI:
+   - TIẾNG TRUNG NÓI CỤT / 1-2 TỪ: Tiếng Trung thường nói rất cộc ("走", "对", "好", "算了"). Khi dịch lồng tiếng BẮT BUỘC bổ sung chủ ngữ, trợ từ tình thái cho tròn câu, đúng ngữ pháp tiếng Việt và giàu cảm xúc (ví dụ: "Mau đi thôi", "Đúng vậy", "Bỏ đi vậy"). TUYỆT ĐỐI CẤM dịch cụt lủn cộc cằn làm mất nghĩa và mất ngữ khí nhân vật.
+   - VỪA VẶN NHỊP NÓI: Câu văn thanh thoát, giàu nhạc điệu, ôm khít nhịp video, không bôi thêm từ đệm rườm rà lan man.
+   - CHỐNG LẶP TỪ: Tránh dịch lặp từ chắp vá ngớ ngẩn (CẤM: 'đao đeo bên mình đao đeo lại bên hông').
 
-3. NGUYÊN TẮC CÂU TỪ LỒNG TIẾNG SÚC TÍCH, GÃY GỌN (VỪA VẶN NHỊP NÓI CỦA VIDEO):
-   - NGUYÊN TẮC CỐT LÕI: Kịch bản dùng để LỒNG TIẾNG PHIM (DUBBING VIDEO), mỗi dòng câu nói phải vừa vặn với nhịp nói của nhân vật và người kể chuyện, đảm bảo tốc độ đọc tự nhiên, êm tai, không bị nói vội vã hay rề rà.
-   - SÚC TÍCH & GÃY GỌN:
-     + Câu văn phải thanh thoát, cô đọng, giàu nhạc điệu, biểu đạt trọn vẹn ý nghĩa mà không bôi thêm từ đệm, từ nối rườm rà.
-     + TUYỆT ĐỐI CẤM kéo dài dòng văn lan man, cấm dịch rườm rà giải thích dài dòng.
-     + TUYỆT ĐỐI CẤM dịch cụt lủn làm mất nghĩa hoặc mất đi cảm xúc, ngữ khí của nhân vật.
-   - KHÔNG ĐẾM CHỮ CƠ HỌC: Tập trung vào dòng chảy cảm xúc và khẩu ngữ tự nhiên của tiếng Việt lồng tiếng, dịch thoát ý uyển chuyển để người nghe cảm thụ trọn vẹn nội dung.
-   - BẢO TOÀN CÂU NÓI ĐỘC LẬP: Mỗi câu thoại tương ứng 1:1 với một mốc thời gian trên video, tuyệt đối không gộp câu hay bỏ sót câu.
+3. BẢO TOÀN ĐÁNH SỐ 1:1 ĐỂ KHỚP TIMELINE SRT (MỆNH LỆNH SỐNG CÒN):
+   - Có N câu đầu vào thì BẮT BUỘC trả về đúng N câu đầu ra, đánh số [Số]. [Lời dịch].
+   - Dù câu gốc cực ngắn (tiếng thở, thán từ), vẫn dịch đúng số đó. Câu rác/tạp âm không cần dịch thì để "[Số]. ...", tuyệt đối KHÔNG XÓA SỐ.
+   - TUYỆT ĐỐI CẤM gộp câu, CẤM tách dòng làm lệch số thứ tự SRT.
 
-4. TÁI CẤU TRÚC CỤM TỪ & NGỮ PHÁP CÂU THUẦN VIỆT (CẤM GIỮ NGUYÊN THỨ TỰ TỪ TIẾNG TRUNG):
-   - TUYỆT ĐỐI CẤM giữ nguyên thứ tự từng từ từ trái qua phải của câu tiếng Trung. BẮT BUỘC đảo và sắp xếp lại trật tự theo đúng cú pháp THUẦN VIỆT:
-     + ĐẢO TRẬT TỰ CỤM TỪ: Tiếng Trung đặt định ngữ/tính từ trước danh từ; tiếng Việt BẮT BUỘC đặt Danh từ chính đứng trước — Tính từ, bổ ngữ miêu tả đứng sau. CẤM giữ nguyên trật tự từ Hán làm cụm từ bị ngược ngạo, tối nghĩa.
-     + SẮP XẾP LẠI CÂU VĂN: Tổ chức câu theo trật tự Chủ ngữ - Vị ngữ - Bổ ngữ tự nhiên của tiếng Việt. Đưa trạng ngữ nơi chốn, thời gian về đúng vị trí thích hợp (thường sau động từ hoặc tách bạch ở đầu câu bằng dấu phẩy; CẤM chèn trạng ngữ lủng củng vào giữa chủ ngữ và vị ngữ).
-     + HÓA GIẢI CẤU TRÚC HÁN NGỮ ĐẶC THÙ: Chuyển hóa triệt để câu chữ '把' (đem/lấy...), câu chữ '被' (bị/được...), câu chữ '以', cấu trúc so sánh hay đảo ngữ tiếng Hán thành câu văn tiếng Việt trôi chảy, gãy gọn, xuôi tai, không gượng ép. Bản dịch phải đọc tự nhiên như người Việt nói chuyện, triệt tiêu 100% mùi vị convert.
+4. QUY TẮC DẤU PHẨY CÂU NGẮN HỖ TRỢ GỘP CÂU LỒNG TIẾNG:
+   - CHỈ DÙNG CHO CÂU NGẮN (< 6 từ): Nếu là trạng ngữ/thán từ mở đầu dở dang cùng ngôi nói -> kết thúc bằng DẤU PHẨY (,) ở cuối dòng (ví dụ: "Lúc này,"). Nếu là bổ ngữ ngắn tiếp nối câu trước -> bắt đầu bằng DẤU PHẨY (,).
+   - CÂU DÀI & ĐỦ Ý: Bắt buộc kết thúc bằng dấu chấm (.), hỏi (?) hoặc than (!). TUYỆT ĐỐI CẤM để dấu phẩy ở câu dài.
+   - ĐỔI NGÔI NÓI: Giữa lời dẫn truyện và lời thoại nhân vật, hoặc 2 nhân vật đối đáp khác nhau BẮT BUỘC dùng dấu chấm (.), cấm dùng dấu phẩy nối kết.
 
-5. ĐỊNH DẠNG LỒNG TIẾNG VIDEO & BẢO TOÀN THỨ TỰ 1:1:
-   - BẢO TOÀN ĐÁNH SỐ THỨ TỰ 1:1: MỖI dòng đầu vào "X. [Nội dung]" ➔ BẮT BUỘC trả về ĐÚNG 1 dòng đầu ra "X. [Bản dịch tiếng Việt]" với CHÍNH XÁC số thứ tự "X".
-   - TUYỆT ĐỐI CẤM gộp số, CẤM bỏ sót số, CẤM tự ý đổi số thứ tự. Dòng nào chỉ có dấu chấm (ví dụ "56. .") thì đầu ra cũng giữ nguyên là số thứ tự và dấu chấm ("56. .").
-   - TUYỆT ĐỐI CẤM dùng gạch đầu dòng (-), CẤM bọc ngoặc kép ("..."), CẤM in đậm/nghiêng (**...**).
-   - QUY TẮC DẤU CUỐI DÒNG:
-     + Vế câu ngắn là trạng ngữ, thán từ hoặc vế câu dở dang đang nói dở chưa hết ý chuẩn bị nối vào câu kế tiếp (như: "Đúng lúc này,", "Nghe vậy,", "Lúc này,"): BẮT BUỘC kết thúc bằng DẤU PHẨY (,).
-     + Các câu đã trọn vẹn ngữ nghĩa hoặc câu thoại/đối đáp độc lập: BẮT BUỘC kết thúc bằng dấu chấm (.), hỏi (?) hoặc than (!). CẤM hai dấu liên tiếp như '.,'.
-   - Số/tiền/thời gian: Viết bằng chữ để giọng đọc AI TTS phát âm tự nhiên (ví dụ: 'ba nghìn' thay vì '3000', 'mười vạn' thay vì '10 vạn').
-
-6. TỰ ĐỘNG PHÁT HIỆN & PHỤC HỒI LỖI TỪ ĐỒNG ÂM ASR (SPEECH-TO-TEXT AUTO-CORRECTION):
-   - Kịch bản tiếng Trung đầu vào được bóc tách từ giọng nói video bằng AI thính giác (ASR), do đó thường xuyên xuất hiện hiện tượng nghe nhầm sang chữ Hán đồng âm hoặc gần âm Pinyin (homophones) — đặc biệt là tên nhân vật, chức vị, môn phái, chiêu thức võ công hoặc cảnh giới bị nghe nhầm thành từ sinh hoạt đời thường.
-   - BẮT BUỘC đối chiếu ngữ cảnh phân cảnh, quan hệ đối thoại và tiêu đề tác phẩm: Nếu một từ xuất hiện phi lý, ngô nghê hoặc lệch cảnh, PHẢI tự động suy luận chữ Hán đồng âm chuẩn xác trong tiếng Trung theo đúng ngữ cảnh đó và dịch thẳng sang tiếng Việt chuẩn xác.
-   - TUYỆT ĐỐI KHÔNG dịch máy móc theo mặt chữ bị nghe nhầm.
-
-7. CHUẨN BỐI PHẬN & GIỮ XUYÊN SUỐT XƯNG HÔ:
-   - BẮT BUỘC tuân thủ 100% quy chuẩn xưng hô của thể loại truyện đã nêu ở trên.
-   - Đã xác định xưng hô hoặc bối phận ban đầu thì BẮT BUỘC GIỮ XUYÊN SUỐT toàn bộ kịch bản; chỉ được đổi xưng hô khi diễn biến quan hệ thực sự có bước chuyển biến rõ rệt (người lạ sau bái sư, kết nghĩa huynh đệ...). Cấm tự ý đổi xưng hô tùy tiện.
-
-8. TRIỆT TIÊU 100% SÓT CHỮ HÁN, CHỐNG LẶP TỪ & CẤM RÒ RỈ CHÚ THÍCH TỪ ĐIỂN:
-   - CẤM SÓT CHỮ HÁN ĐƠN LẺ: Tuyệt đối không để sót bất kỳ chữ Hán đơn lẻ, Pinyin hay cụm từ ngoại lai nào xen lẫn trong câu tiếng Việt.
-   - CHỐNG LẶP TỪ & LẶP NGHĨA KHI DỊCH TỪ GHÉP: Khi gặp các cấu trúc từ ghép hoặc từ đồng nghĩa tiếng Hán (ví dụ: 佩刀放回腰间), BẮT BUỘC dịch gộp thoát ý tự nhiên. TUYỆT ĐỐI CẤM dịch chắp vá từng chữ làm sinh ra câu lặp từ ngớ ngẩn (CẤM: 'đao đeo bên mình đao đeo lại bên hông', 'thiên vị thiên vị'...).
-   - TUYỆT ĐỐI CẤM RÒ RỈ CHÚ THÍCH TỪ ĐIỂN: Cấm rò rỉ các đoạn giải thích như '(chỉ [Tên]...)', '(nghĩa là...)', '(tên gốc...)'.
-   - CHỈ XUẤT DANH SÁCH ĐƯỢC ĐÁNH SỐ (1. ... \\n 2. ...), TUYỆT ĐỐI KHÔNG KÈM LỜI CHÀO, LỜI MỞ ĐẦU HAY LỜI GIẢI THÍCH NGOÀI LỀ NÀO KHÁC."""
+5. PHỤC HỒI TỪ ĐỒNG ÂM ASR & CHUẨN XƯNG HÔ:
+   - TỰ ĐỘNG SỬA LỖI ĐỒNG ÂM ASR: Đối chiếu ngữ cảnh để suy luận chữ Hán đồng âm chuẩn xác cho tên riêng, chiêu thức, cảnh giới bị nghe nhầm; cấm dịch máy móc theo mặt chữ sai.
+   - CHUẨN BỐI PHẬN: Tuân thủ 100% quy chuẩn xưng hô theo thể loại ở trên, giữ xuyên suốt toàn bộ kịch bản, không đổi xưng hô tùy tiện."""
 
 
 CONTEXT_PROFILES = {

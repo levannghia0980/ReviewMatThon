@@ -108,15 +108,15 @@ class AudioExtractorService:
         chunks_info = []
         idx = 0
         while True:
-            out_file = out_dir / f"chunk_{idx:03d}_{int(current_start)}.mp3"
+            out_file = out_dir / f"chunk_{idx:03d}_{int(current_start)}.wav"
             cmd = [
                 *ffmpeg_cmd,
                 "-y",
                 "-ss", str(current_start),
                 "-t", str(chunk_length_sec),
                 "-i", str(src),
-                "-acodec", "libmp3lame",
-                "-b:a", "64k",
+                "-vn",
+                "-acodec", "pcm_s16le",
                 "-ar", "16000",
                 "-ac", "1",
                 str(out_file)

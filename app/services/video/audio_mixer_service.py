@@ -13,15 +13,15 @@ class AudioMixerService:
         voiceover_mp3: str,
         output_mixed_audio: str,
         dialogue_segments: Optional[List[DialogueSegment]] = None,
-        bgm_volume_when_speaking: float = 0.03,
-        bgm_volume_normal: float = 0.03,  # Tạm để bằng khi đang nói (0.03 thay vì 0.70) để giấu âm gốc tiếng Trung
+        bgm_volume_when_speaking: float = 0.036,  # 0.036 khi nói để triệt tiêu tiếng Trung
+        bgm_volume_normal: float = 0.15,          # 0.15 khi không nói để giữ rõ âm thanh môi trường và BGM
         voiceover_volume: float = 1.05
     ) -> str:
         """
         Kỹ thuật Smart Audio Mixing & Vocal Suppression:
         - Giữ trọn vẹn nhạc nền (BGM) và hiệu ứng âm thanh (SFX) từ video gốc.
-        - Khi có giọng lồng tiếng tiếng Việt: Tự động giảm (ducking) âm lượng track gốc xuống 3% để triệt tiêu tiếng Trung gốc.
-        - Khi không có lời thoại (khoảng lặng): Tạm để mức 3% (gốc: 70%) để giấu hoàn toàn tiếng Trung trước khi vào thoại.
+        - Khi có giọng lồng tiếng tiếng Việt: Tự động giảm (ducking) âm lượng track gốc xuống 12% để triệt tiêu tiếng Trung gốc.
+        - Khi không có lời thoại (khoảng lặng): Tạm để mức 12% (gốc: 70%) để giữ âm thanh rõ ràng và cân đối.
         - Giọng lồng tiếng tiếng Việt to rõ, áp dụng bộ lọc Alimiter chống vỡ tiếng 100%.
         """
         src_orig = Path(original_video_or_audio)

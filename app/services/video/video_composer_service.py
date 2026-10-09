@@ -172,16 +172,21 @@ class VideoComposerService:
         return f"{h:02d}:{m:02d}:{s:02d}"
 
     @classmethod
-    def calculate_crop(cls, vw: int, vh: int, bottom_cut_percent: float, target_ratio: str = "16:9") -> Dict[str, int]:
+    def calculate_crop(cls, vw: int, vh: int, bottom_cut_percent: float, top_cut_percent: float = 0.0, target_ratio: str = "16:9") -> Dict[str, int]:
         """
         Tính toán thông số crop:
+        - Cắt bỏ phần trên theo top_cut_percent (% chiều cao).
         - Cắt bỏ phần đáy theo bottom_cut_percent (% chiều cao) để xóa bỏ hoàn toàn hardsub Trung Quốc cũ.
         - Cắt đều 2 bên (trái & phải) để video đạt chuẩn tỷ lệ YouTube hỗ trợ (Mặc định 16:9 YouTube ngang, hoặc 9:16 Shorts).
         - CHỈ CẮT (CROP) - TUYỆT ĐỐI KHÔNG SCALE để tối ưu tốc độ render nhanh nhất có thể.
         """
-        pct = max(0.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 12.0)))
-        cut_h = int(round(vh * (pct / 100.0)))
-        h_target = vh - cut_h
+        bot_pct = max(0.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 0.0)))
+        top_pct = max(0.0, min(35.0, float(top_cut_percent if top_cut_percent is not None else 0.0)))
+        
+        cut_top = int(round(vh * (top_pct / 100.0)))
+        cut_bot = int(round(vh * (bot_pct / 100.0)))
+        
+        h_target = vh - cut_top - cut_bot
         h_target = max(120, (h_target // 2) * 2)
 
         ratio_val = 9.0 / 16.0 if target_ratio == "9:16" else 16.0 / 9.0
@@ -193,11 +198,11 @@ class VideoComposerService:
             h_target = int(round(w_target / ratio_val))
             h_target = (h_target // 2) * 2
             x = 0
-            y = 0
+            y = cut_top
         else:
             x = int(round((vw - w_target) / 2.0))
             x = (x // 2) * 2
-            y = 0
+            y = cut_top
 
         # Giới hạn an toàn tuyệt đối tránh tràn khung hình
         w_target = max(64, min(vw, (w_target // 2) * 2))
@@ -210,7 +215,8 @@ class VideoComposerService:
             "h": h_target,
             "x": x,
             "y": y,
-            "cut_h": cut_h
+            "cut_h": cut_bot,
+            "cut_top": cut_top
         }
 
     @classmethod
@@ -264,6 +270,15 @@ class VideoComposerService:
             DialogueSegmentModel.task_id == project_id
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
+        # Khử trùng lặp tuyệt đối theo index để tránh bị vẽ đè 2 tầng sub
+        seen_d_idx = set()
+        unique_dialogues_db = []
+        for d in dialogues_db:
+            if d.index not in seen_d_idx:
+                seen_d_idx.add(d.index)
+                unique_dialogues_db.append(d)
+        dialogues_db = unique_dialogues_db
+
         if render_subtitles:
             task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
         else:
@@ -307,7 +322,9 @@ class VideoComposerService:
                 highlight_color=karaoke_highlight_color if (karaoke_highlight_color and karaoke_highlight_color != "&H00EB6325") else "&H000000FF",
                 backdrop_opacity_hex=backdrop_opacity_hex,
                 box_style=box_style,
-                box_padding=box_pad_val
+                box_padding=box_pad_val,
+                blur_height=blur_height,
+                sub_bottom_offset=sub_bottom_offset
             )
             task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} (PlayRes: {ass_w}x{ass_h})", "emerald")
         else:
@@ -362,8 +379,8 @@ class VideoComposerService:
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=segments,
-                    bgm_volume_when_speaking=0.03,
-                    bgm_volume_normal=0.03,  # Tạm để bằng khi đang nói (0.03 thay vì 0.70) để giấu tiếng Trung
+                    bgm_volume_when_speaking=0.036,
+                    bgm_volume_normal=0.15,  # 0.15 khi không nói để giữ rõ âm thanh môi trường/BGM, 0.036 khi nói để giấu tiếng Trung
                     voiceover_volume=1.05
                 )
                 audio_source = str(mixed_path)
@@ -482,6 +499,7 @@ class VideoComposerService:
         target_ratio: str = "16:9",
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
+        top_cut_percent: Optional[float] = 0.0,
         blur_height: Optional[float] = 13.0,
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
@@ -512,10 +530,11 @@ class VideoComposerService:
 
         vw, vh = cls.get_video_resolution(video_input_path)
         cut_pct = float(bottom_cut_percent if bottom_cut_percent is not None else 0.0)
+        t_cut_pct = float(top_cut_percent if top_cut_percent is not None else 0.0)
 
-        # 🎬 BƯỚC 1: CROP VIDEO (Cắt bỏ % sub Trung ở đáy + cắt đều 2 bên theo tỷ lệ 16:9 hoặc 9:16 Shorts)
-        if cut_pct > 0:
-            crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, target_ratio=target_ratio)
+        # 🎬 BƯỚC 1: CROP VIDEO (Cắt bỏ % sub Trung ở đáy + cắt % trên đỉnh + cắt đều 2 bên theo tỷ lệ 16:9 hoặc 9:16 Shorts)
+        if cut_pct > 0 or t_cut_pct > 0:
+            crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, top_cut_percent=t_cut_pct, target_ratio=target_ratio)
             render_w = crop_info["w"]
             render_h = crop_info["h"]
             crop_x = crop_info["x"]
@@ -593,6 +612,11 @@ class VideoComposerService:
         return ";".join(filter_chains), logo_inputs, render_w, render_h
 
     @classmethod
+    def render_visual_stream(cls, *args, **kwargs):
+        """Alias tương thích chuyển tiếp tới parallel_render_visual_stream."""
+        return cls.parallel_render_visual_stream(*args, **kwargs)
+
+    @classmethod
     def parallel_render_visual_stream(
         cls,
         task_id: str,
@@ -615,6 +639,7 @@ class VideoComposerService:
         max_workers: Optional[int] = None,
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
+        top_cut_percent: Optional[float] = 0.0,
         blur_height: Optional[float] = 13.0,
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
@@ -625,6 +650,8 @@ class VideoComposerService:
         rồi ghép lại siêu tốc bằng Concat Demuxer. Tăng tốc từ 3x - 10x so với render đơn luồng.
         """
         total_duration = cls.get_video_duration(video_input_path)
+        # Chỉ những video siêu ngắn dưới 60s mới chạy đơn luồng.
+        # Tất cả video từ 60s trở lên (kể cả 2-5 phút hay 8-15 tiếng) ĐỀU phân đoạn chạy song song tối đa để bứt tốc!
         if total_duration <= 60.0:
             return cls._render_visual_stream_single(
                 task_id=task_id,
@@ -646,6 +673,7 @@ class VideoComposerService:
                 target_ratio=target_ratio,
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
+                top_cut_percent=top_cut_percent,
                 blur_height=blur_height,
                 sub_bottom_offset=sub_bottom_offset,
                 render_subtitles=render_subtitles
@@ -654,29 +682,29 @@ class VideoComposerService:
         cpu_cores = os.cpu_count() or 4
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
 
-        # Tính số luồng xử lý đồng thời thích ứng linh hoạt theo cấu hình máy bất kỳ
+        # Tính số luồng xử lý đồng thời thích ứng linh hoạt theo cấu hình máy bất kỳ:
         if max_workers is not None and max_workers > 0:
             workers = max_workers
         else:
-            # Cho phép ghi đè qua biến môi trường VIDEO_RENDER_WORKERS nếu muốn tùy chỉnh thủ công
             env_workers = os.getenv("VIDEO_RENDER_WORKERS")
             if env_workers and env_workers.isdigit() and int(env_workers) > 0:
                 workers = int(env_workers)
             elif vcodec in ("h264_nvenc", "h264_qsv", "h264_amf"):
-                # GPU phần cứng ASIC: 2 - 3 session đồng thời là ngưỡng bão hòa engine tối ưu nhất, không tràn VRAM
-                workers = max(1, min(3, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
+                # GPU phần cứng (Intel QuickSync / Nvidia NVENC / AMD AMF): 
+                # Chạy 3 - 4 luồng đồng thời khai thác tối đa đa kênh phần cứng ASIC
+                workers = max(2, min(4, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
             else:
-                # CPU Ultrafast: Tận dụng số core CPU, chừa lại 1 core cho hệ điều hành & Web UI mượt mà
-                workers = max(1, min(max(1, cpu_cores - 1), 6) if cpu_cores > 2 else cpu_cores)
+                # Máy không có GPU (chạy CPU libx264 Ultrafast): Dùng đa nhân CPU, chừa 1 core cho hệ thống
+                workers = max(1, min(max(1, cpu_cores - 1), 8) if cpu_cores > 2 else cpu_cores)
 
-        # Phân chia phân đoạn hợp lý:
-        # - Video ngắn (< 5p): 2 phân đoạn
-        # - Video vừa (5p - 30p): mỗi phân đoạn ~ 180s (3 phút)
-        # - Video dài (1h -> 10-15+ tiếng): mỗi phân đoạn ~ 300s (5 phút)
+        # Phân chia phân đoạn thông minh để tận dụng tối đa số worker:
+        # - Video ngắn (< 5 phút): mỗi phân đoạn ~ 60s -> chia đều cho các luồng GPU xử lý đồng loạt
+        # - Video vừa (5 - 30 phút): mỗi phân đoạn ~ 120s - 180s
+        # - Video dài (1 - 15 tiếng): mỗi phân đoạn ~ 300s (5 phút)
         if total_duration <= 300.0:
-            segment_duration = max(30.0, total_duration / 2.0)
+            segment_duration = max(30.0, total_duration / float(max(2, workers)))
         elif total_duration <= 1800.0:
-            segment_duration = 180.0
+            segment_duration = 150.0
         else:
             segment_duration = 300.0
 
@@ -728,11 +756,51 @@ class VideoComposerService:
             start_sec = i * segment_duration
             dur_sec = min(segment_duration, total_duration - start_sec)
             seg_file = temp_seg_dir / f"seg_{i:05d}.mp4"
+
+            # Cắt lát file ASS độc lập cho riêng phân đoạn này:
+            # Timestamp được chuẩn hóa về [0, dur_sec] nên libass hiển thị chính xác 100%
+            seg_ass_path = None
+            if ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
+                seg_ass_file = temp_seg_dir / f"seg_{i:05d}.ass"
+                seg_ass_path = KaraokeSubtitleService.slice_ass_for_interval(
+                    source_ass_path=ass_file_path,
+                    output_slice_path=str(seg_ass_file),
+                    start_sec=start_sec,
+                    dur_sec=dur_sec
+                )
+
+            # Tạo filter_complex riêng cho phân đoạn với file ASS tương ứng
+            seg_filter_complex, seg_logo_inputs, _, _ = cls._build_visual_filter_complex(
+                video_input_path=video_input_path,
+                ass_file_path=seg_ass_path,
+                logo_path=logo_path,
+                logo_position=logo_position,
+                logo_size=logo_size,
+                logo_opacity=logo_opacity,
+                channel_name=channel_name,
+                channel_opacity=channel_opacity,
+                has_mask=has_mask,
+                mask_top=mask_top,
+                mask_left=mask_left,
+                mask_width=mask_width,
+                mask_height=mask_height,
+                backdrop_opacity_hex=backdrop_opacity_hex,
+                target_ratio=target_ratio,
+                source_mask_ass=source_mask_ass,
+                bottom_cut_percent=bottom_cut_percent,
+                top_cut_percent=top_cut_percent,
+                blur_height=blur_height,
+                sub_bottom_offset=sub_bottom_offset,
+                render_subtitles=render_subtitles
+            )
+
             segments_info.append({
                 "index": i,
                 "start": start_sec,
                 "duration": dur_sec,
-                "output": seg_file
+                "output": seg_file,
+                "filter_complex": seg_filter_complex,
+                "logo_inputs": seg_logo_inputs
             })
 
         completed_count = 0
@@ -744,6 +812,8 @@ class VideoComposerService:
             start_sec = seg_info["start"]
             dur_sec = seg_info["duration"]
             seg_file = seg_info["output"]
+            seg_fc = seg_info["filter_complex"]
+            seg_logos = seg_info["logo_inputs"]
 
             if task_id and task_manager.is_cancelled(task_id):
                 return idx, False
@@ -755,15 +825,16 @@ class VideoComposerService:
                 pass
 
             ffmpeg_cmd = get_ffmpeg_cmd()
-            # Sử dụng -ss sau -i để filter subtitles giải mã đúng timestamp và frame của phân đoạn
+            # Fast seek -ss TRƯỚC -i để seek tức thì không decode thừa,
+            # và file ASS đã được cô lập cục bộ theo [0, dur_sec] nên chuẩn tuyệt đối 100%
             cmd = [
                 *ffmpeg_cmd, "-y",
                 "-ss", f"{start_sec:.3f}",
                 "-t", f"{dur_sec:.3f}",
                 "-i", str(video_input_path),
-                *logo_inputs,
+                *seg_logos,
                 "-threads", str(threads_per_worker),
-                "-filter_complex", full_filter_complex,
+                "-filter_complex", seg_fc,
                 "-map", "[v_out]",
                 "-an",
                 "-c:v", vcodec
@@ -793,9 +864,9 @@ class VideoComposerService:
                     "-ss", f"{start_sec:.3f}",
                     "-t", f"{dur_sec:.3f}",
                     "-i", str(video_input_path),
-                    *logo_inputs,
+                    *seg_logos,
                     "-threads", str(threads_per_worker),
-                    "-filter_complex", full_filter_complex,
+                    "-filter_complex", seg_fc,
                     "-map", "[v_out]",
                     "-an",
                     "-c:v", "libx264",
@@ -961,6 +1032,7 @@ class VideoComposerService:
         target_ratio: str = "16:9",
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
+        top_cut_percent: Optional[float] = 0.0,
         blur_height: Optional[float] = 13.0,
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
@@ -984,6 +1056,7 @@ class VideoComposerService:
             target_ratio=target_ratio,
             source_mask_ass=source_mask_ass,
             bottom_cut_percent=bottom_cut_percent,
+            top_cut_percent=top_cut_percent,
             blur_height=blur_height,
             sub_bottom_offset=sub_bottom_offset,
             render_subtitles=render_subtitles
@@ -1138,6 +1211,7 @@ class VideoComposerService:
         max_workers: Optional[int] = None,
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
+        top_cut_percent: Optional[float] = 0.0,
         blur_height: Optional[float] = 13.0,
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
@@ -1169,6 +1243,7 @@ class VideoComposerService:
                 max_workers=max_workers,
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
+                top_cut_percent=top_cut_percent,
                 blur_height=blur_height,
                 sub_bottom_offset=sub_bottom_offset,
                 render_subtitles=render_subtitles
@@ -1194,6 +1269,7 @@ class VideoComposerService:
                 target_ratio=target_ratio,
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
+                top_cut_percent=top_cut_percent,
                 blur_height=blur_height,
                 sub_bottom_offset=sub_bottom_offset,
                 render_subtitles=render_subtitles

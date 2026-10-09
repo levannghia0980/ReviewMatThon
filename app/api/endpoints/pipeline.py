@@ -86,8 +86,14 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 txt_path=txt_path,
                 json_path=json_path
             )
-            db.add(project)
             db.flush()
+
+            # Xóa sạch các câu thoại cũ nếu có (chống nhân đôi câu)
+            db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete(synchronize_session=False)
+            db.commit()
+            for obj in list(db.identity_map.values()):
+                if isinstance(obj, DialogueSegmentModel):
+                    db.expunge(obj)
 
             for d in dialogues:
                 db.add(DialogueSegmentModel(
@@ -155,6 +161,13 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 project.status = "TRANSCRIBED"
                 db.commit()
 
+                # Xóa sạch các câu thoại cũ trước khi lưu (chống nhân đôi câu)
+                db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete(synchronize_session=False)
+                db.commit()
+                for obj in list(db.identity_map.values()):
+                    if isinstance(obj, DialogueSegmentModel):
+                        db.expunge(obj)
+
                 for d in dialogues:
                     db.add(DialogueSegmentModel(
                         task_id=project.id,
@@ -220,6 +233,15 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             DialogueSegmentModel.task_id == project_id
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
+        # Khử trùng lặp tuyệt đối theo index để tránh bị vẽ đè 2 tầng sub
+        seen_d_idx = set()
+        unique_dialogues_db = []
+        for d in dialogues_db:
+            if d.index not in seen_d_idx:
+                seen_d_idx.add(d.index)
+                unique_dialogues_db.append(d)
+        dialogues_db = unique_dialogues_db
+
         if not dialogues_db:
             raise RuntimeError(f"Project #{project_id} không có câu thoại nào trong CSDL để lồng tiếng hay tạo phụ đề!")
 
@@ -243,9 +265,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         cut_pct = getattr(req, "bottom_cut_percent", None)
         if cut_pct is None:
             cut_pct = getattr(req, "mask_height", 12.0)
+        t_cut_pct = float(getattr(req, "top_cut_percent", 0.0) or 0.0)
 
-        if has_mask or (cut_pct and cut_pct > 0):
-            crop_info = VideoComposerService.calculate_crop(vw, vh, cut_pct, target_ratio=crop_ratio)
+        if has_mask or (cut_pct and cut_pct > 0) or t_cut_pct > 0:
+            crop_info = VideoComposerService.calculate_crop(vw, vh, cut_pct, top_cut_percent=t_cut_pct, target_ratio=crop_ratio)
             ass_w = crop_info["w"]
             ass_h = crop_info["h"]
         else:
@@ -278,7 +301,9 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 backdrop_opacity_hex=req.backdrop_opacity_hex,
                 margin_v=margin_v_val,
                 box_style=getattr(req, "box_style", "white_box"),
-                box_padding=box_pad_val
+                box_padding=box_pad_val,
+                blur_height=blur_h_val,
+                sub_bottom_offset=sub_offset_val
             )
         else:
             task_manager.add_log(task_id, "[1/4] ⚡ Chế độ 'Không Sub': Bỏ qua tạo phụ đề Karaoke & dải mờ, chỉ Crop khung hình & lồng tiếng!", "cyan")
@@ -342,8 +367,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         voiceover_mp3=str(voiceover_file),
                         output_mixed_audio=str(mixed_audio_file),
                         dialogue_segments=segments,
-                        bgm_volume_when_speaking=0.03,
-                        bgm_volume_normal=0.03,  # Tạm để bằng khi đang nói (0.03 thay vì 0.70) để giấu tiếng Trung
+                        bgm_volume_when_speaking=0.036,
+                        bgm_volume_normal=0.15,  # 0.15 khi không nói để giữ rõ âm thanh môi trường/BGM, 0.036 khi nói để giấu tiếng Trung
                         voiceover_volume=1.05
                     )
                     audio_res_container["audio_path"] = str(mixed_path)
@@ -378,6 +403,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     backdrop_opacity_hex=req.backdrop_opacity_hex,
                     target_ratio=crop_ratio,
                     bottom_cut_percent=cut_pct,
+                    top_cut_percent=t_cut_pct,
                     blur_height=blur_h_val,
                     sub_bottom_offset=sub_offset_val,
                     render_subtitles=render_subs
@@ -391,6 +417,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Crop Khung Hình & Mã Hóa hoàn tất (Không Sub).", "emerald")
             except Exception as e:
                 video_res_container["error"] = str(e)
+                task_manager.add_log(task_id, f"   ❌ [Lỗi Video] {str(e)}", "rose")
                 task_manager.cancel_task(task_id)  # Dừng ngay audio worker nếu render video lỗi
 
         # Kiểm tra dung lượng ổ đĩa an toàn trước khi chạy video dài
@@ -581,6 +608,13 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
         )
         db.add(project)
         db.flush()
+
+        # Xóa sạch các câu thoại cũ nếu có (chống nhân đôi câu)
+        db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete(synchronize_session=False)
+        db.commit()
+        for obj in list(db.identity_map.values()):
+            if isinstance(obj, DialogueSegmentModel):
+                db.expunge(obj)
 
         # Lưu từng câu thoại vào bảng dialogue_segments
         for d in dialogues:
