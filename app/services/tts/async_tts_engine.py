@@ -261,6 +261,34 @@ class AsyncTTSEngine:
         return None
 
     @classmethod
+    async def fetch_edge_chunk_async(
+        cls,
+        text: str,
+        voice_code: str = "vi-VN-HoaiMyNeural",
+        max_retries: int = 3,
+    ) -> Optional[bytes]:
+        """Tải 1 chunk âm thanh Edge TTS (Hoài My, Nam Minh...) siêu tốc qua luồng in-memory (Auto-Retry 3 lần)."""
+        import io, edge_tts
+        actual_voice = "vi-VN-HoaiMyNeural" if "hoaimy" in voice_code.lower() else voice_code
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                comm = edge_tts.Communicate(text, actual_voice)
+                buf = io.BytesIO()
+                async for chunk in comm.stream():
+                    if chunk.get("type") == "audio":
+                        buf.write(chunk.get("data", b""))
+                val = buf.getvalue()
+                if len(val) > 100:
+                    return val
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"[Edge TTS] Thất bại sau {max_retries} lần thử ({voice_code}): {e}")
+                else:
+                    await asyncio.sleep(0.3)
+        return None
+
+    @classmethod
     async def fetch_capcut_chunk_async(
         cls,
         session: aiohttp.ClientSession,
@@ -443,7 +471,10 @@ class AsyncTTSEngine:
                         t0 = time.time()
                         target_proxy = None if used_direct else current_proxy
 
-                        if engine.lower() == "capcut":
+                        if "Neural" in cur_voice or "hoaimy" in cur_voice.lower():
+                            actual_voice = "vi-VN-HoaiMyNeural" if "hoaimy" in cur_voice.lower() else cur_voice
+                            audio_data = await cls.fetch_edge_chunk_async(text=text, voice_code=actual_voice)
+                        elif engine.lower() == "capcut" or "multi_" in cur_voice:
                             audio_data = await cls.fetch_capcut_chunk_async(
                                 session=session,
                                 text=text,

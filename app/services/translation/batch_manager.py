@@ -8,26 +8,33 @@ class BatchManager:
     CYCLE_TAGS = ["@", "#", "$"]
 
     @classmethod
-    def pack_dialogues_to_tagged_text(cls, segments: List[DialogueSegment]) -> str:
+    def pack_dialogues_to_json_items(cls, segments: List[DialogueSegment]) -> List[Dict[str, Any]]:
         """
-        Đóng gói danh sách câu thoại thành định dạng số thứ tự tự nhiên: 1. 2. 3. ... N.
-        Đơn giản, tự nhiên, chống gộp câu, mỗi câu là 1 số cố định phục vụ lồng tiếng video.
-        Làm sạch 100% các ký tự xuống dòng bên trong mỗi câu.
-        Format:
-        1. 全球诡异爆发
-        2. 人类被赶出城市...
-        ...
-        100. 说是一老人的传承还有三个月就要开启了
+        Đóng gói danh sách câu thoại thành mảng Object JSON tinh gọn cho LLM:
+        [{"i": 1, "zh": "全球诡异爆发。"}, ...]
+        Dùng key ngắn gọn 'i' và 'zh' để tiết kiệm token tối đa cho Gemini Lite.
         """
-        lines = []
+        items = []
         for idx, s in enumerate(segments):
             text = (s.clean_text or s.text or "").strip()
-            # Làm sạch hoàn toàn ký tự xuống dòng và tab bên trong câu
             text = re.sub(r'[\r\n\t]+', ' ', text).strip()
             if not text:
                 text = "..."
-            lines.append(f"{idx + 1}. {text}")
-        return "\n".join(lines)
+            else:
+                if not re.search(r'[\。\！\？\.\!\?\,\，…]$', text):
+                    text = text + "。"
+            items.append({"i": idx + 1, "zh": text})
+        return items
+
+    @classmethod
+    def pack_dialogues_to_tagged_text(cls, segments: List[DialogueSegment]) -> str:
+        """
+        Đóng gói danh sách câu thoại thành chuỗi JSON nạp thẳng vào LLM.
+        """
+        import json
+        items = cls.pack_dialogues_to_json_items(segments)
+        return json.dumps(items, ensure_ascii=False, indent=None)
+
 
 
     @staticmethod

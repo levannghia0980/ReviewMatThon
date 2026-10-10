@@ -107,6 +107,8 @@ class Settings:
     
     # STT ASR Settings (Nhận diện giọng nói đa luồng song song: 6 - 8 luồng tối ưu tốc độ)
     ASR_MAX_WORKERS: int = int(os.getenv("ASR_MAX_WORKERS", "8"))
+    # Độ trễ thời gian STT (mili-giây) trừ về trước để khớp giọng đọc với thoại gốc (Mặc định 20ms)
+    STT_TIME_OFFSET_MS: int = int(os.getenv("STT_TIME_OFFSET_MS", "20"))
 
     # TTS Voiceover Settings: "capcut" (CapCut Cloud SAMI - Khuyên dùng) | "tiktok" (TikTok Legacy)
     TTS_ENGINE: str = os.getenv("TTS_ENGINE", "capcut")
@@ -145,7 +147,7 @@ class Settings:
         """Đọc lại toàn bộ cấu hình từ file .env vào runtime settings và os.environ ngay lập tức"""
         if not cls.ENV_PATH.exists():
             return
-        int_fields = {"ASR_MAX_WORKERS", "TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS"}
+        int_fields = {"ASR_MAX_WORKERS", "STT_TIME_OFFSET_MS", "TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS"}
         with open(cls.ENV_PATH, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()

@@ -129,7 +129,30 @@ class PostProcessor:
         result_map: Dict[int, str] = {}
         n_orig = len(original_segments)
 
-        # TH1: Bóc tách theo số thứ tự tự nhiên (1., 2., 3. ...)
+        # TH0: BÓC TÁCH MẢNG JSON THUẦN (ƯU TIÊN SỐ 1 - CHÍNH XÁC TUYỆT ĐỐI)
+        import json
+        from app.core.llm_client import safe_json_loads
+        parsed_json = safe_json_loads(raw_llm_output)
+        if isinstance(parsed_json, dict):
+            for v in parsed_json.values():
+                if isinstance(v, list):
+                    parsed_json = v
+                    break
+
+        if isinstance(parsed_json, list) and len(parsed_json) > 0:
+            json_matched = 0
+            for item in parsed_json:
+                if isinstance(item, dict):
+                    idx = item.get("i") or item.get("id") or item.get("index")
+                    val = item.get("vi") or item.get("viet") or item.get("text") or item.get("translation") or ""
+                    if idx is not None and isinstance(idx, int) and 1 <= idx <= n_orig:
+                        clean_content = re.sub(r'[\r\n\t]+', ' ', str(val)).strip()
+                        result_map[original_segments[idx - 1].id] = clean_content
+                        json_matched += 1
+            if json_matched > 0:
+                return result_map
+
+        # TH1: Fallback bóc tách theo số thứ tự tự nhiên (1., 2., 3. ...)
         lines = raw_llm_output.splitlines()
         num_matched = 0
 
@@ -140,9 +163,8 @@ class PostProcessor:
             m = re.match(r'^\s*(\d+)[\.\:\-\)\s]+(.*)$', line_str)
             if m:
                 num = int(m.group(1))
-                content = m.group(2).strip()
-                # Xóa sạch các ký tự rác nếu có
-                clean_content = re.sub(r'[\r\n\t]+', ' ', content).strip()
+                # Xóa sạch các ký tự rác và cú pháp JSON nếu có
+                clean_content = cls.extract_clean_vietnamese_text(content)
                 if 1 <= num <= n_orig:
                     result_map[original_segments[num - 1].id] = clean_content
                     num_matched += 1
@@ -229,19 +251,51 @@ class PostProcessor:
         return cls.align_cyclic_modulo_3(original_segments, clean_lines)
 
     @staticmethod
+    def extract_clean_vietnamese_text(text: str) -> str:
+        """
+        Bóc tách và làm sạch triệt để nội dung tiếng Việt:
+        - Nếu chuỗi bị dính JSON: {"i": 1, "vi": "..."} hoặc {"vi": "..."} -> trích xuất nội dung 'vi'
+        - Bỏ ngoặc nhọn, nháy thừa, các tag rác
+        """
+        if not text:
+            return ""
+        t = text.strip()
+        # 1. Thử parse nếu là JSON object hoặc chứa regex "vi": "..."
+        if "{" in t or '"vi"' in t or "'vi'" in t:
+            m_vi = re.search(r'["\']vi["\']\s*:\s*["\']([^"\']+)["\']', t)
+            if m_vi:
+                t = m_vi.group(1).strip()
+            else:
+                try:
+                    import json
+                    json_str = re.search(r'\{.*\}', t)
+                    if json_str:
+                        obj = json.loads(json_str.group(0))
+                        if isinstance(obj, dict) and "vi" in obj:
+                            t = str(obj["vi"]).strip()
+                except Exception:
+                    pass
+            # Xóa các ký tự cú pháp JSON rác còn sót nếu có
+            t = re.sub(r'^\s*\{+\s*["\']?i["\']?\s*:\s*\d+\s*,\s*["\']?vi["\']?\s*:\s*["\']?', '', t)
+            t = re.sub(r'["\']?\s*\}+\s*[\.\,\;]?\s*$', '', t)
+        t = re.sub(r'[\r\n\t]+', ' ', t).strip()
+        return t
+
+    @staticmethod
     def clean_and_normalize_sentence(
         viet_text: str,
         orig_text: str
     ) -> str:
         """
         Chuẩn hóa câu sau khi tra cứu ma trận:
+        - Bóc tách sạch 100% cú pháp JSON {"i": ..., "vi": "..."}
         - Xóa bỏ dấu neo xoay vòng giả lập (. ! ? modulo 3)
         - Khôi phục dấu câu ngữ pháp tự nhiên chuẩn cho TTS
         """
         if not viet_text:
             return ""
             
-        text = viet_text.strip()
+        text = PostProcessor.extract_clean_vietnamese_text(viet_text)
         # Loại bỏ các thẻ XML hoặc số thứ tự đầu câu còn sót
         text = re.sub(r'<\s*/?\s*s(?:\s+id=[\'"]?\d+[\'"]?)?\s*>', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\[#\d+\]', '', text).strip()

@@ -165,7 +165,9 @@ class TranslationPipelineService:
         # =====================================================================
         task_manager.update_task(task_id, step=2, progress=30)
         batches = BatchManager.create_batches(segments, batch_size=batch_size, max_chars=max_chars)
-        task_manager.add_log(task_id, f"[2/5] 🌐 TIẾN TRÌNH DỊCH 2 LLM: Tổng cộng {len(batches)} lô (~{batch_size} câu/lô)...", "cyan")
+        batch_log_msg = f"[2/5] 🌐 TIẾN TRÌNH DỊCH 2 LLM: Tổng cộng {len(batches)} lô (~{batch_size} câu/lô)..."
+        task_manager.add_log(task_id, batch_log_msg, "cyan")
+        print(f"\n🌐 [TIẾN TRÌNH DỊCH] Tổng cộng {len(batches)} lô (~{batch_size} câu/lô) | Dự án #{project.id}: {project.title}", flush=True)
 
         accumulated_entities: Dict[str, Dict[str, Any]] = {}
         all_raw_llm_outputs = []
@@ -185,7 +187,11 @@ class TranslationPipelineService:
             tagged_batch_text = BatchManager.pack_dialogues_to_tagged_text(batch)
             context_text = BatchManager.get_context_from_previous_batch(prev_batch)
 
-            task_manager.add_log(task_id, f"   ⚡ [Lô #{b_num}/{len(batches)}] LLM 1: Đang bóc tách & đồng bộ thực thể (Câu #{batch[0].id} ➔ #{batch[-1].id})...", "cyan")
+            start_bid = getattr(batch[0], 'index', batch[0].id)
+            end_bid = getattr(batch[-1], 'index', batch[-1].id)
+            batch_status_msg = f"   ⚡ [Lô #{b_num}/{len(batches)}] LLM: Đang dịch (Câu #{start_bid} ➔ #{end_bid}, tổng {len(batch)} câu)..."
+            task_manager.add_log(task_id, batch_status_msg, "cyan")
+            print(f"⚡ [LÔ #{b_num}/{len(batches)}] Bắt đầu dịch Câu #{start_bid} ➔ #{end_bid} ({len(batch)} câu)...", flush=True)
 
             # --- LLM 1: TRÍCH XUẤT & ĐỒNG BỘ THỰC THỂ THEO LÔ ---
             new_entities = await extract_batch_entities_pass1_llm(
@@ -268,7 +274,9 @@ class TranslationPipelineService:
                     diag_db.translated_text = s.translated_text
                     diag_db.status = "TRANSLATED"
             db.commit()
-            task_manager.add_log(task_id, f"   💾 [Lô #{b_num}] Đã dịch xong {len(batch_updated)} câu & lưu vào SQLite.", "emerald")
+            l_done = f"   💾 [Lô #{b_num}/{len(batches)}] Đã dịch xong {len(batch_updated)} câu & lưu vào SQLite."
+            task_manager.add_log(task_id, l_done, "emerald")
+            print(f"✔ [LÔ #{b_num}/{len(batches)}] Hoàn thành dịch {len(batch_updated)} câu ➔ Đã lưu SQLite.", flush=True)
 
             pct = int(30 + (b_num / len(batches)) * 45)
             task_manager.update_task(task_id, progress=pct)
@@ -278,7 +286,9 @@ class TranslationPipelineService:
                 task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Đã xong. Đợi 3 giây trước khi xử lý Lô #{b_num + 1}...", "gray")
                 await asyncio.sleep(3)
 
-        task_manager.add_log(task_id, f"   ✔ Hoàn tất dịch toàn bộ {len(batches)} lô với tổng {len(accumulated_entities)} thực thể xuyên suốt.", "emerald")
+        done_all = f"✔ Hoàn tất dịch toàn bộ {len(batches)} lô với tổng {len(accumulated_entities)} thực thể xuyên suốt."
+        task_manager.add_log(task_id, done_all, "emerald")
+        print(f"\n🎉 {done_all}\n", flush=True)
 
         # =====================================================================
         # GIAI ĐOẠN 4: HẬU XỬ LÝ & CHUẨN HÓA (04_post_processed)

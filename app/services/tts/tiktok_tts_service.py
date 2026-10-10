@@ -22,6 +22,9 @@ from app.services.task_manager import task_manager
 from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd
 from app.services.translation.chinese_guard import ensure_project_dialogues_vietnamese
 from app.services.tts.proxy_manager import proxy_manager
+from app.services.tts.adaptive_trimmer import AdaptiveSilenceTrimmer
+from app.services.translation.batch_rehealer import BatchRehealer
+from app.services.tts.timeline_borrower import TimelineBorrower
 
 logger = logging.getLogger(__name__)
 
@@ -124,11 +127,33 @@ def normalize_tts_text(text: str) -> str:
 
 
 def sanitize_to_vietnamese(text: Optional[str], fallback_orig: Optional[str] = None) -> str:
-    """Đảm bảo chuỗi đưa vào đọc là tiếng Việt chuẩn 100%."""
+    """Đảm bảo chuỗi đưa vào đọc là tiếng Việt chuẩn 100%, quét sạch 100% cú pháp JSON, tag rác."""
     t = (text or "").strip()
     if not t:
         t = (fallback_orig or "").strip()
+    
+    # Bóc tách nếu bị dính cú pháp JSON {"i": ..., "vi": "..."} hoặc {"vi": "..."}
+    if "{" in t or '"vi"' in t or "'vi'" in t:
+        m_vi = re.search(r'["\']vi["\']\s*:\s*["\']([^"\']+)["\']', t)
+        if m_vi:
+            t = m_vi.group(1).strip()
+        else:
+            try:
+                import json
+                json_m = re.search(r'\{.*\}', t)
+                if json_m:
+                    parsed = json.loads(json_m.group(0))
+                    if isinstance(parsed, dict) and "vi" in parsed:
+                        t = str(parsed["vi"]).strip()
+            except Exception:
+                pass
+        t = re.sub(r'^\s*\{+\s*["\']?i["\']?\s*:\s*\d+\s*,\s*["\']?vi["\']?\s*:\s*["\']?', '', t)
+        t = re.sub(r'["\']?\s*\}+\s*[\.\,\;]?\s*$', '', t)
+
+    # Xóa các thẻ HTML/XML nếu có (vd: <s>, </s>, <p>...)
+    t = re.sub(r'<[^>]+>', '', t).strip()
     return t
+
 
 
 _GLOBAL_SESSION = requests.Session()
@@ -142,6 +167,8 @@ _AUDIO_CACHE: Dict[str, AudioSegment] = {}
 
 class TikTokTTSService:
     VOICE_MAP = {
+        "vi-VN-HoaiMyNeural": "Hoài My (Nữ Truyền Cảm - Chuẩn Review)",
+        "hoaimy": "Hoài My (Nữ Truyền Cảm - Chuẩn Review)",
         "vi_male_standard": "Nam Tiêu Chuẩn (Giọng đọc truyện)",
         "vi_female_standard": "Nữ Tiêu Chuẩn (Truyền Cảm)",
         "vi_female_huong": "Nữ Hương (Ngọt Ngào)",
@@ -404,11 +431,18 @@ class TikTokTTSService:
         if task_manager.is_cancelled(task_id):
             raise RuntimeError("Tiến trình đã bị người dùng hủy bỏ!")
 
-        # Giải mã In-Memory Buffer sang AudioSegment và gọt bỏ mặc định 125ms khoảng lặng thừa
+        # Bản đồ số từ từng câu để gọt đuôi khoảng lặng thích ứng (<10 từ: -140ms, 10-19 từ: -80ms, >=20 từ: 0ms)
+        dialogue_word_counts = {}
+        for d in dialogues:
+            txt = (d.translated_text or d.clean_text or d.original_text or "").strip()
+            w_count = len(txt.split()) if txt else 0
+            dialogue_word_counts[d.id] = w_count
+
+        # Giải mã In-Memory Buffer sang AudioSegment nguyên bản (việc gọt khoảng lặng sẽ do Adaptive 2:3 Trimmer xử lý)
         for d_id, audio_bytes in raw_audio_bytes_map.items():
             if audio_bytes and len(audio_bytes) > 100:
                 seg = _load_audio_from_bytes(audio_bytes, format="mp3")
-                raw_results_map[d_id] = seg[:-125]
+                raw_results_map[d_id] = seg
 
         # Bổ sung đệm im lặng cho các câu chỉ có dấu chấm / khoảng lặng
         for s_id in silent_dialogue_ids:
@@ -435,7 +469,7 @@ class TikTokTTSService:
                     try:
                         rescued_seg = cls.synthesize_chunk(clean_text, voice_code=voice_code)
                         if rescued_seg and len(rescued_seg) > 100:
-                            raw_results_map[m.id] = rescued_seg[:-125]
+                            raw_results_map[m.id] = rescued_seg
                             task_manager.add_log(task_id, f"✔ Cứu hộ thành công câu #{m.index}!", "emerald")
                     except Exception as e:
                         logger.error(f"Lỗi cứu hộ câu #{m.index}: {e}")
@@ -447,17 +481,25 @@ class TikTokTTSService:
             still_missing = [d.index for d in dialogues if d.id not in raw_results_map]
             raise RuntimeError(f"Chưa hoàn thành đủ 100% số câu! Còn thiếu {len(still_missing)} câu: {still_missing[:10]}... Dừng đóng gói để bảo toàn chất lượng phim!")
 
-        # =====================================================================
-        # PHA 2: TÍNH TOÁN CO GIÃN VỪA KHÍT TIMELINE VÀ DÁN VÀO MASTER (NUMPY SIÊU TỐC)
-        # =====================================================================
-        task_manager.add_log(task_id, f"🎯 [Pha 2/2] Ghép nối {total_count} câu thoại vào Master Audio Track (Engine: NumPy Siêu Tốc)...", "cyan")
+        task_manager.add_log(task_id, f"🎯 Ghép nối {total_count} câu thoại vào Master Audio Track (Engine: NumPy Siêu Tốc)...", "cyan")
 
         fs = 24000
         total_samples = int((total_video_ms / 1000.0) * fs) + fs
         # MONO int16: Giọng đọc chỉ cần mono 1 kênh, giảm dung lượng RAM từ 7GB xuống chỉ 1.7GB cho video 10 tiếng
         master_buffer = np.zeros(total_samples, dtype=np.int16)
-
         current_timeline_sec = 0.0
+        trimmed_sentences_count = 0
+        high_speed_anomalies = []
+
+        # 0. ĐIỀU PHỐI VAY MƯỢN THỜI GIAN TIMELINE (Timeline Borrower)
+        # Tự động vay mượn từ câu liền trước/sau đối với các câu thiếu hụt cửa sổ
+        borrow_transactions = TimelineBorrower.rebalance_timeline(
+            dialogues=dialogues,
+            raw_results_map=raw_results_map,
+            target_ratio=1.35
+        )
+        if borrow_transactions:
+            task_manager.add_log(task_id, f"🤝 [Timeline Borrower] Đã điều phối cho vay {len(borrow_transactions)} câu thiếu hụt thành công!", "emerald")
 
         for idx_d, d in enumerate(dialogues):
             raw_seg = raw_results_map.get(d.id)
@@ -466,28 +508,52 @@ class TikTokTTSService:
 
             raw_dur_sec = len(raw_seg) / 1000.0
 
-            # 1. Điểm bắt đầu lý tưởng theo mốc ASR gốc
+            # 1. Khóa chặt điểm bắt đầu vào đúng mốc thời gian gốc để khớp 100% với phụ đề
             ideal_start_sec = float(d.start_time)
-            
-            # Khóa chặt điểm bắt đầu vào đúng mốc thời gian gốc để khớp 100% với phụ đề
             start_sec = ideal_start_sec
 
             orig_end_sec = float(d.end_time) if (d.end_time and d.end_time > ideal_start_sec) else (ideal_start_sec + raw_dur_sec)
-            
+
             # Khung thời lượng mục tiêu: Vừa khít trọn vẹn 100% từ start đến end của phụ đề gốc
             target_dur = max(0.1, orig_end_sec - ideal_start_sec)
 
-            # Co giãn thích ứng (Adaptive Time Stretch) - Không giới hạn 1.8x để đảm bảo ép vừa khít tuyệt đối
-            if auto_fit_timeline and raw_dur_sec > target_dur:
-                speed_factor = raw_dur_sec / target_dur
-                fitted_seg = cls.time_stretch_by_factor(raw_seg, speed_factor)
+            # 2. ÁP DỤNG THUẬT TOÁN GỌT THÍCH ỨNG TỶ LỆ 1:2 (Adaptive 1:2 Silence Trimmer)
+            # Đầu gánh 1/3 (max 100ms), Đuôi gánh 2/3 (max 200ms) để kéo tỷ lệ về 1.25x
+            seg_to_stretch, trim_meta = AdaptiveSilenceTrimmer.trim_audio_segment(
+                raw_seg,
+                target_dur_sec=target_dur,
+                target_ratio=1.25,
+                max_head_ms=100,
+                max_tail_ms=200
+            )
+            if trim_meta.get("trimmed"):
+                trimmed_sentences_count += 1
+                # Báo trực tiếp ra Terminal để người dùng theo dõi
+                AdaptiveSilenceTrimmer.log_trim_to_terminal(d.index, raw_dur_sec, target_dur, trim_meta)
+
+            trimmed_dur_sec = len(seg_to_stretch) / 1000.0
+            cur_ratio = trimmed_dur_sec / target_dur
+
+            # Kiểm tra ngưỡng bất thường > 2.0x để kích hoạt cảnh báo Vá Lô (Batch Reheal)
+            if cur_ratio > 2.0:
+                high_speed_anomalies.append({
+                    "dialogue_id": d.id,
+                    "index": d.index,
+                    "target_dur": target_dur,
+                    "trimmed_dur": trimmed_dur_sec,
+                    "ratio": cur_ratio
+                })
+                # Báo cảnh báo câu lỗi và số lô trực tiếp ra Terminal
+                BatchRehealer.log_anomaly_to_terminal(d.index, cur_ratio, target_dur, trimmed_dur_sec)
+
+            # Co giãn thích ứng (Adaptive Time Stretch): Chỉ tăng tốc khi âm thanh sau gọt vẫn dài hơn khung gốc
+            if auto_fit_timeline and trimmed_dur_sec > target_dur:
+                speed_factor = trimmed_dur_sec / target_dur
+                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, speed_factor)
                 actual_speed = speed_factor
             else:
-                fitted_seg = raw_seg
+                fitted_seg = seg_to_stretch
                 actual_speed = 1.0
-
-            # BẢO TOÀN 100% ÂM THANH - TUYỆT ĐỐI KHÔNG CẮT CỤT ĐUÔI CÂU:
-            # Giữ trọn vẹn từng từ ngữ đến hết câu, không bao giờ dùng lệnh chém đuôi âm thanh.
 
             seg_dur_sec = len(fitted_seg) / 1000.0
 
@@ -522,6 +588,17 @@ class TikTokTTSService:
         # Lưu thay đổi thông số voice_duration vào CSDL
         db.commit()
 
+        # Báo cáo hiệu quả gọt thích ứng và cảnh báo câu vượt ngưỡng > 2.0x
+        if trimmed_sentences_count > 0:
+            trim_msg = f"✂️ [Adaptive 1:2 Trimmer] Đã gọt thích ứng {trimmed_sentences_count}/{total_count} câu (giảm tối đa phình âm thanh, đầu gánh 1/3 max 100ms, đuôi gánh 2/3 max 200ms)."
+            task_manager.add_log(task_id, trim_msg, "emerald")
+            print(f"\n{trim_msg}", flush=True)
+
+        if high_speed_anomalies:
+            reheal_summary = BatchRehealer.format_batch_reheal_summary(high_speed_anomalies)
+            task_manager.add_log(task_id, reheal_summary, "amber")
+            print(f"\n{reheal_summary}\n", flush=True)
+
         # Xuất file âm thanh siêu tốc sang FFmpeg qua Streaming Pipe
         # KHÔNG tobytes() toàn bộ và KHÔNG bọc qua AudioSegment để tránh nhân bản thêm 7GB RAM
         settings.OUTPUT_VOICEOVER_DIR.mkdir(parents=True, exist_ok=True)
@@ -543,7 +620,7 @@ class TikTokTTSService:
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
+            stderr=subprocess.DEVNULL
         )
         chunk_samples = fs * 60  # Mỗi khối 60 giây (~120KB)
         for i in range(0, total_samples, chunk_samples):

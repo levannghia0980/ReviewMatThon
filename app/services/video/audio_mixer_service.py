@@ -13,8 +13,8 @@ class AudioMixerService:
         voiceover_mp3: str,
         output_mixed_audio: str,
         dialogue_segments: Optional[List[DialogueSegment]] = None,
-        bgm_volume_when_speaking: float = 0.036,  # 0.036 khi nói để triệt tiêu tiếng Trung
-        bgm_volume_normal: float = 0.15,          # 0.15 khi không nói để giữ rõ âm thanh môi trường và BGM
+        bgm_volume_when_speaking: float = 0.08,  # 0.08 (8%) khi đang có lời thuyết minh tiếng Việt
+        bgm_volume_normal: float = 0.36,         # 0.36 (36%) khi không nói để giữ rõ âm thanh môi trường và BGM
         voiceover_volume: float = 1.05
     ) -> str:
         """

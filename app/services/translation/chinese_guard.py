@@ -83,6 +83,24 @@ def sanitize_to_vietnamese(text: Optional[str], fallback_orig: Optional[str] = "
     candidate = (text or "").strip()
     orig = (fallback_orig or "").strip()
 
+    # Bóc tách nếu bị dính cú pháp JSON {"i": ..., "vi": "..."}
+    if "{" in candidate or '"vi"' in candidate or "'vi'" in candidate:
+        m_vi = re.search(r'["\']vi["\']\s*:\s*["\']([^"\']+)["\']', candidate)
+        if m_vi:
+            candidate = m_vi.group(1).strip()
+        else:
+            try:
+                import json
+                json_m = re.search(r'\{.*\}', candidate)
+                if json_m:
+                    parsed = json.loads(json_m.group(0))
+                    if isinstance(parsed, dict) and "vi" in parsed:
+                        candidate = str(parsed["vi"]).strip()
+            except Exception:
+                pass
+        candidate = re.sub(r'^\s*\{+\s*["\']?i["\']?\s*:\s*\d+\s*,\s*["\']?vi["\']?\s*:\s*["\']?', '', candidate)
+        candidate = re.sub(r'["\']?\s*\}+\s*[\.\,\;]?\s*$', '', candidate).strip()
+
     # Nếu text rỗng hoàn toàn, kiểm tra fallback_orig
     if not candidate:
         if not orig:

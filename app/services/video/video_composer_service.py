@@ -379,8 +379,8 @@ class VideoComposerService:
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=segments,
-                    bgm_volume_when_speaking=0.036,
-                    bgm_volume_normal=0.15,  # 0.15 khi không nói để giữ rõ âm thanh môi trường/BGM, 0.036 khi nói để giấu tiếng Trung
+                    bgm_volume_when_speaking=0.08,  # 0.08 (8%) khi đang có thuyết minh tiếng Việt
+                    bgm_volume_normal=0.36,  # 0.36 (36%) khi không nói để giữ rõ âm thanh môi trường và BGM
                     voiceover_volume=1.05
                 )
                 audio_source = str(mixed_path)
@@ -483,7 +483,7 @@ class VideoComposerService:
     def _build_visual_filter_complex(
         cls,
         video_input_path: str,
-        ass_file_path: str,
+        ass_file_path: Optional[str] = None,
         logo_path: Optional[str] = None,
         logo_position: str = "top_left",
         logo_size: int = 120,
@@ -506,13 +506,15 @@ class VideoComposerService:
     ) -> Tuple[str, List[str], int, int]:
         """Tạo chuỗi filter_complex chuẩn xác dùng chung cho cả render đơn luồng và song song."""
         # Chuẩn hóa đường dẫn file ASS an toàn tuyệt đối cho FFmpeg trên mọi hệ điều hành (kể cả ổ C:, D:, E: trên Windows hoặc Linux)
-        ass_path_obj = Path(ass_file_path).resolve()
-        ass_posix = str(ass_path_obj).replace("\\", "/")
-        if sys.platform == "win32" and ":" in ass_posix:
-            drive, rest = ass_posix.split(":", 1)
-            ass_escaped = f"{drive}\\:{rest}".replace("'", "\\'")
-        else:
-            ass_escaped = ass_posix.replace("'", "\\'")
+        ass_escaped = None
+        if ass_file_path:
+            ass_path_obj = Path(ass_file_path).resolve()
+            ass_posix = str(ass_path_obj).replace("\\", "/")
+            if sys.platform == "win32" and ":" in ass_posix:
+                drive, rest = ass_posix.split(":", 1)
+                ass_escaped = f"{drive}\\:{rest}".replace("'", "\\'")
+            else:
+                ass_escaped = ass_posix.replace("'", "\\'")
 
         # Chuẩn hóa đường dẫn file mask ASS nếu có
         mask_ass_escaped = None
@@ -621,7 +623,7 @@ class VideoComposerService:
         cls,
         task_id: str,
         video_input_path: str,
-        ass_file_path: str,
+        ass_file_path: Optional[str],
         output_temp_video: str,
         logo_path: Optional[str] = None,
         logo_position: str = "top_left",

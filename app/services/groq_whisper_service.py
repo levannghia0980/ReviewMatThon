@@ -524,6 +524,21 @@ class GroqWhisperService:
         # Chuẩn hóa khử overlap êm ái, giữ nguyên 100% timecode tự nhiên của Whisper (khớp đúng miệng nhân vật)
         final_segments = cls._sanitize_timestamps(cleaned_segments)
 
+        # ÁP DỤNG TRỪ ĐỘ TRỄ THỜI GIAN (STT TIME OFFSET) VỀ TRƯỚC:
+        # Mặc định trừ STT_TIME_OFFSET_MS (ví dụ 10ms = 0.01s).
+        # Nếu câu đầu (hoặc câu bất kỳ) start < offset -> kẹp start = 0.0s, end vẫn trừ offset, câu đó chấp nhận nhanh hơn.
+        # Các câu tiếp theo tuần tự start và end đều được trừ offset để giọng đọc mới không bị chậm hơn giọng gốc.
+        offset_ms = getattr(settings, "STT_TIME_OFFSET_MS", 20) or 0
+        offset_sec = round(float(offset_ms) / 1000.0, 3)
+        if offset_sec > 0:
+            logger.info(f"[Groq Whisper] Áp dụng trừ offset {offset_ms}ms ({offset_sec}s) về trước cho {len(final_segments)} câu thoại...")
+            for seg in final_segments:
+                new_start = max(0.0, round(seg.start - offset_sec, 3))
+                new_end = max(round(new_start + 0.1, 3), round(seg.end - offset_sec, 3))
+                seg.start = new_start
+                seg.end = new_end
+                seg.duration = round(new_end - new_start, 3)
+
         # Lưu file output/transcripts/
         base_name = Path(audio_path).stem.replace("_16k", "").replace("_compressed", "")
         srt_file = settings.OUTPUT_TRANSCRIPTS_DIR / f"{base_name}.srt"

@@ -14,6 +14,8 @@ class TranslationAuditor:
         Kiểm định chất lượng bản dịch:
         - Phát hiện các câu bị thiếu bản dịch (rỗng).
         - Phát hiện các câu bị rò rỉ chữ Hán (Hanzi Leak).
+        - Phát hiện câu bị LỆCH DÒNG / PHÌNH TO BẤT THƯỜNG (Length Ratio Sanity Guard):
+          Nếu câu tiếng Trung siêu ngắn (<= 4 chữ Hán, < 1.2s) mà câu tiếng Việt dài bất thường (> 16 từ).
         Trả về (danh_sách_hợp_lệ, danh_sách_lỗi_cần_vá).
         """
         valid_segs: List[DialogueSegment] = []
@@ -21,12 +23,22 @@ class TranslationAuditor:
 
         for s in segments:
             viet = (getattr(s, 'translated_text', '') or '').strip()
+            orig = (getattr(s, 'clean_text', '') or getattr(s, 'text', '') or '').strip()
+            dur = getattr(s, 'duration', 0.0) or 0.0
+
             if not viet:
                 error_segs.append(s)
             elif HANZI_REGEX.search(viet):
                 error_segs.append(s)
             else:
-                valid_segs.append(s)
+                # Kiểm tra tỷ lệ lệch dòng bất thường:
+                # Câu Trung <= 4 ký tự Hán, thời lượng <= 1.2s nhưng tiếng Việt > 16 từ
+                viet_word_count = len(viet.split())
+                hanzi_count = len(HANZI_REGEX.findall(orig)) if orig else 0
+                if 0 < hanzi_count <= 4 and dur <= 1.2 and viet_word_count > 16:
+                    error_segs.append(s)
+                else:
+                    valid_segs.append(s)
 
         return valid_segs, error_segs
 
@@ -50,24 +62,57 @@ class TranslationAuditor:
         # Giới hạn số lượng câu để xử lý gọn gàng
         target_segments = error_segments[:max_fix_limit]
 
-        prompt_lines = []
-        for s in target_segments:
+        import json
+        from app.services.postprocessing.post_processor import PostProcessor
+        from app.core.llm_client import safe_json_loads
+        from app.services.translation.llm_translator import translate_batch_pass2_llm
+
+        items = []
+        id_map = {}
+        for local_idx, s in enumerate(target_segments, 1):
+            id_map[local_idx] = s.id
             orig = (s.clean_text or s.text or "").strip()
             if not orig:
-                orig = "."
-            prompt_lines.append(f"{s.id}. {orig}")
+                orig = "..."
+            items.append({"i": local_idx, "zh": orig})
 
-        numbered_prompt = "\n".join(prompt_lines)
+        tagged_json_text = json.dumps(items, ensure_ascii=False)
         
-        from app.services.translation.llm_translator import translate_batch_pass2_llm
         try:
             fixed_output = await translate_batch_pass2_llm(
-                tagged_text=numbered_prompt,
+                tagged_text=tagged_json_text,
                 genre=genre,
                 provider=provider
             )
-            from app.services.postprocessing.post_processor import PostProcessor
-            return PostProcessor.parse_tagged_translation(fixed_output, target_segments)
+            
+            parsed = safe_json_loads(fixed_output)
+            if isinstance(parsed, dict):
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        parsed = v
+                        break
+
+            result_map: Dict[int, str] = {}
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        loc_id = item.get("i")
+                        val = item.get("vi") or item.get("viet") or item.get("text") or ""
+                        clean_val = PostProcessor.extract_clean_vietnamese_text(str(val))
+                        # Bộ kiểm tra độ khớp & sạch chữ Hán
+                        if loc_id in id_map and clean_val:
+                            # Nếu câu trả về sạch chữ Hán và có nội dung
+                            if not HANZI_REGEX.search(clean_val):
+                                real_id = id_map[loc_id]
+                                result_map[real_id] = clean_val
+
+            # Nếu vì lý do nào đó JSON parse không đủ, fallback qua bóc tách tự nhiên bảo toàn id_map
+            if not result_map:
+                fallback_map = PostProcessor.parse_tagged_translation(fixed_output, target_segments)
+                return fallback_map
+
+            return result_map
         except Exception as e:
             print(f"[TranslationAuditor] Warning: Lỗi vá tự động: {e}")
             return {}
+

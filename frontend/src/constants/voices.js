@@ -1,5 +1,6 @@
 export const ALL_VOICES = [
   // --- Top Giọng Nữ Review Phim & Truyện Tranh Đỉnh Cao ---
+  { id: "vi-VN-HoaiMyNeural", name: "Nữ: Hoài My (Truyền cảm, Ngọt ngào - Mới)", gender: "female" },
   { id: "multi_female_richgirl_uranus_bigtts", name: "Nữ: Review Phim new (Sang trọng, Cuốn hút, Kể chuyện đỉnh)", gender: "female" },
   { id: "BV074_streaming", name: "Nữ: Cô Gái Hoạt Ngôn (Trẻ trung, Review Trend - Khuyên dùng)", gender: "female" },
   { id: "vi_female_huong", name: "Nữ: Hương (Phổ thông miền Bắc, Chuẩn Review)", gender: "female" },

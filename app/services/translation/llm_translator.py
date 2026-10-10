@@ -229,8 +229,8 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
 
     prompt_parts = []
 
-    # 1. PHẦN 1: KỊCH BẢN ĐẦU VÀO CẦN DỊCH (ĐẶT Ở ĐẦU)
-    prompt_parts.append(f"""=== PHẦN 1: KỊCH BẢN ĐẦU VÀO CẦN DỊCH LỒNG TIẾNG ===
+    # 1. PHẦN 1: KỊCH BẢN ĐẦU VÀO DẠNG JSON
+    prompt_parts.append(f"""=== PHẦN 1: KỊCH BẢN ĐẦU VÀO (DANH SÁCH JSON CẦN DỊCH) ===
 {tagged_text.strip()}""")
 
     # 2. PHẦN 2: BẢNG TÊN RIÊNG & THỰC THỂ KHÓA CỨNG (NẾU CÓ)
@@ -245,33 +245,27 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
 - Yêu cầu: Thoát ý, mượt mà, thuần Việt, chuẩn kịch bản lồng tiếng video.
 - Câu từ súc tích, gãy gọn, giàu cảm xúc, vừa vặn nhịp nói video, tuyệt đối không bôi chữ lan man.""")
 
-    # 4. PHẦN 4: MỆNH LỆNH QUAN TRỌNG NHẤT (ĐẶT Ở CUỐI CÙNG THEO RECENCY BIAS)
-    lines_in = [l.strip() for l in tagged_text.splitlines() if l.strip()]
-    expected_count = len(lines_in)
+    # 4. PHẦN 4: QUY CHUẨN JSON ĐẦU RA 1:1
+    try:
+        input_items = json.loads(tagged_text)
+        expected_count = len(input_items)
+    except Exception:
+        expected_count = len([l for l in tagged_text.splitlines() if l.strip()])
 
-    prompt_parts.append(f"""=== PHẦN 4: MỆNH LỆNH QUAN TRỌNG NHẤT - BẮT BUỘC TUÂN THỦ 100% (ĐỌC KỸ TRƯỚC KHI XUẤT) ===
-1. QUY TẮC ĐÁNH SỐ THỨ TỰ 1:1 PHỤC VỤ LỒNG TIẾNG VIDEO (SỐNG CÒN):
-   - Kịch bản đầu vào ở Phần 1 có CHÍNH XÁC {expected_count} câu, được đánh số thứ tự tuần tự từ 1. đến {expected_count}.
-   - BẢN DỊCH TRẢ VỀ BẮT BUỘC PHẢI CÓ ĐỦ CHÍNH XÁC {expected_count} DÒNG, ĐÁNH SỐ TỪ 1. ĐẾN {expected_count}. TUYỆT ĐỐI KHÔNG ĐƯỢC THIẾU BẤT KỲ MỘT SỐ NÀO!
-   - ĐỊNH DẠNG ĐẦU RA 1:1 BẮT BUỘC:
-     1. Lời dịch câu 1...
-     2. Lời dịch câu 2...
-     ...
-     {expected_count}. Lời dịch câu {expected_count}...
-   - QUY TẮC BẢO TOÀN CÂU VỤN / CÂU RÁC / TỪ CẢM THÁN:
-     * Dù câu gốc cực ngắn (1-2 chữ như "走", "停", "哦", tiếng thở, tiếng rên, từ cảm thán), VẪN BẮT BUỘC PHẢI ĐÁNH SỐ CỦA NÓ (Ví dụ: "41. Đi thôi." hoặc nếu là câu rác không cần dịch thì để "41. ...").
-     * TUYỆT ĐỐI CẤM gộp 2 câu vào 1 số.
-     * TUYỆT ĐỐI CẤM tách 1 câu thành 2 số.
-     * TUYỆT ĐỐI CẤM bỏ qua bất kỳ số thứ tự nào.
-   - QUY TẮC CẤM TÁCH VẾ CÂU TRẠNG NGỮ (CHỐNG TỰ PHÁT SINH SỐ MỚI):
-     * Một dòng đầu vào (ví dụ '63. 就在这时，虾仁忽然看到...') dù có chứa nhiều vế câu hay trạng ngữ ngăn cách bằng dấu phẩy, BẮT BUỘC PHẢI DỊCH TRỌN VẸN TRONG 1 DÒNG DUY NHẤT VỚI 1 SỐ THỨ TỰ (Ví dụ: '63. Ngay lúc này, Hà Nhân chợt nhìn thấy...').
-     * TUYỆT ĐỐI CẤM tách vế trạng ngữ ra một dòng riêng làm phát sinh thêm số thứ tự mới!
-     * Mỗi số thứ tự N ở bản dịch PHẢI tương ứng đúng 100% với duy nhất câu thứ N ở kịch bản gốc.
-   - QUY TẮC DẤU PHẨY CÂU NGẮN (HỖ TRỢ GỘP CÂU LỒNG TIẾNG):
-     * CHỈ ÁP DỤNG CHO CÂU NGẮN (dưới 6 từ): Nếu là trạng ngữ/thán từ/vế mở đầu dở dang của cùng 1 người nói/dẫn truyện -> Kết thúc bằng DẤU PHẨY (,) ở cuối dòng (ví dụ: 'Lúc này,'). Nếu là vế bổ ngữ ngắn của câu trước cùng người nói -> Bắt đầu bằng DẤU PHẨY (,) ở đầu dòng.
-     * TUYỆT ĐỐI CẤM PHẨY CÂU DÀI: Câu dài (từ 6 từ trở lên) hoặc câu đã đủ chủ vị BẮT BUỘC kết thúc bằng dấu chấm (.), hỏi (?) hoặc than (!), cấm phẩy linh tinh.
-     * CẤM PHẨY KHI ĐỔI NGÔI NÓI: Lời dẫn truyện và lời nhân vật, hoặc 2 nhân vật đối thoại khác nhau BẮT BUỘC dùng dấu chấm (.), tuyệt đối cấm dùng dấu phẩy nối kết.
-2. CHỈ TRẢ VỀ DANH SÁCH TỪ 1. ĐẾN {expected_count}., tuyệt đối không chèn tiêu đề phân đoạn, không kèm lời chào hay giải thích ngoài lề.""")
+    prompt_parts.append(f"""=== PHẦN 4: MỆNH LỆNH QUAN TRỌNG NHẤT - TRẢ VỀ JSON THUẦN (STRICT JSON) ===
+1. Đầu vào là một danh sách JSON gồm {expected_count} phần tử có trường "i" (chỉ số) và "zh" (tiếng Trung).
+2. ĐẦU RA BẮT BUỘC LÀ MẢNG JSON HỢP LỆ gồm ĐỦ CHÍNH XÁC {expected_count} PHẦN TỬ với 2 trường "i" và "vi":
+[
+  {{"i": 1, "vi": "Lời dịch câu 1..."}},
+  {{"i": 2, "vi": "Lời dịch câu 2..."}},
+  ...
+  {{"i": {expected_count}, "vi": "Lời dịch câu {expected_count}..."}}
+]
+3. QUY TẮC BẮT BUỘC:
+   - "i" PHẢI giữ nguyên chính xác giá trị tương ứng từ đầu vào (từ 1 đến {expected_count}).
+   - "vi" là bản dịch tiếng Việt tương ứng đúng 100% với nghĩa của câu "zh" cùng chỉ số "i".
+   - Dù câu gốc ngắn 1-2 chữ ("走", "停", tiếng thở) cũng PHẢI có một object tương ứng. TUYỆT ĐỐI CẤM gộp câu, CẤM bỏ sót bất kỳ chỉ số "i" nào!
+   - CHỈ TRẢ VỀ DUY NHẤT MẢNG JSON HỢP LỆ, không kèm giải thích, không markdown bọc ngoài nếu không cần thiết.""")
 
     user_prompt = "\n\n".join(prompt_parts)
 
@@ -289,7 +283,11 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
             headers = {"Content-Type": "application/json"}
             payload = {
                 "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{u_prompt}"}]}],
-                "generationConfig": {"temperature": 0.2, "topP": 0.95}
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "topP": 0.95,
+                    "responseMimeType": "application/json"
+                }
             }
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await post_gemini_with_retry(client, url, headers, payload)
@@ -314,7 +312,8 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": u_prompt}
                 ],
-                "temperature": 0.2
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"}
             }
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await post_openrouter_with_retry(client, url, headers, payload)
@@ -326,31 +325,32 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
                     return choices[0]["message"]["content"].strip()
                 raise RuntimeError(f"OpenRouter API không trả về nội dung: {data}")
 
-    # VÒNG LẶP AUTO-RETRY NẾU SỐ LƯỢNG DÒNG KHÔNG BẰNG CHÍNH XÁC N
+    # VÒNG LẶP AUTO-RETRY KIỂM TRA SỐ LƯỢNG ITEM JSON
     current_prompt = user_prompt
     for attempt in range(1, 4):
         ans = await _execute_single_call(current_prompt)
-        # Đếm số dòng bắt đầu bằng số thứ tự
-        matched_nums = set()
-        for line in ans.splitlines():
-            m = re.match(r'^\s*(\d+)[\.\:\-\)\s]+', line)
-            if m:
-                matched_nums.add(int(m.group(1)))
+        
+        # Bóc tách JSON
+        parsed_items = safe_json_loads(ans)
+        if isinstance(parsed_items, dict):
+            # Tìm mảng bên trong dict nếu LLM bọc dict
+            for v in parsed_items.values():
+                if isinstance(v, list):
+                    parsed_items = v
+                    break
 
-        if len(matched_nums) == expected_count and max(matched_nums) == expected_count:
+        if isinstance(parsed_items, list) and len(parsed_items) >= expected_count:
             return ans
 
-        # Nếu thiếu hoặc thừa số, bắt dịch lại ngay
         if attempt < 3:
+            actual_len = len(parsed_items) if isinstance(parsed_items, list) else 0
             import logging
             logging.getLogger(__name__).warning(
-                f"⚠️ [Strict Validation] Lần {attempt}: Gửi {expected_count} câu nhưng LLM trả về {len(matched_nums)} số! "
-                f"Tự động yêu cầu dịch lại ngay lập tức..."
+                f"⚠️ [Strict JSON Validation] Lần {attempt}: Gửi {expected_count} câu nhưng LLM trả về {actual_len} phần tử! Dịch lại..."
             )
             retry_note = (
-                f"\n\n[CẢNH BÁO LỖI Ở LẦN TRƯỚC]: Lần trước bạn trả về {len(matched_nums)} câu, KHÔNG KHỚP với {expected_count} câu gốc! "
-                f"HÃY DỊCH LẠI VÀ BẮT BUỘC XUẤT ĐỦ CHÍNH XÁC TỪ 1. ĐẾN {expected_count}. "
-                f"DÙ LÀ CÂU RÁC HOẶC TỪ CẢM THÁN CŨNG PHẢI ĐÁNH SỐ VÀO!"
+                f"\n\n[CẢNH BÁO LỖI]: Mảng JSON bạn trả về có {actual_len} phần tử, thiếu so với {expected_count} câu gốc! "
+                f"HÃY DỊCH LẠI VÀ ĐẢM BẢO TRẢ VỀ ĐỦ CHÍNH XÁC {expected_count} PHẦN TỬ TỪ i=1 ĐẾN i={expected_count}!"
             )
             current_prompt = user_prompt + retry_note
         else:

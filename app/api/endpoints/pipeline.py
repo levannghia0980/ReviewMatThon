@@ -367,8 +367,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         voiceover_mp3=str(voiceover_file),
                         output_mixed_audio=str(mixed_audio_file),
                         dialogue_segments=segments,
-                        bgm_volume_when_speaking=0.036,
-                        bgm_volume_normal=0.15,  # 0.15 khi không nói để giữ rõ âm thanh môi trường/BGM, 0.036 khi nói để giấu tiếng Trung
+                        bgm_volume_when_speaking=0.08,  # 0.08 (8%) khi đang có thuyết minh tiếng Việt
+                        bgm_volume_normal=0.36,  # 0.36 (36%) khi không nói để giữ rõ âm thanh môi trường và BGM
                         voiceover_volume=1.05
                     )
                     audio_res_container["audio_path"] = str(mixed_path)
@@ -386,6 +386,45 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         def _video_worker():
             try:
+                # Nếu có render sub: Kiểm tra và load mốc timeline mới nhất đã được balance
+                if render_subs:
+                    db_video = SessionLocal()
+                    try:
+                        latest_diags = db_video.query(DialogueSegmentModel).filter(
+                            DialogueSegmentModel.task_id == project.id
+                        ).order_by(DialogueSegmentModel.index.asc()).all()
+                        if latest_diags:
+                            # Tái sinh phụ đề Karaoke ASS khớp 100% với mốc mới sau cân bằng
+                            from app.schemas.transcript import DialogueSegment
+                            synced_segments = [
+                                DialogueSegment(
+                                    id=d.index,
+                                    start=float(d.start_time),
+                                    end=float(d.end_time),
+                                    duration=float(d.duration or (d.end_time - d.start_time)),
+                                    text=d.original_text,
+                                    clean_text=d.clean_text,
+                                    translated_text=d.translated_text
+                                ) for d in latest_diags
+                            ]
+                            KaraokeSubtitleService.create_karaoke_ass_file(
+                                segments=synced_segments,
+                                output_ass_path=str(ass_file),
+                                video_title=project.title,
+                                width=ass_w,
+                                height=ass_h,
+                                font_size=font_sz,
+                                highlight_color=highlight_c,
+                                backdrop_opacity_hex=req.backdrop_opacity_hex,
+                                margin_v=margin_v_val,
+                                box_style=getattr(req, "box_style", "white_box"),
+                                box_padding=box_pad_val,
+                                blur_height=blur_h_val,
+                                sub_bottom_offset=sub_offset_val
+                            )
+                    finally:
+                        db_video.close()
+
                 v_ok = VideoComposerService.render_visual_stream(
                     task_id=task_id,
                     video_input_path=project.video_path,
@@ -415,6 +454,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Render Karaoke + Che chữ gốc hoàn tất.", "emerald")
                 else:
                     task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Crop Khung Hình & Mã Hóa hoàn tất (Không Sub).", "emerald")
+
             except Exception as e:
                 video_res_container["error"] = str(e)
                 task_manager.add_log(task_id, f"   ❌ [Lỗi Video] {str(e)}", "rose")

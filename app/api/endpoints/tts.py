@@ -75,18 +75,21 @@ def get_voices():
 
 
 @router.post("/single", response_model=TTSSingleResponse, summary="Thử nghiệm tạo giọng đọc TTS cho 1 câu đơn lẻ")
-def synthesize_single_preview(req: TTSSingleRequest):
+async def synthesize_single_preview(req: TTSSingleRequest):
     try:
         from app.services.tts.async_tts_engine import AsyncTTSEngine
         from app.services.tts.tiktok_tts_service import _load_audio_from_bytes, TikTokTTSService
-        import asyncio
         import aiohttp
 
         async def _fetch_audio():
             async with aiohttp.ClientSession() as sess:
                 raw = None
+                # 0. Nếu là giọng Neural (Hoài My, Nam Minh...)
+                if "Neural" in req.voice_code or "hoaimy" in req.voice_code.lower():
+                    actual_voice = "vi-VN-HoaiMyNeural" if "hoaimy" in req.voice_code.lower() else req.voice_code
+                    raw = await AsyncTTSEngine.fetch_edge_chunk_async(req.text, voice_code=actual_voice)
                 # 1. Nếu là giọng CapCut (chứa multi_)
-                if "multi_" in req.voice_code:
+                elif "multi_" in req.voice_code:
                     raw = await AsyncTTSEngine.fetch_capcut_chunk_async(
                         sess, req.text, voice_code=req.voice_code, cookie=req.session_id
                     )
@@ -102,11 +105,7 @@ def synthesize_single_preview(req: TTSSingleRequest):
                     )
                 return raw
 
-        loop = asyncio.new_event_loop()
-        try:
-            raw_bytes = loop.run_until_complete(_fetch_audio())
-        finally:
-            loop.close()
+        raw_bytes = await _fetch_audio()
 
         if not raw_bytes or len(raw_bytes) < 100:
             raise RuntimeError(f"Không thể tạo âm thanh cho giọng '{req.voice_code}'. Vui lòng thử lại hoặc đổi giọng khác.")

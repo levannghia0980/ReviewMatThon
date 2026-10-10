@@ -175,10 +175,10 @@ COMMON_RULES = """QUY TẮC DỊCH THUẬT LỒNG TIẾNG CỐT LÕI (BẮT BU�
    - VỪA VẶN NHỊP NÓI: Câu văn thanh thoát, giàu nhạc điệu, ôm khít nhịp video, không bôi thêm từ đệm rườm rà lan man.
    - CHỐNG LẶP TỪ: Tránh dịch lặp từ chắp vá ngớ ngẩn (CẤM: 'đao đeo bên mình đao đeo lại bên hông').
 
-3. BẢO TOÀN ĐÁNH SỐ 1:1 ĐỂ KHỚP TIMELINE SRT (MỆNH LỆNH SỐNG CÒN):
-   - Có N câu đầu vào thì BẮT BUỘC trả về đúng N câu đầu ra, đánh số [Số]. [Lời dịch].
-   - Dù câu gốc cực ngắn (tiếng thở, thán từ), vẫn dịch đúng số đó. Câu rác/tạp âm không cần dịch thì để "[Số]. ...", tuyệt đối KHÔNG XÓA SỐ.
-   - TUYỆT ĐỐI CẤM gộp câu, CẤM tách dòng làm lệch số thứ tự SRT.
+3. ÁNH XẠ JSON 1:1 CHÍNH XÁC TUYỆT ĐỐI (CẤM LỆCH VỊ TRÍ):
+   - Mỗi phần tử {"i": N, "zh": "..."} đầu vào bắt buộc khớp đúng nghĩa với {"i": N, "vi": "..."} đầu ra.
+   - Giữ nguyên vẹn chỉ số "i", tuyệt đối cấm bỏ sót chỉ số, cấm dồn 2 câu vào 1 chỉ số, cấm trôi nghĩa sang câu khác.
+   - Câu ngắn/thán từ vẫn dịch theo đúng chỉ số "i" của nó. Nếu là tạp âm/rác để {"i": N, "vi": "..."}.
 
 4. QUY TẮC DẤU PHẨY CÂU NGẮN HỖ TRỢ GỘP CÂU LỒNG TIẾNG:
    - CHỈ DÙNG CHO CÂU NGẮN (< 6 từ): Nếu là trạng ngữ/thán từ mở đầu dở dang cùng ngôi nói -> kết thúc bằng DẤU PHẨY (,) ở cuối dòng (ví dụ: "Lúc này,"). Nếu là bổ ngữ ngắn tiếp nối câu trước -> bắt đầu bằng DẤU PHẨY (,).
