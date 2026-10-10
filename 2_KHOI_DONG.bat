@@ -11,7 +11,7 @@ venv\Scripts\python.exe -c "import sys" >nul 2>&1
 if %errorlevel% neq 0 goto :VENV_BROKEN
 
 :: 2.1 Kiem tra va tu dong cai thu vien neu chua co du
-venv\Scripts\python.exe -c "import uvicorn, fastapi, yt_dlp" >nul 2>&1
+venv\Scripts\python.exe -c "import uvicorn, fastapi, yt_dlp, edge_tts" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [*] Dang tu dong cai dat thu vien can thiet [Vui long doi vai giay]...
     call venv\Scripts\activate.bat

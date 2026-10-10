@@ -26,3 +26,4 @@ pydub>=0.25.1
 # imageio-ffmpeg>=0.4.9  # Đã có sẵn tools/ffmpeg.exe, không tải trùng lặp gây nghẽn mạng
 deepfilternet>=0.5.6
 faster-whisper>=1.0.0
+edge-tts>=6.1.0
