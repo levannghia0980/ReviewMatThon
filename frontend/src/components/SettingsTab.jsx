@@ -57,6 +57,11 @@ export default function SettingsTab() {
   const [capcutCookie, setCapcutCookie] = useState('');
   const [tiktokSessionId, setTiktokSessionId] = useState('410bfa37bdc185e1c6da82e1afb48409');
 
+  // Bilibili Cookie & Downloader Settings (Không proxy, 16 luồng song song)
+  const [bilibiliCookieFile, setBilibiliCookieFile] = useState('');
+  const [hasBilibiliCookie, setHasBilibiliCookie] = useState(false);
+  const [resolvedBilibiliCookie, setResolvedBilibiliCookie] = useState('');
+
   // Status & Feedback
   const [testResult, setTestResult] = useState(null);
   const [geminiTestResult, setGeminiTestResult] = useState(null);
@@ -87,6 +92,9 @@ export default function SettingsTab() {
         setTtsEngine(data.tts_engine || 'capcut');
         setCapcutCookie(data.capcut_cookie || '');
         setTiktokSessionId(data.tiktok_session_id || '410bfa37bdc185e1c6da82e1afb48409');
+        setBilibiliCookieFile(data.bilibili_cookie_file || '');
+        setHasBilibiliCookie(!!data.has_bilibili_cookie);
+        setResolvedBilibiliCookie(data.resolved_bilibili_cookie || '');
       }
     } catch (err) {
       console.error('Lỗi khi tải cài đặt:', err);
@@ -176,7 +184,8 @@ export default function SettingsTab() {
         tts_threads: parseInt(ttsThreads, 10) || 128,
         tts_engine: ttsEngine,
         capcut_cookie: capcutCookie.trim(),
-        tiktok_session_id: tiktokSessionId.trim()
+        tiktok_session_id: tiktokSessionId.trim(),
+        bilibili_cookie_file: bilibiliCookieFile.trim()
       };
 
       const res = await fetch('/api/v1/settings', {
@@ -186,6 +195,10 @@ export default function SettingsTab() {
       });
       const data = await res.json();
       if (res.ok) {
+        if (data.settings) {
+          setHasBilibiliCookie(!!data.settings.has_bilibili_cookie);
+          setResolvedBilibiliCookie(data.settings.resolved_bilibili_cookie || '');
+        }
         setSaveMessage({ success: true, text: '🎉 Đã lưu toàn bộ cấu hình vào file .env và bộ nhớ trình duyệt an toàn!' });
         setTimeout(() => setSaveMessage(null), 4000);
       } else {
@@ -1042,6 +1055,60 @@ export default function SettingsTab() {
                 </span>
               </div>
             )}
+          </div>
+
+          {/* Card: Bộ Tải Video & Cookie Bilibili */}
+          <div className="glass-panel" style={{ padding: '24px', borderRadius: 'var(--radius-lg)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Rocket size={22} color="var(--cyan)" />
+                <h3 style={{ fontSize: '16px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                  Bộ Tải Video & Cookie Bilibili (Direct IP • 16 Luồng • Không Proxy)
+                </h3>
+              </div>
+              <span className={`tag-badge ${hasBilibiliCookie ? 'emerald' : 'cyan'}`} style={{ fontSize: '11px', fontWeight: 800 }}>
+                {hasBilibiliCookie ? '✓ ĐÃ PHÁT HIỆN COOKIE HỢP LỆ' : 'CHẾ ĐỘ CÔNG KHAI (KHÔNG CẦN TÀI KHOẢN)'}
+              </span>
+            </div>
+
+            <div style={{ fontSize: '12.5px', color: 'var(--text-sub)', lineHeight: 1.6 }}>
+              Hệ thống tải video siêu tốc qua <strong>Aria2c 16 kết nối song song</strong> và CDN Bilibili tối ưu, <strong>tải trực tiếp không dùng proxy</strong>. Nếu bạn có tài khoản VIP/thành viên Bilibili, hãy dán đường dẫn file <code>cookies.txt</code> để mở khóa độ phân giải 1080p 60fps / 4K.
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-main)' }}>
+                Đường Dẫn File Cookie Bilibili (cookies.txt):
+              </label>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  placeholder="Để trống để tự động tìm cookies.txt tại gốc dự án (ví dụ: D:\... \cookies.txt)"
+                  value={bilibiliCookieFile}
+                  onChange={(e) => setBilibiliCookieFile(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border)',
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    color: 'var(--text-main)',
+                    fontSize: '13px',
+                    fontFamily: 'var(--font-mono)'
+                  }}
+                />
+              </div>
+
+              {resolvedBilibiliCookie ? (
+                <div style={{ fontSize: '12px', color: 'var(--emerald)', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
+                  <CheckCircle2 size={14} />
+                  <span>Đang sử dụng cookie từ: <code>{resolvedBilibiliCookie}</code></span>
+                </div>
+              ) : (
+                <div style={{ fontSize: '12px', color: 'var(--text-dim)', marginTop: '2px' }}>
+                  💡 Khi clone dự án sang máy tính khác chưa có file cookie, hệ thống vẫn tự động tải video ở chế độ công khai bình thường mà không phát sinh lỗi.
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Bottom Save Bar */}

@@ -91,8 +91,8 @@ class DownloaderService:
         if aria2_cmd:
             cmd = [
                 *aria2_cmd,
-                "-s", "8",
-                "-x", "8",
+                "-s", "16",
+                "-x", "16",
                 "-k", "1M",
                 "--file-allocation=none",
                 "--header=Referer: https://www.bilibili.com/",
@@ -142,6 +142,7 @@ class DownloaderService:
 
         # 1. Trích xuất metadata định dạng video bằng yt-dlp
         ytdlp_cmd = get_ytdlp_cmd()
+        cookie_path = settings.get_bilibili_cookie_path()
         extract_cmd = [
             *ytdlp_cmd,
             "-j",
@@ -149,8 +150,10 @@ class DownloaderService:
             "--no-check-certificates",
             "--referer", "https://www.bilibili.com/",
             "--extractor-args", "bilibili:player_type=html5",
-            target_url
         ]
+        if cookie_path and os.path.exists(cookie_path):
+            extract_cmd.extend(["--cookies", cookie_path])
+        extract_cmd.append(target_url)
         try:
             res = subprocess.run(extract_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
             if res.returncode != 0 or not res.stdout.strip():
@@ -239,6 +242,7 @@ class DownloaderService:
             raise ValueError("URL video không được để trống!")
 
         ytdlp_cmd = get_ytdlp_cmd()
+        cookie_path = settings.get_bilibili_cookie_path()
         cmd = [
             *ytdlp_cmd,
             target_url,
@@ -248,6 +252,9 @@ class DownloaderService:
             "--geo-bypass"
         ]
         
+        if cookie_path and os.path.exists(cookie_path):
+            cmd.extend(["--cookies", cookie_path])
+
         if any(domain in target_url for domain in ["bilibili.com", "b23.tv", "/BV", "/av"]):
             cmd.extend([
                 "--referer", "https://www.bilibili.com/",
@@ -282,7 +289,8 @@ class DownloaderService:
     @staticmethod
     def download_video(url: str, quality: str = "1080p", custom_filename: str = None) -> Tuple[str, Dict[str, Any]]:
         """
-        Tải video đa nền tảng siêu tốc (Bilibili Native Turbo Mirror + Aria2c 8-16 connections + yt-dlp fallback)
+        Tải video đa nền tảng siêu tốc (Bilibili Native Turbo Mirror + Aria2c 16 connections + yt-dlp fallback)
+        Không dùng proxy. Hỗ trợ file cookies.txt nếu có để tải HD 1080p 60fps.
         """
         target_url = DownloaderService.normalize_url(url)
         info = DownloaderService.get_video_info(target_url)
@@ -297,8 +305,9 @@ class DownloaderService:
         out_template = str(settings.INPUT_VIDEOS_DIR / f"{filename}.%(ext)s")
 
         is_bilibili = any(domain in target_url for domain in ["bilibili.com", "b23.tv", "/BV", "/av", "BV", "av"])
+        cookie_path = settings.get_bilibili_cookie_path()
 
-        # 1. Thử chế độ Bilibili Native Turbo (CDN Mirror + Aria2c) nếu là link Bilibili
+        # 1. Thử chế độ Bilibili Native Turbo (CDN Mirror + Aria2c 16 luồng) nếu là link Bilibili
         if is_bilibili:
             try:
                 ok = DownloaderService.download_bilibili_turbo(target_url, target_path, quality=quality)
@@ -307,7 +316,7 @@ class DownloaderService:
             except Exception as e:
                 print(f"[DownloaderService] Native turbo fallback to yt-dlp: {e}")
 
-        # 2. Chế độ yt-dlp tối ưu đa luồng Aria2c (cho YouTube, Douyin, TikTok, hoặc fallback Bilibili)
+        # 2. Chế độ yt-dlp tối ưu đa luồng Aria2c / 16 fragments (cho YouTube, Douyin, TikTok, hoặc fallback Bilibili)
         q_key = (quality or "1080p").lower().strip()
         preset = QUALITY_PRESETS.get(q_key, QUALITY_PRESETS.get("1080p", QUALITY_PRESETS["720p"]))
 
@@ -332,15 +341,18 @@ class DownloaderService:
             "-o", out_template
         ]
 
+        if cookie_path and os.path.exists(cookie_path):
+            cmd.extend(["--cookies", cookie_path])
+
         if aria2_cmd:
             cmd.extend([
                 "--external-downloader", str(aria2_cmd[0]),
-                "--external-downloader-args", "aria2c:-s 8 -x 8 -k 1M --file-allocation=none"
+                "--external-downloader-args", "aria2c:-s 16 -x 16 -k 1M --file-allocation=none"
             ])
         else:
             cmd.extend([
-                "--concurrent-fragments", "5",
-                "--buffer-size", "16M",
+                "--concurrent-fragments", "16",
+                "--buffer-size", "1M",
                 "--http-chunk-size", "10M"
             ])
 
@@ -365,8 +377,12 @@ class DownloaderService:
                 "--merge-output-format", "mp4",
                 "--no-playlist",
                 "--no-check-certificates",
+                "--concurrent-fragments", "16",
+                "--buffer-size", "1M",
                 "-o", out_template
             ]
+            if cookie_path and os.path.exists(cookie_path):
+                fallback_cmd.extend(["--cookies", cookie_path])
             if is_bilibili:
                 fallback_cmd.extend(["--referer", "https://www.bilibili.com/"])
             subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")

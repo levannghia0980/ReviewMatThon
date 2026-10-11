@@ -21,6 +21,7 @@ class SettingsUpdateRequest(BaseModel):
     tts_engine: Optional[str] = None
     capcut_cookie: Optional[str] = None
     tiktok_session_id: Optional[str] = None
+    bilibili_cookie_file: Optional[str] = None
 
 class TestGroqRequest(BaseModel):
     api_key: Optional[str] = None
@@ -63,6 +64,9 @@ def get_settings():
         "tts_engine": getattr(settings, "TTS_ENGINE", "capcut"),
         "capcut_cookie": getattr(settings, "CAPCUT_COOKIE", ""),
         "tiktok_session_id": getattr(settings, "TIKTOK_SESSION_ID", ""),
+        "bilibili_cookie_file": getattr(settings, "BILIBILI_COOKIE_FILE", ""),
+        "resolved_bilibili_cookie": settings.get_bilibili_cookie_path(),
+        "has_bilibili_cookie": bool(settings.get_bilibili_cookie_path()),
     }
 
 @router.post("", summary="Lưu cấu hình hệ thống vào .env")
@@ -76,6 +80,8 @@ def update_settings(req: SettingsUpdateRequest):
         updates["CAPCUT_COOKIE"] = req.capcut_cookie.strip()
     if req.tiktok_session_id is not None:
         updates["TIKTOK_SESSION_ID"] = req.tiktok_session_id.strip()
+    if req.bilibili_cookie_file is not None:
+        updates["BILIBILI_COOKIE_FILE"] = req.bilibili_cookie_file.strip()
     if req.groq_api_key is not None:
         updates["GROQ_API_KEY"] = req.groq_api_key.strip()
     if req.groq_model is not None:
@@ -107,6 +113,9 @@ def update_settings(req: SettingsUpdateRequest):
             "tts_engine": getattr(settings, "TTS_ENGINE", "capcut"),
             "capcut_cookie": getattr(settings, "CAPCUT_COOKIE", ""),
             "tiktok_session_id": getattr(settings, "TIKTOK_SESSION_ID", ""),
+            "bilibili_cookie_file": getattr(settings, "BILIBILI_COOKIE_FILE", ""),
+            "resolved_bilibili_cookie": settings.get_bilibili_cookie_path(),
+            "has_bilibili_cookie": bool(settings.get_bilibili_cookie_path()),
             "groq_api_key": settings.GROQ_API_KEY,
             "has_groq_key": bool(settings.GROQ_API_KEY and settings.GROQ_API_KEY.strip()),
             "groq_model": settings.GROQ_MODEL,

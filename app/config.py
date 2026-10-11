@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -116,6 +117,9 @@ class Settings:
     CAPCUT_COOKIE: str = os.getenv("CAPCUT_COOKIE", "")
     TIKTOK_SESSION_ID: str = os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
     
+    # Downloader / Bilibili Cookie Settings (Không dùng proxy, hỗ trợ cookie file để tải HD 1080p 60fps)
+    BILIBILI_COOKIE_FILE: str = os.getenv("BILIBILI_COOKIE_FILE", "")
+
     # Paths
     BASE_DIR: Path = BASE_DIR
     ENV_PATH: Path = ENV_PATH
@@ -141,6 +145,31 @@ class Settings:
     
     ASSETS_DIR: Path = ASSETS_DIR
     ASSETS_DICT_DIR: Path = ASSETS_DICT_DIR
+
+    @classmethod
+    def get_bilibili_cookie_path(cls) -> Optional[str]:
+        """
+        Tìm kiếm file cookie Bilibili hợp lệ theo thứ tự ưu tiên:
+        1. Đường dẫn cấu hình trong .env (BILIBILI_COOKIE_FILE)
+        2. File cookies.txt ngay tại thư mục gốc dự án ReviewMatThon
+        3. File cookies.txt từ thư mục TOOLDOWNLOADVIDEO (nếu chạy trên máy dev)
+        Trả về đường dẫn tuyệt đối dạng str nếu tồn tại, ngược lại trả về None.
+        """
+        custom_path = getattr(cls, "BILIBILI_COOKIE_FILE", "")
+        if custom_path:
+            p = Path(custom_path.strip().strip('"').strip("'"))
+            if p.is_file() and p.stat().st_size > 0:
+                return str(p.resolve())
+        
+        local_cookie = cls.BASE_DIR / "cookies.txt"
+        if local_cookie.is_file() and local_cookie.stat().st_size > 0:
+            return str(local_cookie.resolve())
+            
+        tool_cookie = Path(r"D:\NENGHIA0980\TOOLDOWNLOADVIDEO\cookies.txt")
+        if tool_cookie.is_file() and tool_cookie.stat().st_size > 0:
+            return str(tool_cookie.resolve())
+            
+        return None
 
     @classmethod
     def reload_from_env(cls):

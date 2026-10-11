@@ -40,6 +40,9 @@ database/*.db-shm
 *.db
 *.sqlite
 proxies.txt
+cookies.txt
+*cookies*.txt
+settings.json
 scratch/
 scratch_*.py
 test_*.mp3
