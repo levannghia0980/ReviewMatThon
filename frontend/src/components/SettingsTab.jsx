@@ -92,7 +92,7 @@ export default function SettingsTab() {
         setTtsEngine(data.tts_engine || 'capcut');
         setCapcutCookie(data.capcut_cookie || '');
         setTiktokSessionId(data.tiktok_session_id || '410bfa37bdc185e1c6da82e1afb48409');
-        setBilibiliCookieFile(data.bilibili_cookie_file || '');
+        setBilibiliCookieFile(data.bilibili_cookie_file || data.resolved_bilibili_cookie || '');
         setHasBilibiliCookie(!!data.has_bilibili_cookie);
         setResolvedBilibiliCookie(data.resolved_bilibili_cookie || '');
       }
@@ -1082,7 +1082,7 @@ export default function SettingsTab() {
               <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
                 <input
                   type="text"
-                  placeholder="Để trống để tự động tìm cookies.txt tại gốc dự án (ví dụ: D:\... \cookies.txt)"
+                  placeholder="Nhập hoặc dán đường dẫn file cookies.txt..."
                   value={bilibiliCookieFile}
                   onChange={(e) => setBilibiliCookieFile(e.target.value)}
                   style={{
@@ -1096,6 +1096,21 @@ export default function SettingsTab() {
                     fontFamily: 'var(--font-mono)'
                   }}
                 />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      if (text) setBilibiliCookieFile(text.trim());
+                    } catch (e) {
+                      console.warn(e);
+                    }
+                  }}
+                  className="btn btn-secondary btn-sm"
+                  style={{ whiteSpace: 'nowrap', padding: '10px 14px', fontSize: '12px' }}
+                >
+                  📋 Dán Đường Dẫn
+                </button>
               </div>
 
               {resolvedBilibiliCookie ? (
