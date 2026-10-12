@@ -29,7 +29,7 @@ from app.services.video.video_composer_service import VideoComposerService
 from app.services.video.karaoke_subtitle_service import KaraokeSubtitleService
 from app.services.video.audio_mixer_service import AudioMixerService
 from app.services.task_manager import task_manager
-from app.config import settings
+from app.config import settings, get_project_dirs
 
 router = APIRouter()
 
