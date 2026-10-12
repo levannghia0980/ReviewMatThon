@@ -35,6 +35,13 @@ def _run_translation_worker(task_id: str, req: TranslateProjectRequest):
                 provider=req.provider
             )
         )
+    except asyncio.CancelledError:
+        db.rollback()
+        task_manager.update_task(
+            task_id,
+            status="cancelled",
+            message="Tiến trình dịch thuật đã dừng theo yêu cầu của người dùng."
+        )
     except Exception as e:
         db.rollback()
         err_msg = str(e)

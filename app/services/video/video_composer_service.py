@@ -379,8 +379,8 @@ class VideoComposerService:
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=segments,
-                    bgm_volume_when_speaking=0.08,  # 0.08 (8%) khi đang có thuyết minh tiếng Việt
-                    bgm_volume_normal=0.36,  # 0.36 (36%) khi không nói để giữ rõ âm thanh môi trường và BGM
+                    bgm_volume_when_speaking=0.036,  # 0.036 (3.6%) khi đang có thuyết minh tiếng Việt
+                    bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM
                     voiceover_volume=1.05
                 )
                 audio_source = str(mixed_path)
@@ -960,16 +960,17 @@ class VideoComposerService:
             task_manager.add_log(task_id, f"⚡ Hợp nhất {num_segments} phân đoạn video (Stream Concat 1s)...", "cyan")
 
         ffmpeg_cmd = get_ffmpeg_cmd()
+        out_dest = Path(output_temp_video).resolve()
         concat_cmd = [
             *ffmpeg_cmd, "-y",
             "-f", "concat",
             "-safe", "0",
-            "-i", str(concat_list_file),
+            "-i", concat_list_file.name,
             "-c", "copy",
             "-movflags", "+faststart",
-            str(output_temp_video)
+            str(out_dest)
         ]
-        c_res = subprocess.run(concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir))
+        c_res = subprocess.run(concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir.resolve()))
         out_video = Path(output_temp_video)
         if c_res.returncode == 0 and out_video.exists() and out_video.stat().st_size > 1000:
             # Dọn dẹp ngay các phân đoạn tạm để giải phóng ổ đĩa
@@ -1282,10 +1283,12 @@ class VideoComposerService:
         cls,
         visual_video_path: str,
         audio_source_path: str,
-        output_final_path: str
+        output_final_path: str,
+        task_id: Optional[str] = None
     ) -> bool:
         """
         Ghép siêu tốc luồng hình ảnh và âm thanh (Stream Copy 0.5s - 1s).
+        Hiển thị tiến độ Stream Copy & di chuyển Moov Atom thời gian thực lên Terminal và Web UI.
         An toàn 100% trên Windows (chống WinError 32 khóa file từ trình duyệt).
         """
         out_p = Path(output_final_path).resolve()
@@ -1306,10 +1309,34 @@ class VideoComposerService:
             "-movflags", "+faststart",
             str(temp_out)
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if res.returncode != 0 or not temp_out.exists():
+
+        print(f"   ⚡ Đang hợp nhất luồng Stream Copy & tối ưu FastStart Web...", flush=True)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            encoding="utf-8",
+            errors="replace"
+        )
+
+        last_log_t = 0.0
+        if proc.stderr:
+            for line in proc.stderr:
+                if "time=" in line and (time.time() - last_log_t > 3.0):
+                    last_log_t = time.time()
+                    m = re.search(r"time=(\d+):(\d+):(\d+)", line)
+                    if m:
+                        h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                        mux_msg = f"   📦 Đang ghi video thành phẩm: {h:02d}:{mm:02d}:{s:02d}"
+                        print(mux_msg, flush=True)
+                        if task_id:
+                            task_manager.update_task(task_id, stage=mux_msg)
+
+        proc.wait()
+
+        if proc.returncode != 0 or not temp_out.exists():
             # Fallback nếu stream copy gặp lỗi
-            print(f"[MuxFinalVideo] Lỗi Stream Copy: {res.stderr}")
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(visual_video_path),
@@ -1319,7 +1346,12 @@ class VideoComposerService:
                 "-shortest",
                 str(temp_out)
             ]
-            subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            fb_proc = subprocess.Popen(
+                fallback_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            fb_proc.wait()
 
         if not temp_out.exists() or temp_out.stat().st_size < 1000:
             return False

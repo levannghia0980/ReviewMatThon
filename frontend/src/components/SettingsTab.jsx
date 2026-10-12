@@ -61,6 +61,8 @@ export default function SettingsTab() {
   const [bilibiliCookieFile, setBilibiliCookieFile] = useState('');
   const [hasBilibiliCookie, setHasBilibiliCookie] = useState(false);
   const [resolvedBilibiliCookie, setResolvedBilibiliCookie] = useState('');
+  const [uploadingCookie, setUploadingCookie] = useState(false);
+  const cookieInputRef = React.useRef(null);
 
   // Status & Feedback
   const [testResult, setTestResult] = useState(null);
@@ -100,6 +102,35 @@ export default function SettingsTab() {
       console.error('Lỗi khi tải cài đặt:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleCookieFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setUploadingCookie(true);
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/v1/settings/upload-cookie', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBilibiliCookieFile(data.cookie_file || 'cookies.txt');
+        setHasBilibiliCookie(true);
+        setResolvedBilibiliCookie(data.resolved_bilibili_cookie || '');
+        setSaveMessage({ success: true, text: data.message || '🎉 Đã nạp file cookie thành công!' });
+        setTimeout(() => setSaveMessage(null), 4000);
+      } else {
+        alert(data.detail || 'Lỗi khi nạp file cookie');
+      }
+    } catch (err) {
+      alert('Lỗi mạng khi tải lên file cookie: ' + err.message);
+    } finally {
+      setUploadingCookie(false);
+      if (cookieInputRef.current) cookieInputRef.current.value = '';
     }
   };
 
@@ -225,10 +256,10 @@ export default function SettingsTab() {
       desc: 'Cân bằng giữa tốc độ cực nhanh và khả năng hiểu ngữ cảnh phim phức tạp.'
     },
     {
-      id: 'gemini-3.5-flash',
-      title: '🧠 Gemini 3.5 Flash',
-      badge: 'Chất Lượng Cao Nhất',
-      desc: 'Trí tuệ nhân tạo mạnh mẽ nhất, xử lý câu văn hoa mỹ, tối ưu hóa triệt để xưng hô.'
+      id: 'gemini-flash-latest',
+      title: '🌟 Gemini Flash Latest',
+      badge: 'Bản Mới Nhất • Cực Thông Minh',
+      desc: 'Tự động trỏ về bản Flash frontier mới nhất của Google, bắt trọn ngữ khí âm thanh và dịch chuẩn xác.'
     }
   ];
 
@@ -1079,14 +1110,14 @@ export default function SettingsTab() {
               <label style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-main)' }}>
                 Đường Dẫn File Cookie Bilibili (cookies.txt):
               </label>
-              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <input
                   type="text"
                   placeholder="Nhập hoặc dán đường dẫn file cookies.txt..."
                   value={bilibiliCookieFile}
                   onChange={(e) => setBilibiliCookieFile(e.target.value)}
                   style={{
-                    flex: 1,
+                    flex: '1 1 280px',
                     padding: '10px 14px',
                     borderRadius: '8px',
                     border: '1px solid var(--border)',
@@ -1096,6 +1127,38 @@ export default function SettingsTab() {
                     fontFamily: 'var(--font-mono)'
                   }}
                 />
+
+                {/* File input ẩn */}
+                <input
+                  type="file"
+                  ref={cookieInputRef}
+                  onChange={handleCookieFileUpload}
+                  accept=".txt,.cookie"
+                  style={{ display: 'none' }}
+                />
+
+                <button
+                  type="button"
+                  disabled={uploadingCookie}
+                  onClick={() => cookieInputRef.current && cookieInputRef.current.click()}
+                  className="btn btn-primary btn-sm"
+                  style={{
+                    whiteSpace: 'nowrap',
+                    padding: '10px 14px',
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    background: 'var(--grad-cyan)',
+                    color: '#070913',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                  title="Chọn file cookies.txt trực tiếp từ máy tính để nạp vào hệ thống"
+                >
+                  {uploadingCookie ? <Loader2 size={13} className="animate-spin" /> : <FolderDown size={14} />}
+                  📁 Nạp File Cookie (.txt)
+                </button>
+
                 <button
                   type="button"
                   onClick={async () => {

@@ -132,10 +132,10 @@ def sanitize_to_vietnamese(text: Optional[str], fallback_orig: Optional[str] = "
 
 def ensure_project_dialogues_vietnamese(db: Session, project_id: int) -> int:
     """
-    Quét và tự động sửa toàn bộ các câu thoại trong CSDL:
-    - Nếu translated_text bị rỗng hoặc còn dính chữ Trung -> dịch sang tiếng Việt ngay.
-    - Cập nhật trực tiếp vào SQLite để đảm bảo đồng bộ cả Subtitle và TTS.
-    - Trả về số câu đã được sửa/dịch.
+    KIỂM ĐỊNH CHỐT CHẶN TRƯỚC KHI SINH TTS:
+    - Quét sạch 100% chữ Hán còn sót.
+    - Quét các câu bị phình tỷ lệ quá mức (> 3.0x hoặc > 14 từ cho câu thoại ngắn) để tỉa gọn đúng thời lượng.
+    - Cập nhật trực tiếp vào SQLite để Subtitle và Audio TTS khớp nhau 100%.
     """
     dialogues = db.query(DialogueSegmentModel).filter(
         DialogueSegmentModel.task_id == project_id
@@ -148,16 +148,31 @@ def ensure_project_dialogues_vietnamese(db: Session, project_id: int) -> int:
     for d in dialogues:
         current_trans = (d.translated_text or "").strip()
         orig = (d.clean_text or d.original_text or "").strip()
+        dur = getattr(d, 'duration', 0.0) or 0.0
+        hanzi_count = len(CHINESE_CHAR_REGEX.findall(orig)) if orig else 0
+        word_count = len(current_trans.split()) if current_trans else 0
 
-        # Kiểm tra xem câu này có cần sửa không
         needs_fix = False
+        # Nếu câu rỗng do đã bị gộp câu (duration <= 0 hoặc status == 'SILENT_VALID') -> Giữ nguyên rỗng, CẤM tự ý dịch Hán-Việt đắp lại
         if not current_trans:
-            needs_fix = True
+            if getattr(d, 'status', '') == 'SILENT_VALID' or dur <= 0:
+                continue
+            if orig:
+                needs_fix = True
         elif contains_chinese(current_trans):
             needs_fix = True
+        elif hanzi_count > 0 and word_count > 0:
+            # Nếu câu gốc chỉ 1-4 chữ mà dịch > 14 từ -> Tự động cắt tỉa câu phình
+            if hanzi_count <= 4 and word_count >= 14:
+                needs_fix = True
 
         if needs_fix:
             clean_viet = sanitize_to_vietnamese(current_trans, fallback_orig=orig)
+            # Nếu vẫn bị phình câu quá mức sau khi sanitize, gọt bớt các từ thừa ở đuôi để vừa thời lượng
+            if clean_viet and len(clean_viet.split()) > 12 and hanzi_count <= 4 and dur > 0 and dur <= 1.5:
+                words = clean_viet.split()
+                clean_viet = " ".join(words[:8]) + "."
+
             if clean_viet and clean_viet != current_trans:
                 d.translated_text = clean_viet
                 fixed_count += 1

@@ -26,6 +26,13 @@ def get_active_openrouter_keys() -> List[str]:
     return [k.strip() for k in keys_str.split(",") if k.strip()]
 
 
+# ==============================================================================
+# QUY TẮC KIẾN TRÚC HỆ THỐNG (MANDATORY ARCHITECTURE RULE):
+# 1. BÓC TÁCH THỰC THỂ / DỊCH HÁN -> 100% nằm tại: app/services/dichhan/llm_extractor.py
+# 2. TOÀN BỘ QUY CHUẨN PROMPT, XƯNG HÔ, THỂ LOẠI -> 100% nằm tại: app/services/translation/profiles.py
+# 3. FILE NÀY (llm_translator.py) CHỈ LÀ THỰC THI GỌI API DỊCH THUẬT LỒNG TIẾNG, CẤM VIẾT PROMPT LẶP LẠI!
+# ==============================================================================
+
 async def extract_batch_entities_pass1_llm(
     batch_raw_text: str,
     accumulated_entities: Dict[str, Dict[str, Any]] = None,
@@ -34,161 +41,22 @@ async def extract_batch_entities_pass1_llm(
     provider: str = "gemini",
     model: str = None
 ) -> List[Dict[str, Any]]:
-    """
-    PHA 1 (LLM 1): Dịch Hán / Bóc tách thực thể & Kiểm soát tính nhất quán xuyên suốt các lô.
-    - Nhận diện toàn bộ thực thể mới xuất hiện trong lô (Tên nhân vật, Địa danh, Tông môn, Võ học, Sủng vật, Bảo vật, Cảnh giới).
-    - Đối chiếu với các thực thể đã tích lũy từ các lô trước để đảm bảo 100% nhất quán tên gọi từ đầu đến cuối video.
-    """
+    """Hàm chuyển tiếp sạch sang module bóc tách thực thể chuẩn của Dịch Hán."""
+    from app.services.dichhan.llm_extractor import extract_batch_entities_direct_llm
     accumulated_entities = accumulated_entities or {}
-    
-    existing_entities_preview = ""
-    if accumulated_entities and batch_raw_text:
-        sample_list = []
-        for raw, item in accumulated_entities.items():
-            if raw and raw in batch_raw_text:
-                viet = item.get("viet", "")
-                etype = item.get("type", "NAME")
-                sample_list.append(f"- {raw} ➔ {viet} ({etype})")
-        existing_entities_preview = "\n".join(sample_list)
-
-    genre_rules = get_profile_description(genre)
-    norm_genre = normalize_profile_key(genre)
-
-    system_prompt = f"""BẠN LÀ CHUYÊN GIA DỊCH HÁN - BÓC TÁCH THỰC THỂ & TÊN RIÊNG TIỂU THUYẾT / KỊCH BẢN TRUNG QUỐC.
-Nhiệm vụ của bạn là phân tích đoạn văn bản tiếng Trung của lô kịch bản hiện tại, phát hiện toàn bộ thực thể và quy chuẩn tên gọi Hán-Việt chuẩn xác.
-
-=== QUY CHUẨN THỂ LOẠI ({norm_genre.upper()}) ===
-{genre_rules}
-
-=== NGUYÊN TẮC BÓC TÁCH VÀ ĐỒNG BỘ THỰC THỂ (QUAN TRỌNG NHẤT) ===
-1. VÉT CẠN 6 NHÓM THỰC THỂ BẮT BUỘC:
-   - 'NAME': Tên nhân vật, họ tên, danh hiệu, ngoại hiệu, tên cúng cơm/biệt danh (Đại Tráng, Nhị Cẩu, Thạch Đầu - BẮT BUỘC dịch âm Hán-Việt, CẤM dịch nghĩa thuần).
-   - 'CREATURE': Tên thú cưng, linh thú, sủng vật, yêu thú (Hắc Ngưu, Ô Vân, Tuyết Cầu, Thái Cổ Thần Long - CẤM dịch thành người hầu/nha đầu).
-   - 'PLACE': Địa danh, núi non, sông biển, thành trì, tông môn (Thái Hòa Sơn, Tử Cấm Thành, Trường An - giữ nguyên trật tự Hán-Việt).
-   - 'SECT': Tông môn, môn phái, gia tộc, thế lực, bang hội.
-   - 'ITEM': Pháp bảo, thần binh, đan dược, linh thảo, bảo vật.
-   - 'SKILL': Võ công, tuyệt kỹ, công pháp, thần thông, trận pháp.
-   - 'OTHER': Cảnh giới tu vi (Trúc Cơ, Kim Đan, Luyện Khí tam trọng), thuật ngữ bản sắc (Đan điền, Thức hải, Đạo lữ...).
-
-2. TÍNH NHẤT QUÁN XUYÊN SUỐT:
-   - Nếu thực thể ĐÃ XUẤT HIỆN trong danh sách đã có từ các lô trước, BẮT BUỘC GIỮ NGUYÊN bản dịch tiếng Việt đã khóa.
-   - Nếu là thực thể MỚI, hãy chuyển ngữ sang âm Hán-Việt chuẩn xác, thanh thoát, đúng bản sắc thể loại.
-
-3. ĐỊNH DẠNG ĐẦU RA:
-   Trả về JSON thuần túy (Array of Objects):
-   [
-     {{"raw": "李逍遥", "viet": "Lý Tiêu Dao", "type": "NAME", "desc": "Nhân vật chính"}},
-     {{"raw": "长青诀", "viet": "Trường Thanh Quyết", "type": "SKILL", "desc": "Công pháp tu tiên"}},
-     {{"raw": "灵田", "viet": "Linh điền", "type": "OTHER", "desc": "Ruộng trồng linh thảo"}}
-   ]
-"""
-
-    title_part = f"--- TIÊU ĐỀ VIDEO / PHIM (ĐỐI CHIẾU XÁC ĐỊNH TÊN NHÂN VẬT & TỪ KHÓA) ---\n{project_title.strip()}\n\n" if project_title else ""
-    user_prompt = f"""{title_part}--- THỰC THỂ ĐÃ TÍCH LŨY TỪ CÁC LÔ TRƯỚC (BẮT BUỘC KHÓA CỨNG NẾU GẶP LẠI) ---
-{existing_entities_preview or "(Chưa có thực thể từ lô trước - Đây là lô đầu tiên)"}
-
---- VĂN BẢN LÔ HIỆN TẠI CẦN BÓC TÁCH THỰC THỂ ---
-{batch_raw_text[:9000]}
-"""
-
-    provider = provider or settings.TRANSLATION_PROVIDER or "gemini"
-
-    if provider == "gemini":
-        keys = get_active_gemini_keys()
-        if not keys:
-            raise ValueError("Chưa nhập Google Gemini API Key trong Tab Cài Đặt!")
-        
-        api_key = keys[0]
-        if api_key.startswith("gsk_"):
-            raise ValueError("LỖI API KEY: Bạn đang nhập nhầm Groq Key (gsk_...) vào ô Gemini! Vui lòng lấy Google Gemini API Key (bắt đầu bằng AIzaSy...) miễn phí tại https://aistudio.google.com/app/apikey và dán vào ô Gemini trong Tab Cài Đặt.")
-            
-        model_name = model or settings.GEMINI_MODEL or "gemini-3.1-flash-lite"
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "contents": [
-                {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
-            ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "responseMimeType": "application/json"
-            }
-        }
-        
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            resp = await post_gemini_with_retry(client, url, headers, payload)
-            if resp.status_code != 200:
-                raise RuntimeError(f"Google Gemini API Lỗi HTTP {resp.status_code}: {resp.text}")
-            data = resp.json()
-            from app.services.unblock.unblock_pipeline import is_response_safety_blocked
-            if is_response_safety_blocked(data):
-                import logging
-                logging.getLogger(__name__).warning("⚠️ [Unblock] Phát hiện LLM chặn bóc tách thực thể (Safety)! Tạm thời bật Unblock...")
-                from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, unmask_text_with_dictionary
-                masked_batch_text, mapping_table, _ = await mask_text_with_dictionary(batch_raw_text[:9000])
-                retry_user_prompt = user_prompt.replace(batch_raw_text[:9000], masked_batch_text)
-                retry_payload = {
-                    "contents": [
-                        {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{retry_user_prompt}"}]}
-                    ],
-                    "generationConfig": payload["generationConfig"]
-                }
-                resp_retry = await post_gemini_with_retry(client, url, headers, retry_payload)
-                if resp_retry.status_code == 200:
-                    retry_data = resp_retry.json()
-                    candidates = retry_data.get("candidates") or []
-                    if candidates and "content" in candidates[0]:
-                        raw_text = candidates[0]["content"]["parts"][0]["text"]
-                        parsed = safe_json_loads(raw_text)
-                        ent_list = parsed if isinstance(parsed, list) else (parsed.get("entities", []) if isinstance(parsed, dict) else [])
-                        for item in ent_list:
-                            if "viet" in item and item["viet"]:
-                                item["viet"] = unmask_text_with_dictionary(item["viet"], mapping_table)
-                        return ent_list
-
-            candidates = data.get("candidates") or []
-            if candidates and "content" in candidates[0]:
-                text = candidates[0]["content"]["parts"][0]["text"]
-                parsed = safe_json_loads(text)
-                if isinstance(parsed, list):
-                    return parsed
-                elif isinstance(parsed, dict) and "entities" in parsed:
-                    return parsed["entities"]
-            return []
-    else:
-        keys = get_active_openrouter_keys()
-        if not keys:
-            return []
-        
-        api_key = keys[0]
-        model_name = model or settings.OPENROUTER_MODEL or "google/gemini-2.5-flash"
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"}
-        }
-        try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                resp = await post_openrouter_with_retry(client, url, headers, payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    text = data["choices"][0]["message"]["content"]
-                    parsed = safe_json_loads(text)
-                    if isinstance(parsed, list):
-                        return parsed
-                    elif isinstance(parsed, dict) and "entities" in parsed:
-                        return parsed["entities"]
-        except Exception as e:
-            print(f"[LLM Extractor] Warning: Lỗi trích xuất thực thể OpenRouter: {e}")
-            return []
-
-    return []
+    raw_ents = await extract_batch_entities_direct_llm(
+        combined_raw_text=batch_raw_text,
+        existing_entities=accumulated_entities,
+        genre_key=genre
+    )
+    result = []
+    for ent in raw_ents:
+        ch = ent.get("chinese_name", "").strip()
+        vn = ent.get("vietnamese_name", "").strip()
+        et = ent.get("entity_type", "NAME").strip()
+        if ch and vn:
+            result.append({"raw": ch, "viet": vn, "type": et})
+    return result
 
 
 async def translate_batch_pass2_llm(
@@ -202,70 +70,60 @@ async def translate_batch_pass2_llm(
 ) -> str:
     """
     PHA 2 (LLM 2): Dịch thuật kịch bản LỒNG TIẾNG VIDEO sang Tiếng Việt.
-    - Sử dụng 100% Profile thể loại chuẩn AIRead (bản sắc, xưng hô, thuật ngữ, cảnh giới...).
-    - Khống chế độ dài ký tự: không vượt quá 1.5 lần đến tối đa dưới 2 lần so với câu gốc tiếng Trung.
-    - Cho phép và khuyến khích rút gọn câu ngắn gọn súc tích mà vẫn giữ nguyên trọn vẹn nghĩa gốc.
-    - Sát nghĩa, dễ hiểu, viết theo đúng ngữ pháp tiếng Việt nói tự nhiên, dùng từ phổ thông của thể loại.
-    - Tuyệt đối cấm phình câu, cấm thêm từ đệm/từ nối rườm rà.
-    - Đặt mệnh lệnh bảo toàn thẻ XML 1:1 ở CUỐI CÙNG prompt để chống quên thẻ.
+    Toàn bộ System Prompt và Quy tắc xưng hô, văn phong được nạp 100% từ app/services/translation/profiles.py.
     """
-    genre_rules = get_profile_description(genre)
     norm_genre = normalize_profile_key(genre)
+    genre_rules = get_profile_description(norm_genre)
     common_rules = get_common_rules()
 
-    system_prompt = f"""BẠN LÀ BIÊN TẬP VIÊN DỊCH THUẬT LỒNG TIẾNG VIDEO CAO CẤP (DUBBING & VOICEOVER) TRUNG - VIỆT.
-Nhiệm vụ: Chuyển ngữ kịch bản lời thoại video tiếng Trung sang tiếng Việt để LỒNG TIẾNG CHO VIDEO.
-Văn phong: Thoát ý, mượt mà, giàu cảm xúc, truyền cảm, thuần Việt tự nhiên, chuẩn văn phong kịch bản lồng tiếng.
-TUYỆT ĐỐI CẤM dịch bám chữ convert máy móc hoặc dùng từ Hán-Việt tối nghĩa thô cứng.
-KHUYẾN KHÍCH sử dụng từ ngữ gợi cảm, trau chuốt, câu văn giàu nhạc điệu, xuôi tai, biểu đạt trọn vẹn thần thái nhân vật.
-ĐẶC BIỆT: CÂU VĂN SÚC TÍCH, GÃY GỌN, GIÀU CẢM XÚC. Không bôi chữ rườm rà lan man, câu văn thanh thoát để vừa vặn nhịp nói của nhân vật và người kể chuyện.
-Tuyệt đối không để sót chữ Hán hay tiếng Anh.
-
-=== QUY CHUẨN THỂ LOẠI CHUẨN AIREAD ({norm_genre.upper()}) ===
-{genre_rules}
-
-=== QUY TẮC CỐT LÕI DỊCH THUẬT CHUẨN AIREAD CHO LỒNG TIẾNG VIDEO ===
-{common_rules}"""
-
-    prompt_parts = []
-
-    # 1. PHẦN 1: KỊCH BẢN ĐẦU VÀO DẠNG JSON
-    prompt_parts.append(f"""=== PHẦN 1: KỊCH BẢN ĐẦU VÀO (DANH SÁCH JSON CẦN DỊCH) ===
-{tagged_text.strip()}""")
-
-    # 2. PHẦN 2: BẢNG TÊN RIÊNG & THỰC THỂ KHÓA CỨNG (NẾU CÓ)
-    if entity_table_text and entity_table_text.strip():
-        prompt_parts.append(f"""=== PHẦN 2: BẢNG TÊN RIÊNG & THỰC THỂ KHÓA CỨNG (DÙNG ĐÚNG 100%) ===
-{entity_table_text.strip()}""")
-
-    # 3. PHẦN 3: YÊU CẦU THỂ LOẠI & VĂN PHONG LỒNG TIẾNG
-    title_info = f"Phim/Video: {project_title.strip()}\n" if project_title else ""
-    prompt_parts.append(f"""=== PHẦN 3: YÊU CẦU THỂ LOẠI & VĂN PHONG LỒNG TIẾNG ===
-{title_info}- Thể loại: {norm_genre.upper()}
-- Yêu cầu: Thoát ý, mượt mà, thuần Việt, chuẩn kịch bản lồng tiếng video.
-- Câu từ súc tích, gãy gọn, giàu cảm xúc, vừa vặn nhịp nói video, tuyệt đối không bôi chữ lan man.""")
-
-    # 4. PHẦN 4: QUY CHUẨN JSON ĐẦU RA 1:1
     try:
         input_items = json.loads(tagged_text)
         expected_count = len(input_items)
     except Exception:
         expected_count = len([l for l in tagged_text.splitlines() if l.strip()])
 
-    prompt_parts.append(f"""=== PHẦN 4: MỆNH LỆNH QUAN TRỌNG NHẤT - TRẢ VỀ JSON THUẦN (STRICT JSON) ===
-1. Đầu vào là một danh sách JSON gồm {expected_count} phần tử có trường "i" (chỉ số) và "zh" (tiếng Trung).
-2. ĐẦU RA BẮT BUỘC LÀ MẢNG JSON HỢP LỆ gồm ĐỦ CHÍNH XÁC {expected_count} PHẦN TỬ với 2 trường "i" và "vi":
+    prompt_parts = []
+
+    # 1. TẦNG 1: KỊCH BẢN ĐẦU VÀO CẦN DỊCH (JSON INPUT)
+    prompt_parts.append(f"""=== PHẦN 1: KỊCH BẢN ĐẦU VÀO ({expected_count} CÂU JSON CẦN DỊCH) ===
+{tagged_text.strip()}""")
+
+    # 2. TẦNG 2: BẢNG THỰC THỂ KHÓA TÊN RIÊNG (TỪ KHÂU DỊCH HÁN)
+    if entity_table_text and entity_table_text.strip():
+        prompt_parts.append(f"""=== PHẦN 2: BẢNG TÊN RIÊNG & THỰC THỂ KHÓA CỨNG (DÙNG ĐÚNG 100%) ===
+{entity_table_text.strip()}""")
+
+    # 3. TẦNG 3: QUY CHUẨN THỂ LOẠI & XƯNG HÔ
+    title_info = f"Tiêu đề tác phẩm: {project_title.strip()}\n" if project_title else ""
+    prompt_parts.append(f"""=== PHẦN 3: QUY CHUẨN THỂ LOẠI & XƯNG HÔ ({norm_genre.upper()}) ===
+{title_info}{genre_rules}""")
+
+    # 4. TẦNG 4: COMMON RULES & CẤU TRÚC JSON ĐẦU RA (MỆNH LỆNH Ở CUỐI)
+    prompt_parts.append(f"""=== PHẦN 4: CÔNG THỨC DỊCH THUẬT LỒNG TIẾNG & CẤU TRÚC ĐẦU RA ===
+{common_rules}
+
+MỤC TIÊU & NGUYÊN TẮC GỘP THOẠI BẮT BUỘC:
+1. ĐỊNH DẠNG ĐẦU RA: Trả về duy nhất mảng JSON thuần túy theo cấu trúc (bổ sung 'src' là danh sách số 'i' mẩu câu gốc được gộp):
 [
-  {{"i": 1, "vi": "Lời dịch câu 1..."}},
-  {{"i": 2, "vi": "Lời dịch câu 2..."}},
-  ...
-  {{"i": {expected_count}, "vi": "Lời dịch câu {expected_count}..."}}
+  {{"src": [1, 2, 3], "s": 0.08, "e": 4.76, "vi": "..."}},
+  {{"src": [4], "s": 4.76, "e": 9.30, "vi": "..."}}
 ]
-3. QUY TẮC BẮT BUỘC:
-   - "i" PHẢI giữ nguyên chính xác giá trị tương ứng từ đầu vào (từ 1 đến {expected_count}).
-   - "vi" là bản dịch tiếng Việt tương ứng đúng 100% với nghĩa của câu "zh" cùng chỉ số "i".
-   - Dù câu gốc ngắn 1-2 chữ ("走", "停", tiếng thở) cũng PHẢI có một object tương ứng. TUYỆT ĐỐI CẤM gộp câu, CẤM bỏ sót bất kỳ chỉ số "i" nào!
-   - CHỈ TRẢ VỀ DUY NHẤT MẢNG JSON HỢP LỆ, không kèm giải thích, không markdown bọc ngoài nếu không cần thiết.""")
+2. NGUYÊN TẮC GỘP CÂU & TIMECODE TOÁN HỌC (QUY TẮC BẮT BUỘC SỐNG CÒN):
+   - Khi một người nói một tràng dài gồm nhiều câu/mẩu vụn liên tiếp (ví dụ gộp mẩu #1, #2, #3 thành 1 câu mới):
+     ➔ 'src': BẮT BUỘC khai báo đầy đủ danh sách [1, 2, 3].
+     ➔ 's' (bắt đầu): BẮT BUỘC lấy chính xác giá trị 's' của CÂU ĐẦU TIÊN trong cụm câu gộp.
+     ➔ 'e' (kết thúc): BẮT BUỘC lấy chính xác giá trị 'e' của CÂU CUỐI CÙNG trong cụm câu gộp.
+   - VÍ DỤ MINH HỌA:
+     Đầu vào có 3 mẩu của cùng 1 người nói liên tiếp:
+       - Mẩu 1: {{"i": 1, "s": 175.0, "e": 178.52, "zh": "小贩你这车是从哪弄的"}}
+       - Mẩu 2: {{"i": 2, "s": 178.52, "e": 179.88, "zh": "你该不会晚上出去搜集物资了吧"}}
+       - Mẩu 3: {{"i": 3, "s": 179.88, "e": 181.7, "zh": "你胆子也太大了"}}
+     ➔ Khi gộp thành 1 câu tiếng Việt hoàn chỉnh, BẮT BUỘC trả về:
+       {{"src": [1, 2, 3], "s": 175.0, "e": 181.7, "vi": "Hạ Phạn, xe này của ngươi kiếm đâu ra vậy? Chẳng lẽ ban đêm ngươi dám ra ngoài thu thập vật tư sao? Gan ngươi lớn thật đấy!"}}
+     ➔ TUYỆT ĐỐI CẤM lấy 's' hay 'e' lơ lửng ở giữa cụm (như s=178.52, e=179.88) làm câu dài bị co rút thiếu thời lượng đọc!
+3. CẤM GỘP ĐỐI THOẠI KHÁC NHÂN VẬT:
+   - TUYỆT ĐỐI CẤM gộp câu đối thoại giữa 2 nhân vật khác nhau (khi đổi vai nói từ Nhân vật A ➔ Nhân vật B bắt buộc tách riêng thành 2 câu độc lập).
+4. CÂU RÁC & TẠP ÂM: Mẩu câu nào vô nghĩa, chỉ là con số rác, tạp âm hoặc tiếng thở ASR nhận diện sai mà không có nội dung thì BẮT BUỘC ĐỂ 'vi': '' (chuỗi rỗng), TUYỆT ĐỐI CẤM BỊA CHỮ!""")
 
     user_prompt = "\n\n".join(prompt_parts)
 
@@ -282,9 +140,9 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
             headers = {"Content-Type": "application/json"}
             payload = {
-                "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{u_prompt}"}]}],
+                "contents": [{"role": "user", "parts": [{"text": u_prompt}]}],
                 "generationConfig": {
-                    "temperature": 0.2,
+                    "temperature": 0.05,
                     "topP": 0.95,
                     "responseMimeType": "application/json"
                 }
@@ -309,10 +167,9 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
             payload = {
                 "model": model_name,
                 "messages": [
-                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": u_prompt}
                 ],
-                "temperature": 0.2,
+                "temperature": 0.05,
                 "response_format": {"type": "json_object"}
             }
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -325,36 +182,114 @@ Tuyệt đối không để sót chữ Hán hay tiếng Anh.
                     return choices[0]["message"]["content"].strip()
                 raise RuntimeError(f"OpenRouter API không trả về nội dung: {data}")
 
-    # VÒNG LẶP AUTO-RETRY KIỂM TRA SỐ LƯỢNG ITEM JSON
+    # VÒNG LẶP AUTO-RETRY KIỂM TRA SỐ LƯỢNG ITEM JSON ĐẾN KHI ĐẠT CHUẨN MỚI THÔI
     current_prompt = user_prompt
-    for attempt in range(1, 4):
+    attempt = 0
+    while True:
+        attempt += 1
         ans = await _execute_single_call(current_prompt)
         
-        # Bóc tách JSON
-        parsed_items = safe_json_loads(ans)
-        if isinstance(parsed_items, dict):
-            # Tìm mảng bên trong dict nếu LLM bọc dict
-            for v in parsed_items.values():
-                if isinstance(v, list):
-                    parsed_items = v
-                    break
+        # Bóc tách JSON an toàn
+        parsed_items = None
+        try:
+            parsed_items = safe_json_loads(ans)
+            if isinstance(parsed_items, dict):
+                for v in parsed_items.values():
+                    if isinstance(v, list):
+                        parsed_items = v
+                        break
+        except Exception as json_parse_err:
+            import logging
+            logging.getLogger(__name__).warning(f"⚠️ [JSON Syntax Error] Lỗi cú pháp JSON ở lần {attempt}: {json_parse_err}")
 
-        if isinstance(parsed_items, list) and len(parsed_items) >= expected_count:
+        # KIỂM TRA TÍNH TOÀN VẸN CỦA MẢNG JSON TRẢ VỀ (HỖ TRỢ CẢ MẢNG GỘP VÀ MẢNG ĐỘC LẬP)
+        is_valid = False
+        duplicate_detected = False
+        duplicate_detail = ""
+
+        if isinstance(parsed_items, list) and len(parsed_items) > 0:
+            # Kiểm tra xem các phần tử có chứa trường nội dung dịch "vi" hay không
+            valid_items = [it for it in parsed_items if isinstance(it, dict) and "vi" in it]
+            if len(valid_items) >= max(1, int(len(parsed_items) * 0.85)):
+                is_valid = True
+
+            # KIỂM TRA LẶP NỘI DUNG LIỀN KỀ:
+            # CHỈ BÁO LỖI KHI CÂU GỐC TIẾNG TRUNG KHÁC NHAU!
+            # 1. Chỉ so sánh thuần chữ cái/số, gọt sạch 100% dấu câu (. , ! ? … - :) để không bị bắt nhầm.
+            # 2. Gom toàn bộ câu gốc tiếng Trung từ mốc trùng với 'start' đến mốc trùng với 'end' của câu gộp để so sánh.
+            if is_valid and len(parsed_items) > 1 and isinstance(input_items, list):
+                def _pure_text(t: str) -> str:
+                    return re.sub(r'[^\w\s]', '', str(t).lower()).strip()
+
+                def _get_zh_full_span(s_time: float, e_time: float) -> str:
+                    matched = []
+                    for it in input_items:
+                        if isinstance(it, dict):
+                            it_s = round(float(it.get("s", 0)), 2)
+                            it_e = round(float(it.get("e", 0)), 2)
+                            # Mẩu gốc nằm trong khoảng từ start đến end
+                            if it_s >= s_time - 0.05 and it_e <= e_time + 0.05:
+                                matched.append(str(it.get("zh", "")).strip())
+                    return "".join(matched)
+
+                for k in range(1, len(parsed_items)):
+                    item_prev = parsed_items[k-1]
+                    item_curr = parsed_items[k]
+                    vi_prev_pure = _pure_text(item_prev.get("vi", ""))
+                    vi_curr_pure = _pure_text(item_curr.get("vi", ""))
+                    
+                    if vi_prev_pure and vi_curr_pure and vi_prev_pure == vi_curr_pure and len(vi_curr_pure) >= 4:
+                        s_prev = round(float(item_prev.get("s", 0)), 2)
+                        e_prev = round(float(item_prev.get("e", 0)), 2)
+                        s_curr = round(float(item_curr.get("s", 0)), 2)
+                        e_curr = round(float(item_curr.get("e", 0)), 2)
+
+                        zh_prev_span = _pure_text(_get_zh_full_span(s_prev, e_prev))
+                        zh_curr_span = _pure_text(_get_zh_full_span(s_curr, e_curr))
+                        
+                        # Nếu nội dung gốc tiếng Trung từ start đến end cũng giống hệt nhau (như nhân vật hét lặp lại) -> CHO QUA 100%!
+                        if zh_prev_span and zh_curr_span and zh_prev_span == zh_curr_span:
+                            continue
+                        
+                        # Chỉ khi tiếng Trung gốc khác nhau mà tiếng Việt lại dịch lặp giống nhau -> mới báo lỗi gian lận
+                        duplicate_detected = True
+                        duplicate_detail = f"Câu #{k} và #{k+1} bị lặp cùng nội dung '{item_curr.get('vi', '')}'!"
+                        is_valid = False
+                        break
+
+        # NẾU ĐẠT CHUẨN: TRẢ VỀ KẾT QUẢ NGAY
+        if is_valid:
+            if attempt > 1:
+                import logging
+                logging.getLogger(__name__).info(
+                    f"✔ [Smart JSON Validation] Đã dịch lại thành công ở lần {attempt}! Nhận {len(parsed_items)} câu hợp lệ."
+                )
             return ans
 
-        if attempt < 3:
-            actual_len = len(parsed_items) if isinstance(parsed_items, list) else 0
-            import logging
+        # NẾU ĐÃ THỬ 3 LẦN MÀ PARSE ĐƯỢC MẢNG: CHẤP NHẬN ĐỂ HEALER XỬ LÝ TIẾP
+        if attempt >= 3 and isinstance(parsed_items, list) and len(parsed_items) > 0:
+            return json.dumps(parsed_items, ensure_ascii=False)
+
+        # NẾU CHƯA ĐẠT: GỬI LỆNH YÊU CẦU DỊCH LẠI
+        actual_len = len(parsed_items) if isinstance(parsed_items, list) else 0
+        import logging
+        if duplicate_detected:
             logging.getLogger(__name__).warning(
-                f"⚠️ [Strict JSON Validation] Lần {attempt}: Gửi {expected_count} câu nhưng LLM trả về {actual_len} phần tử! Dịch lại..."
+                f"⚠️ [Duplicate Check] Lần {attempt}: Phát hiện lặp câu ({duplicate_detail})! Đang yêu cầu dịch lại..."
             )
             retry_note = (
-                f"\n\n[CẢNH BÁO LỖI]: Mảng JSON bạn trả về có {actual_len} phần tử, thiếu so với {expected_count} câu gốc! "
-                f"HÃY DỊCH LẠI VÀ ĐẢM BẢO TRẢ VỀ ĐỦ CHÍNH XÁC {expected_count} PHẦN TỬ TỪ i=1 ĐẾN i={expected_count}!"
+                f"\n\n[CẢNH BÁO]: Nội dung dịch bị lặp lại ({duplicate_detail})! "
+                f"TUYỆT ĐỐI CẤM lặp lại nguyên văn câu trước, mỗi lời thoại phải mang nội dung chuẩn xác theo ngữ cảnh."
             )
-            current_prompt = user_prompt + retry_note
         else:
-            return ans
+            logging.getLogger(__name__).warning(
+                f"⚠️ [JSON Validation] Lần {attempt}: Lỗi cấu trúc JSON! Đang yêu cầu LLM dịch lại..."
+            )
+            retry_note = (
+                f"\n\n[CẢNH BÁO LỖI CÚ PHÁP]: Mảng JSON bạn vừa trả về không đúng định dạng chuẩn! "
+                f"BẮT BUỘC trả về mảng JSON thuần túy: [ {{\"role\": \"NARRATOR\", \"s\": 0.08, \"e\": 4.76, \"vi\": \"...\"}} ]."
+            )
+        current_prompt = user_prompt + retry_note
 
 # Backward compatibility aliases
 translate_dialogue_batch_llm = translate_batch_pass2_llm

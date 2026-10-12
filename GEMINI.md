@@ -30,3 +30,13 @@ Khi chuyển mã nguồn dự án này sang máy tính khác (hoặc khi Agent p
   - Video vừa (5p - 30p): Chia mỗi đoạn ~ 150s.
   - Video dài (1h - 15h): Chia mỗi đoạn ~ 300s (5 phút), sau đó ghép lại bằng FFmpeg Concat Demuxer không re-encode.
 
+---
+
+## 3. NGUYÊN TẮC BẮT BUỘC: TUYỆT ĐỐI CẤM HARDCODE ĐƯỜNG DẪN CỤC BỘ
+- Dự án này được thiết kế để clone và chạy trên nhiều máy tính khác nhau.
+- **CẤM TUYỆT ĐỐI 100%**: AI/Agent KHÔNG ĐƯỢC PHÉP gán bất kỳ đường dẫn tuyệt đối nào của máy tính đang làm việc (ví dụ: `D:\...`, `C:\Users\...`) vào trong mã nguồn, file cấu hình, hay code mẫu.
+- Mọi đường dẫn trong dự án BẮT BUỘC phải dùng đường dẫn tương đối từ `BASE_DIR` (ví dụ: `BASE_DIR / "cookies.txt"`).
+- Mọi file đầu vào (như cookie, video, audio) phải được nạp thông qua giao diện Web hoặc đặt trong thư mục dự án, đảm bảo bất kỳ máy nào clone về cũng hoạt động độc lập ngay lập tức mà không dính đường dẫn máy cũ.
+
+
+

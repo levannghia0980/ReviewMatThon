@@ -140,6 +140,49 @@ class PostProcessor:
                     break
 
         if isinstance(parsed_json, list) and len(parsed_json) > 0:
+            # Kiểm tra xem có phải định dạng câu gộp có 's' và 'e'
+            is_merged_format = any(isinstance(it, dict) and "s" in it and "e" in it for it in parsed_json)
+            if is_merged_format:
+                from app.services.translation.smart_timeline_healer import SmartTimelineHealer
+                orig_dicts = [
+                    {"index": getattr(s, 'id', i+1), "start": float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0), "end": float(getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0), "zh": s.clean_text or s.text or ""}
+                    for i, s in enumerate(original_segments)
+                ]
+                healed_items, _, _ = SmartTimelineHealer.audit_and_heal(orig_dicts, parsed_json)
+                
+                # Ánh xạ câu gộp vào original_segments
+                # Mỗi câu gốc nằm trong khoảng [s, e] của câu gộp sẽ nhận nội dung hoặc câu đầu nhận câu dịch, các câu sau rỗng
+                # Để tương thích ngược tối đa: gán câu dịch trọn vẹn vào câu đầu tiên trong nhóm gộp
+                for item in healed_items:
+                    it_s = round(float(item.get("s", 0)), 2)
+                    it_e = round(float(item.get("e", 0)), 2)
+                    vi_val = str(item.get("vi", "")).strip()
+                    
+                    # Tìm các mẩu gốc nằm trong khoảng [it_s, it_e]
+                    matched_segs = [
+                        s for s in original_segments 
+                        if round(float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0), 2) >= it_s - 0.05
+                        and round(float(getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0), 2) <= it_e + 0.05
+                    ]
+                    if matched_segs:
+                        # Gán câu dịch hoàn chỉnh vào mẩu gốc đầu tiên của nhóm
+                        lead_seg = matched_segs[0]
+                        result_map[lead_seg.id] = vi_val
+                        # ĐỒNG BỘ THỜI LƯỢNG GỘP: Cập nhật end của câu đầu thành end của câu cuối nhóm gộp
+                        last_end_val = getattr(matched_segs[-1], 'end', 0.0) or getattr(matched_segs[-1], 'end_time', 0.0) or it_e
+                        lead_start_val = getattr(lead_seg, 'start', 0.0) or getattr(lead_seg, 'start_time', 0.0) or it_s
+                        lead_seg.end = last_end_val
+                        lead_seg.duration = max(0.1, round(last_end_val - lead_start_val, 2))
+
+                        # Các mẩu còn lại trong nhóm gộp gán chuỗi rỗng "" và duration = 0
+                        for extra_s in matched_segs[1:]:
+                            result_map[extra_s.id] = ""
+                            extra_s.duration = 0.0
+                    elif original_segments:
+                        # Fallback nếu không khớp chính xác
+                        result_map[original_segments[0].id] = vi_val
+                return result_map
+
             json_matched = 0
             for item in parsed_json:
                 if isinstance(item, dict):

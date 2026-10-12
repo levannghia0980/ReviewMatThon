@@ -199,41 +199,60 @@ class CapCutTTSService:
             return _AUDIO_CACHE[cache_key]
 
         actual_cookie = cookie or DEFAULT_CAPCUT_COOKIE
-        if not actual_cookie:
-            logger.warning("[CapCut TTS] Chưa cấu hình CAPCUT_COOKIE trong .env!")
-            return None
 
-        endpoint = "https://lf16-capcut.faceu.mobi/api/v1/tts/invoke"
-        payload = {
-            "text": clean_text,
-            "speaker": voice_code,
-            "speed": playback_speed,
-            "format": "mp3"
-        }
-        headers = {
-            "Cookie": f"sessionid={actual_cookie}" if not actual_cookie.startswith("sessionid=") else actual_cookie,
-            "Content-Type": "application/json"
-        }
+        # =====================================================================
+        # GHI CHÚ LỊCH SỬ (OLD TQ DRIVER):
+        # Endpoint cũ TQ (faceu.mobi) thường xuyên bị timeout/lỗi DNS tại VN:
+        # endpoint = "https://lf16-capcut.faceu.mobi/api/v1/tts/invoke"
+        # =====================================================================
+        # HIỆN TẠI: Sử dụng CapCut Global Singapore (editor-api-sg.capcutapi.com)
+        # Tốc độ cao qua Akamai CDN Đông Nam Á, hỗ trợ 100% tài khoản & vùng Việt Nam
+        from app.services.capcut_tts_api import CapCutClient
+        from app.services.capcut_tts_api.models import DeviceConfig
+
+        actual_cookie = cookie or DEFAULT_CAPCUT_COOKIE
+        dev = DeviceConfig.create_random()
+        client = CapCutClient(device=dev, cookie=actual_cookie)
 
         for attempt in range(1, max_retries + 1):
             try:
-                res = _GLOBAL_SESSION.post(endpoint, json=payload, headers=headers, timeout=15)
+                url, headers, body_text = client.build_tts_new_request([clean_text], voice=voice_code)
+                res = _GLOBAL_SESSION.post(url, headers=headers, data=body_text.encode("utf-8"), timeout=15)
                 if res.status_code == 200:
                     data = res.json()
-                    speech_url = data.get("data", {}).get("url") or data.get("speech_url")
-                    if speech_url:
-                        dl_res = _GLOBAL_SESSION.get(speech_url, timeout=12)
-                        if dl_res.status_code == 200 and len(dl_res.content) > 200:
-                            seg = _load_audio_from_bytes(dl_res.content, format="mp3")
-                            seg = cls.trim_audio_silence(seg)
-                            if len(seg) > 100:
-                                _AUDIO_CACHE[cache_key] = seg
-                                return seg
+                    tasks = (data.get("data") or {}).get("tasks") or []
+                    if tasks:
+                        task_id = tasks[0].get("id")
+                        token = tasks[0].get("token")
+                        if task_id and token:
+                            # Polling lấy speech_url từ CapCut Global SAMI
+                            for _ in range(12):
+                                time.sleep(0.4)
+                                q_url, q_headers, q_body = client.build_query_request(task_id, token, mode="tts")
+                                q_res = _GLOBAL_SESSION.post(q_url, headers=q_headers, data=q_body.encode("utf-8"), timeout=10)
+                                if q_res.status_code == 200:
+                                    q_data = q_res.json()
+                                    q_tasks = (q_data.get("data") or {}).get("tasks") or []
+                                    if q_tasks and q_tasks[0].get("status") in ("success", "succeed"):
+                                        payload_raw = q_tasks[0].get("payload") or "{}"
+                                        payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+                                        subs = payload.get("audio_subtitles") or []
+                                        if subs and subs[0].get("speech_url"):
+                                            dl_res = _GLOBAL_SESSION.get(subs[0]["speech_url"], timeout=12)
+                                            if dl_res.status_code == 200 and len(dl_res.content) > 100:
+                                                seg = _load_audio_from_bytes(dl_res.content, format="mp3")
+                                                seg = cls.trim_audio_silence(seg)
+                                                if len(seg) > 100:
+                                                    _AUDIO_CACHE[cache_key] = seg
+                                                    return seg
+                                        break
+                                    elif q_tasks and q_tasks[0].get("status") == "failed":
+                                        break
                 time.sleep(0.15)
             except Exception as exc:
                 err_str = str(exc)
                 if attempt == max_retries:
-                    logger.error(f"[CapCut TTS] Thất bại câu: {clean_text[:40]} -> {err_str}")
+                    logger.error(f"[CapCut Global TTS] Thất bại câu: {clean_text[:40]} -> {err_str}")
         return None
 
     @classmethod
@@ -314,11 +333,28 @@ class CapCutTTSService:
             DialogueSegmentModel.task_id == project_id
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
-        # Khử trùng lặp tuyệt đối theo index (phòng vệ đa tầng)
+        # CHỐT CHẶN BẢO VỆ TTS: Kiểm tra các câu phình bất thường (nguy cơ gộp câu cũ)
+        abnormal_count = 0
+        for d in dialogues:
+            orig = (d.clean_text or d.original_text or "").strip()
+            trans = (d.translated_text or "").strip()
+            w_count = len(trans.split()) if trans else 0
+            if len(orig) <= 4 and w_count >= 14:
+                abnormal_count += 1
+
+        if abnormal_count > 2:
+            task_manager.add_log(task_id, f"⚠️ Phát hiện {abnormal_count} câu bị phình thời lượng bất thường (> 2 câu). Đang tự động chuẩn hóa trước khi tạo TTS...", "amber")
+            ensure_project_dialogues_vietnamese(db, project_id)
+            dialogues = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id
+            ).order_by(DialogueSegmentModel.index.asc()).all()
+
+        # Khử trùng lặp tuyệt đối theo index & chỉ lấy các câu có nội dung dịch thực tế (> 0s)
         seen_d_idx = set()
         unique_dialogues = []
         for d in dialogues:
-            if d.index not in seen_d_idx:
+            vt = (d.translated_text or "").strip()
+            if d.index not in seen_d_idx and vt and getattr(d, 'duration', 0.0) > 0.0:
                 seen_d_idx.add(d.index)
                 unique_dialogues.append(d)
         dialogues = unique_dialogues
@@ -485,15 +521,8 @@ class CapCutTTSService:
         trimmed_sentences_count = 0
         high_speed_anomalies = []
 
-        # 0. ĐIỀU PHỐI VAY MƯỢN THỜI GIAN TIMELINE (Timeline Borrower)
-        # Tự động vay mượn từ câu liền trước/sau đối với các câu thiếu hụt cửa sổ
-        borrow_transactions = TimelineBorrower.rebalance_timeline(
-            dialogues=dialogues,
-            raw_results_map=raw_results_map,
-            target_ratio=1.35
-        )
-        if borrow_transactions:
-            task_manager.add_log(task_id, f"🤝 [Timeline Borrower] Đã điều phối cho vay {len(borrow_transactions)} câu thiếu hụt thành công!", "emerald")
+        # 0. KHÓA CHẶT TIMELINE CHUẨN (ĐÃ TẮT ĐI VAY THỜI GIAN ĐỂ GIỮ NGUYÊN MỐC THỜI GIAN SAU GỘP CÂU)
+        # Giữ nguyên mốc start và end chuẩn xác của từng câu gộp, không xô lệch thời gian gốc.
 
         for idx_d, d in enumerate(dialogues):
             raw_seg = raw_results_map.get(d.id)

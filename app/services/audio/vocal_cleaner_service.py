@@ -31,11 +31,9 @@ class VocalCleanerService:
 
         dst.parent.mkdir(parents=True, exist_ok=True)
 
-        # Kiểm tra kích thước file: 16kHz Mono WAV có tốc độ 32KB/s (khoảng 1.9MB/phút)
-        # Nếu file > 60MB (tương đương > 30 phút), DeepFilterNet chạy toàn bộ sẽ rất chậm và dễ tràn RAM.
-        # Chuyển thẳng sang FFmpeg Vocal Enhancer (chỉ mất vài chục giây cho video 10 tiếng)
-        file_size_mb = src.stat().st_size / (1024 * 1024)
-        run_deepfilter = file_size_mb <= 60.0
+        # Không chạy DeepFilterNet cho ASR vì mô hình AI khử nhiễu nặng dễ làm méo khẩu hình/nuốt phụ âm tiếng Trung, lại ngốn CPU/RAM máy yếu.
+        # Luôn ưu tiên dùng thẳng FFmpeg Vocal Clarity siêu tốc (chỉ 0.5s - 1s, giữ 100% âm sắc tự nhiên).
+        run_deepfilter = False
 
         if run_deepfilter:
             # 1. Thử nghiệm lọc tạp âm chuyên sâu bằng DeepFilterNet3 cho file ngắn/vừa
@@ -83,11 +81,13 @@ except Exception as err:
             except Exception:
                 pass
 
-        # 2. Cấp 2: Bộ lọc âm thanh FFmpeg Vocal Enhancer (Khử nhiễu nền, lọc tần số thoại 120Hz-7500Hz, nâng âm lượng giọng nói)
+        # 2. Cấp 2: Bộ lọc âm thanh FFmpeg Vocal Clarity (Rõ khẩu hình, bảo toàn phụ âm, cân bằng âm lượng tự nhiên)
         try:
             from app.utils.bin_helper import get_ffmpeg_cmd
             ff_cmd = get_ffmpeg_cmd()
-            filter_str = "highpass=f=120,lowpass=f=7500,afftdn=nf=-20,compand=attacks=0.02:decays=0.1:points=-80/-80|-45/-30|-20/-10|0/0,volume=1.35"
+            # Bỏ afftdn và compand gắt (vốn làm méo dạng sóng và mất âm gió/phụ âm tiếng Trung).
+            # Dùng highpass 80Hz, lowpass 7600Hz, EQ nhẹ 3kHz tăng độ rõ phụ âm, speechnorm cân bằng âm thoại và alimiter chống vỡ tiếng.
+            filter_str = "highpass=f=80,lowpass=f=7600,equalizer=f=3000:t=q:w=1.5:g=2.5,speechnorm=e=4:r=0.0001:l=1,alimiter=limit=0.95"
             cmd = [
                 *ff_cmd, "-y",
                 "-i", str(src),
@@ -98,7 +98,7 @@ except Exception as err:
             ]
             sub = subprocess.run(cmd, capture_output=True)
             if sub.returncode == 0 and dst.exists() and dst.stat().st_size > 1000:
-                logger.info(f"[VocalCleaner] Đã lọc sạch tạp âm qua FFmpeg Vocal Enhancer -> {dst.name}")
+                logger.info(f"[VocalCleaner] Đã lọc âm rõ khẩu hình qua FFmpeg Vocal Clarity -> {dst.name}")
                 return str(dst)
         except Exception as e:
             logger.warning(f"[VocalCleaner] Lọc âm fallback lỗi: {e}")

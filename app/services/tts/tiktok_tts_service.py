@@ -320,6 +320,22 @@ class TikTokTTSService:
             DialogueSegmentModel.task_id == project_id
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
+        # CHỐT CHẶN BẢO VỆ TTS: Kiểm tra các câu phình bất thường (nguy cơ gộp câu cũ)
+        abnormal_count = 0
+        for d in dialogues:
+            orig = (d.clean_text or d.original_text or "").strip()
+            trans = (d.translated_text or "").strip()
+            w_count = len(trans.split()) if trans else 0
+            if len(orig) <= 4 and w_count >= 14:
+                abnormal_count += 1
+
+        if abnormal_count > 2:
+            task_manager.add_log(task_id, f"⚠️ Phát hiện {abnormal_count} câu bị phình thời lượng bất thường (> 2 câu). Đang tự động chuẩn hóa trước khi tạo TTS...", "amber")
+            ensure_project_dialogues_vietnamese(db, project_id)
+            dialogues = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id
+            ).order_by(DialogueSegmentModel.index.asc()).all()
+
         # Khử trùng lặp tuyệt đối theo index (phòng vệ đa tầng)
         seen_d_idx = set()
         unique_dialogues = []

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
 import { ALL_VOICES } from '../constants/voices';
+import { startSafePolling } from '../utils/safePolling';
 
 export default function QuickAutoTab({ onNavigateStudio }) {
   const [url, setUrl] = useState('');
@@ -31,35 +32,36 @@ export default function QuickAutoTab({ onNavigateStudio }) {
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewAudioUrl, setPreviewAudioUrl] = useState(null);
 
-  // Poll Task Status
+  // Poll Task Status An Toàn
   useEffect(() => {
-    let interval = null;
-    if (isRunning && taskId) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/v1/pipeline/status/${taskId}`);
-          if (!res.ok) return;
-          const data = await res.json();
-          setTaskStatus(data.status);
-          setProgress(data.progress || 0);
-          setCurrentStep(data.step || 1);
-          if (data.logs) setLogs(data.logs);
+    if (!isRunning || !taskId) return;
 
-          if (data.status === 'completed') {
-            setIsRunning(false);
-            setResult(data.result);
-            clearInterval(interval);
-          } else if (data.status === 'failed') {
-            setIsRunning(false);
-            setError(data.error || 'Quy trình thất bại');
-            clearInterval(interval);
-          }
-        } catch (e) {
-          console.error(e);
+    const stopPolling = startSafePolling({
+      interval: 1500,
+      timeoutMs: 4000,
+      fn: async (signal) => {
+        const res = await fetch(`/api/v1/pipeline/status/${taskId}`, { signal });
+        if (!res.ok) return true;
+        const data = await res.json();
+        setTaskStatus(data.status);
+        setProgress(data.progress || 0);
+        setCurrentStep(data.step || 1);
+        if (data.logs) setLogs(data.logs);
+
+        if (data.status === 'completed') {
+          setIsRunning(false);
+          setResult(data.result);
+          return false; // Dừng polling
+        } else if (data.status === 'failed') {
+          setIsRunning(false);
+          setError(data.error || 'Quy trình thất bại');
+          return false; // Dừng polling
         }
-      }, 1200);
-    }
-    return () => clearInterval(interval);
+        return true;
+      }
+    });
+
+    return () => stopPolling();
   }, [isRunning, taskId]);
 
   const handleStartFullAuto = async () => {

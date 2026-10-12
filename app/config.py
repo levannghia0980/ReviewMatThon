@@ -19,6 +19,11 @@ INPUT_AUDIO_DIR = INPUT_DIR / "audio_raw"
 
 # 2. Thư mục OUTPUT (Lưu trữ kết quả xử lý đa tầng chuẩn AIREAD)
 OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_PROJECTS_DIR = OUTPUT_DIR / "projects"
+OUTPUT_FINAL_VIDEOS_DIR = OUTPUT_DIR / "final_videos"
+TEMP_DIR = BASE_DIR / "temp"
+
+# Tương thích ngược các folder cũ
 OUTPUT_TRANSCRIPTS_DIR = OUTPUT_DIR / "transcripts"
 OUTPUT_RAW_CLEANED_DIR = OUTPUT_DIR / "01_raw_cleaned"
 OUTPUT_ENTITIES_DIR = OUTPUT_DIR / "02_entities"
@@ -26,11 +31,33 @@ OUTPUT_DICH_AI_LLM_DIR = OUTPUT_DIR / "03_dich_ai_llm"
 OUTPUT_POST_PROCESSED_DIR = OUTPUT_DIR / "04_post_processed"
 OUTPUT_TRANSLATIONS_DIR = OUTPUT_DIR / "translations"
 OUTPUT_VOICEOVER_DIR = OUTPUT_DIR / "voiceover"
-OUTPUT_FINAL_VIDEOS_DIR = OUTPUT_DIR / "final_videos"
-
-# 3. Thư mục TEMP & TTS CACHE (Lưu trữ file rác khi tạo TTS: chunk mp3, ffmpeg cache)
-TEMP_DIR = BASE_DIR / "temp"
 TEMP_TTS_DIR = TEMP_DIR / "tts_cache"
+
+
+def get_project_dirs(project_id: int) -> dict:
+    """
+    Trả về cấu trúc thư mục chuẩn mực theo số thứ tự ID trong Database:
+    output/projects/project_{id}/
+      ├── entities/     (Folder con lưu thực thể từng lô và toàn bộ truyện)
+      └── llm_io/       (Folder con lưu đầu vào / đầu ra LLM)
+
+    Tất cả file rác, file đệm tạm thời gom chung về TEMP_DIR tổng để tiện dọn dẹp định kỳ 1 chỗ.
+    """
+    base_proj = OUTPUT_PROJECTS_DIR / f"project_{project_id}"
+    entities_dir = base_proj / "entities"
+    llm_io_dir = base_proj / "llm_io"
+
+    for d in [base_proj, entities_dir, llm_io_dir]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "root": base_proj,
+        "entities": entities_dir,
+        "llm_io": llm_io_dir,
+        "temp": TEMP_DIR,
+        "final_videos": OUTPUT_FINAL_VIDEOS_DIR
+    }
+
 
 # 4. Thư mục DATABASE (SQLite)
 DB_DIR = BASE_DIR / "database"
@@ -47,13 +74,7 @@ TOOLS_DIR = BASE_DIR / "tools"
 ALL_DIRS = [
     INPUT_VIDEOS_DIR,
     INPUT_AUDIO_DIR,
-    OUTPUT_TRANSCRIPTS_DIR,
-    OUTPUT_RAW_CLEANED_DIR,
-    OUTPUT_ENTITIES_DIR,
-    OUTPUT_DICH_AI_LLM_DIR,
-    OUTPUT_POST_PROCESSED_DIR,
-    OUTPUT_TRANSLATIONS_DIR,
-    OUTPUT_VOICEOVER_DIR,
+    OUTPUT_PROJECTS_DIR,
     OUTPUT_FINAL_VIDEOS_DIR,
     TEMP_DIR,
     TEMP_TTS_DIR,
@@ -149,25 +170,23 @@ class Settings:
     @classmethod
     def get_bilibili_cookie_path(cls) -> Optional[str]:
         """
-        Tìm kiếm file cookie Bilibili hợp lệ theo thứ tự ưu tiên:
-        1. Đường dẫn cấu hình trong .env (BILIBILI_COOKIE_FILE)
-        2. File cookies.txt ngay tại thư mục gốc dự án ReviewMatThon
-        3. File cookies.txt từ thư mục TOOLDOWNLOADVIDEO (nếu chạy trên máy dev)
-        Trả về đường dẫn tuyệt đối dạng str nếu tồn tại, ngược lại trả về None.
+        Tìm kiếm file cookie Bilibili hợp lệ:
+        1. Đường dẫn cấu hình trong .env (BILIBILI_COOKIE_FILE), hỗ trợ cả tương đối và tuyệt đối
+        2. File cookies.txt ngay tại thư mục gốc dự án
+        Trả về đường dẫn tuyệt đối nếu tồn tại, ngược lại trả về None.
+        Tuyệt đối không hardcode đường dẫn cục bộ máy tính.
         """
-        custom_path = getattr(cls, "BILIBILI_COOKIE_FILE", "")
+        custom_path = getattr(cls, "BILIBILI_COOKIE_FILE", "").strip().strip('"').strip("'")
         if custom_path:
-            p = Path(custom_path.strip().strip('"').strip("'"))
+            p = Path(custom_path)
+            if not p.is_absolute():
+                p = cls.BASE_DIR / custom_path
             if p.is_file() and p.stat().st_size > 0:
                 return str(p.resolve())
         
         local_cookie = cls.BASE_DIR / "cookies.txt"
         if local_cookie.is_file() and local_cookie.stat().st_size > 0:
             return str(local_cookie.resolve())
-            
-        tool_cookie = Path(r"D:\NENGHIA0980\TOOLDOWNLOADVIDEO\cookies.txt")
-        if tool_cookie.is_file() and tool_cookie.stat().st_size > 0:
-            return str(tool_cookie.resolve())
             
         return None
 

@@ -437,10 +437,14 @@ def reset_project_to_translated(project_id: int, db: Session = Depends(get_db)):
     """
     Reset thông minh: Chỉ dọn dẹp âm thanh TTS thuyết minh và Video render thành phẩm.
     GIỮ NGUYÊN 100%:
-    - Video gốc đã tải
+    - Video gốc đã tải ({video_id}_raw.mp4)
     - Toàn bộ câu thoại gốc và bản dịch tiếng Việt trong Database
-    - File SRT/TXT bản dịch
-    Đưa trạng thái dự án về 'TRANSLATED' (hoặc 'TRANSCRIBED' nếu chưa dịch) để người dùng có thể chạy lại TTS/Render mà không phải tải lại hay dịch lại từ đầu.
+    - File SRT/TXT/JSON, timeline_balance_report.json, thư mục entities/ và llm_io/
+    XÓA SẠCH:
+    - Thư mục temp/ của dự án (chứa các đoạn render video tạm, file audio mix tạm)
+    - File video hoàn chỉnh trong output/final_videos/
+    - File voiceover cũ
+    Đưa trạng thái dự án về 'TRANSLATED' để người dùng có thể chạy lại TTS/Render mà không phải tải lại hay dịch lại từ đầu.
     """
     project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
     if not project:
@@ -449,15 +453,27 @@ def reset_project_to_translated(project_id: int, db: Session = Depends(get_db)):
     vid = project.video_id
     raw_video_abs = os.path.abspath(project.video_path) if project.video_path else None
     deleted_files = []
+    import shutil
 
-    # 1. Quét và dọn các thư mục phái sinh sau dịch (TTS, Voiceover, Final Video, Scratch)
+    # 1. Dọn sạch các file tạm liên quan đến vid trong thư mục TEMP_DIR tổng
+    if settings.TEMP_DIR.exists():
+        for f in list(settings.TEMP_DIR.glob(f"*{vid}*")):
+            try:
+                if f.is_file():
+                    f.unlink(missing_ok=True)
+                    deleted_files.append(f"temp/{f.name}")
+                elif f.is_dir():
+                    shutil.rmtree(f, ignore_errors=True)
+                    deleted_files.append(f"temp/{f.name}/")
+            except Exception as e:
+                print(f"Lỗi xóa temp: {e}")
+
+    # 2. Quét dọn các file voiceover cũ và cache TTS
     scan_dirs = [
         settings.OUTPUT_VOICEOVER_DIR,
-        settings.OUTPUT_FINAL_VIDEOS_DIR,
         settings.TEMP_TTS_DIR,
         settings.BASE_DIR / "scratch",
     ]
-
     for target_dir in scan_dirs:
         if target_dir.exists():
             for f in list(target_dir.glob(f"*{vid}*")):
@@ -469,13 +485,12 @@ def reset_project_to_translated(project_id: int, db: Session = Depends(get_db)):
                         f.unlink(missing_ok=True)
                         deleted_files.append(f.name)
                     elif f.is_dir():
-                        import shutil
                         shutil.rmtree(f, ignore_errors=True)
                         deleted_files.append(f"{f.name}/")
-                except Exception as e:
-                    print(f"Không thể xóa file {f}: {e}")
+                except Exception:
+                    pass
 
-    # 2. Xóa final_video_path nếu có
+    # 3. Xóa final_video_path trong output/final_videos/ nếu có
     if project.final_video_path and os.path.exists(project.final_video_path):
         try:
             abs_p = os.path.abspath(project.final_video_path)
@@ -485,7 +500,18 @@ def reset_project_to_translated(project_id: int, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-    # 3. Kiểm tra xem project có câu thoại đã dịch không để đặt trạng thái chuẩn
+    # Quét thêm trong output/final_videos các file dính vid
+    if settings.OUTPUT_FINAL_VIDEOS_DIR.exists():
+        for f in list(settings.OUTPUT_FINAL_VIDEOS_DIR.glob(f"*{vid}*")):
+            try:
+                abs_f = os.path.abspath(str(f))
+                if not (raw_video_abs and abs_f == raw_video_abs):
+                    f.unlink(missing_ok=True)
+                    deleted_files.append(f.name)
+            except Exception:
+                pass
+
+    # 4. Kiểm tra xem project có câu thoại đã dịch không để đặt trạng thái chuẩn
     total_diag = db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project_id).count()
     translated_diag = db.query(DialogueSegmentModel).filter(
         DialogueSegmentModel.task_id == project_id,
@@ -519,6 +545,16 @@ def reset_project_to_translated(project_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{project_id}/reset", summary="Reset Project về lúc mới tải xong (giữ lại video gốc, xóa toàn bộ sản phẩm phái sinh)")
 def reset_project(project_id: int, db: Session = Depends(get_db)):
+    """
+    Reset về lúc mới tải xong:
+    GIỮ NGUYÊN: Duy nhất file video gốc ({video_id}_raw.mp4) trong output/projects/project_{id}/
+    XÓA SẠCH:
+    - Thư mục entities/, llm_io/, temp/ bên trong project_{id}/
+    - Tất cả file phụ đề SRT, JSON, TXT, ASS, WAV bên trong project_{id}/
+    - Video hoàn chỉnh trong output/final_videos/
+    - Toàn bộ câu thoại (DialogueSegmentModel) trong SQLite
+    Đưa trạng thái về DOWNLOADED.
+    """
     project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Không tìm thấy project để reset!")
@@ -526,9 +562,68 @@ def reset_project(project_id: int, db: Session = Depends(get_db)):
     vid = project.video_id
     raw_video_abs = os.path.abspath(project.video_path) if project.video_path else None
     deleted_files = []
+    import shutil
 
-    # 1. Các thư mục cần quét và xóa sạch sản phẩm phái sinh (KHÔNG BAO GỒM file video gốc)
-    scan_dirs = [
+    from app.config import get_project_dirs
+    p_dirs = get_project_dirs(project_id)
+    root_dir = p_dirs["root"]
+
+    # 1. Dọn sạch nội dung các thư mục con entities, llm_io trong project_{id}
+    for sub in [p_dirs["entities"], p_dirs["llm_io"]]:
+        if sub.exists():
+            for f in sub.iterdir():
+                try:
+                    if f.is_file():
+                        f.unlink(missing_ok=True)
+                        deleted_files.append(f"{sub.name}/{f.name}")
+                    elif f.is_dir():
+                        shutil.rmtree(f, ignore_errors=True)
+                        deleted_files.append(f"{sub.name}/{f.name}/")
+                except Exception as e:
+                    print(f"Lỗi xóa {sub.name}: {e}")
+
+    # 1b. Dọn sạch các file tạm của vid trong TEMP_DIR tổng
+    if settings.TEMP_DIR.exists():
+        for f in list(settings.TEMP_DIR.glob(f"*{vid}*")):
+            try:
+                if f.is_file():
+                    f.unlink(missing_ok=True)
+                    deleted_files.append(f"temp/{f.name}")
+                elif f.is_dir():
+                    shutil.rmtree(f, ignore_errors=True)
+                    deleted_files.append(f"temp/{f.name}/")
+            except Exception:
+                pass
+
+    # 2. Xóa các file phái sinh trong root_dir của project (giữ lại duy nhất raw video)
+    if root_dir.exists():
+        for f in root_dir.iterdir():
+            if f.is_file():
+                abs_f = os.path.abspath(str(f))
+                if raw_video_abs and abs_f == raw_video_abs:
+                    continue
+                # Giữ lại nếu là file raw video
+                if f.name.endswith("_raw.mp4") or f.name.endswith("_raw.mkv"):
+                    continue
+                try:
+                    f.unlink(missing_ok=True)
+                    deleted_files.append(f.name)
+                except Exception:
+                    pass
+
+    # 3. Dọn sạch final video trong output/final_videos/
+    if settings.OUTPUT_FINAL_VIDEOS_DIR.exists():
+        for f in list(settings.OUTPUT_FINAL_VIDEOS_DIR.glob(f"*{vid}*")):
+            try:
+                abs_f = os.path.abspath(str(f))
+                if not (raw_video_abs and abs_f == raw_video_abs):
+                    f.unlink(missing_ok=True)
+                    deleted_files.append(f.name)
+            except Exception:
+                pass
+
+    # 4. Xóa legacy files nếu có
+    legacy_dirs = [
         settings.INPUT_AUDIO_DIR,
         settings.OUTPUT_TRANSCRIPTS_DIR,
         settings.OUTPUT_RAW_CLEANED_DIR,
@@ -537,49 +632,33 @@ def reset_project(project_id: int, db: Session = Depends(get_db)):
         settings.OUTPUT_POST_PROCESSED_DIR,
         settings.OUTPUT_TRANSLATIONS_DIR,
         settings.OUTPUT_VOICEOVER_DIR,
-        settings.OUTPUT_FINAL_VIDEOS_DIR,
         settings.TEMP_TTS_DIR,
         settings.BASE_DIR / "scratch",
     ]
-
-    for target_dir in scan_dirs:
+    for target_dir in legacy_dirs:
         if target_dir.exists():
             for f in list(target_dir.glob(f"*{vid}*")):
                 try:
                     abs_f = os.path.abspath(str(f))
-                    # Tuyệt đối không xóa nếu trùng với file video gốc
                     if raw_video_abs and abs_f == raw_video_abs:
                         continue
                     if f.is_file():
                         f.unlink(missing_ok=True)
                         deleted_files.append(f.name)
                     elif f.is_dir():
-                        import shutil
                         shutil.rmtree(f, ignore_errors=True)
                         deleted_files.append(f"{f.name}/")
-                except Exception as e:
-                    print(f"Không thể xóa file {f}: {e}")
+                except Exception:
+                    pass
 
-    # 2. Xóa các file phái sinh cụ thể được lưu trong database (bỏ qua video_path gốc)
-    for path_attr in [project.audio_path, project.srt_path, project.txt_path, project.json_path, project.final_video_path]:
-        if path_attr and os.path.exists(path_attr):
-            try:
-                abs_p = os.path.abspath(path_attr)
-                if raw_video_abs and abs_p == raw_video_abs:
-                    continue
-                os.remove(path_attr)
-                deleted_files.append(os.path.basename(path_attr))
-            except Exception:
-                pass
-
-    # 3. Xóa toàn bộ câu thoại (DialogueSegmentModel) liên quan đến project này
+    # 5. Xóa toàn bộ câu thoại (DialogueSegmentModel) liên quan đến project này
     db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project_id).delete(synchronize_session=False)
     db.commit()
     for obj in list(db.identity_map.values()):
         if isinstance(obj, DialogueSegmentModel):
             db.expunge(obj)
 
-    # 4. Đưa trạng thái ProjectTask về lúc mới tải xong (DOWNLOADED)
+    # 6. Đưa trạng thái ProjectTask về lúc mới tải xong (DOWNLOADED)
     project.status = "DOWNLOADED"
     project.audio_path = None
     project.srt_path = None

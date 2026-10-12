@@ -4,6 +4,7 @@ import {
   Search, Save, Download, RefreshCw, Layers, UserCheck, ShieldCheck, Play
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
+import { startSafePolling } from '../utils/safePolling';
 
 export default function TranslationStudioTab({ initialProjectId }) {
   const [projects, setProjects] = useState([]);
@@ -68,32 +69,33 @@ export default function TranslationStudioTab({ initialProjectId }) {
     }
   };
 
-  // Poll translation status
+  // Poll translation status an toàn
   useEffect(() => {
-    let interval = null;
-    if (isTranslating && taskId) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/v1/translate/status/${taskId}`);
-          if (!res.ok) return;
-          const data = await res.json();
-          setTransProgress(data.progress || 0);
+    if (!isTranslating || !taskId) return;
 
-          if (data.status === 'completed') {
-            setIsTranslating(false);
-            clearInterval(interval);
-            loadProjectDetails(selectedProjectId);
-          } else if (data.status === 'failed') {
-            setIsTranslating(false);
-            clearInterval(interval);
-            alert(`Lỗi dịch thuật: ${data.error}`);
-          }
-        } catch (e) {
-          console.error(e);
+    const stopPolling = startSafePolling({
+      interval: 1500,
+      timeoutMs: 4000,
+      fn: async (signal) => {
+        const res = await fetch(`/api/v1/translate/status/${taskId}`, { signal });
+        if (!res.ok) return true;
+        const data = await res.json();
+        setTransProgress(data.progress || 0);
+
+        if (data.status === 'completed') {
+          setIsTranslating(false);
+          loadProjectDetails(selectedProjectId);
+          return false;
+        } else if (data.status === 'failed') {
+          setIsTranslating(false);
+          alert(`Lỗi dịch thuật: ${data.error}`);
+          return false;
         }
-      }, 1500);
-    }
-    return () => clearInterval(interval);
+        return true;
+      }
+    });
+
+    return () => stopPolling();
   }, [isTranslating, taskId]);
 
   const handleStartTranslateAll = async () => {

@@ -1,4 +1,4 @@
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any, Dict, Union
 from pydantic import BaseModel, Field
 from app.schemas.transcript import DialogueSegment
 
@@ -69,7 +69,7 @@ class TaskStatusResponse(BaseModel):
     status: str
     step: int
     message: str
-    progress: int
+    progress: Union[int, float] = 0
     logs: List[TaskLogItem] = []
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None

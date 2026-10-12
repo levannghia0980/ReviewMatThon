@@ -117,7 +117,7 @@ export default function DialogueLibraryView() {
       const chNum = Math.floor(i / size) + 1;
       const startNum = i + 1;
       const endNum = Math.min(i + size, total);
-      const transCount = slice.filter(d => !!d.translated_text).length;
+      const transCount = slice.filter(d => ['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) || (d.translated_text !== null && d.translated_text !== undefined)).length;
       const isDone = transCount === slice.length;
 
       list.push({
@@ -156,9 +156,9 @@ export default function DialogueLibraryView() {
 
     // Lọc theo trạng thái
     if (filter === 'TRANSLATED') {
-      list = list.filter(d => !!(d.translated_text && d.translated_text.trim()));
+      list = list.filter(d => ['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) || (d.translated_text !== null && d.translated_text !== undefined));
     } else if (filter === 'UNTRANSLATED') {
-      list = list.filter(d => !(d.translated_text && d.translated_text.trim()));
+      list = list.filter(d => !['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) && (d.translated_text === null || d.translated_text === undefined));
     }
 
     return list;
@@ -176,15 +176,14 @@ export default function DialogueLibraryView() {
           setProgress(data.progress || 0);
           if (data.logs) setLogs(data.logs);
 
-          // Tải cập nhật từng lô khi đang chạy
-          if (selectedProject) {
-            const updatedItems = await fetchAllDialogues(selectedProject.id);
-            setDialogues(updatedItems);
-          }
-
           if (['completed', 'DONE', 'success', 'SUCCESS'].includes(data.status)) {
             setIsTranslating(false);
             clearInterval(interval);
+            // Chỉ tải lại toàn bộ câu thoại ĐÚNG 1 LẦN DUY NHẤT khi tiến trình hoàn tất
+            if (selectedProject) {
+              const updatedItems = await fetchAllDialogues(selectedProject.id);
+              setDialogues(updatedItems);
+            }
             loadProjects();
           } else if (data.status === 'cancelled') {
             setIsTranslating(false);
@@ -200,7 +199,7 @@ export default function DialogueLibraryView() {
       }, 2000);
     }
     return () => clearInterval(interval);
-  }, [isTranslating, taskId, selectedProject]);
+  }, [isTranslating, taskId, selectedProject?.id]);
 
   // Poll STT Extraction Task
   useEffect(() => {
@@ -345,7 +344,7 @@ export default function DialogueLibraryView() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const translatedCount = dialogues.filter(d => !!d.translated_text).length;
+  const translatedCount = dialogues.filter(d => ['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) || (d.translated_text !== null && d.translated_text !== undefined)).length;
   const translatedPercent = dialogues.length > 0 ? Math.round((translatedCount / dialogues.length) * 100) : 0;
 
   // =========================================================================
@@ -662,7 +661,9 @@ export default function DialogueLibraryView() {
           ) : (
             /* CHẾ ĐỘ: ĐỌC SONG NGỮ HÁN - VIỆT ĐỐI CHIẾU (CHUẨN STUDIO AIREAD) */
             filteredDialogues.map((d) => {
-              const hasVi = !!(d.translated_text && d.translated_text.trim());
+              const isUntranslated = d.translated_text === null || d.translated_text === undefined;
+              const isSilent = !isUntranslated && !d.translated_text.trim();
+              const hasVi = !isUntranslated && !!d.translated_text.trim();
               const chIndex = Math.floor((d.index - 1) / (batchSize || 250)) + 1;
 
               return (
@@ -671,7 +672,7 @@ export default function DialogueLibraryView() {
                   style={{
                     padding: '14px 18px',
                     background: '#ffffff',
-                    borderLeft: hasVi ? '4px solid #2563eb' : '4px solid #d97706',
+                    borderLeft: hasVi ? '4px solid #2563eb' : isSilent ? '4px solid #94a3b8' : '4px solid #d97706',
                     borderRadius: '0 8px 8px 0',
                     borderTop: '1px solid var(--border)',
                     borderRight: '1px solid var(--border)',
@@ -693,8 +694,8 @@ export default function DialogueLibraryView() {
                       </span>
                     </div>
 
-                    <span className={`tag-badge ${hasVi ? 'emerald' : 'amber'}`} style={{ fontSize: '10px' }}>
-                      {hasVi ? '✓ ĐÃ DỊCH' : 'CHỜ DỊCH'}
+                    <span className={`tag-badge ${hasVi ? 'emerald' : isSilent ? 'gray' : 'amber'}`} style={{ fontSize: '10px' }}>
+                      {hasVi ? '✓ ĐÃ DỊCH' : isSilent ? '🔇 IM LẶNG / BỎ QUA' : 'CHỜ DỊCH'}
                     </span>
                   </div>
 
@@ -708,13 +709,13 @@ export default function DialogueLibraryView() {
                     <textarea
                       rows={1}
                       value={d.translated_text || ''}
-                      placeholder="Chưa có bản dịch... Nhấn [Bắt Đầu Dịch AIREAD] ở cột phải"
+                      placeholder={isSilent ? '(Đoạn này giữ im lặng / không tạo audio TTS)' : 'Chưa có bản dịch... Nhấn [Bắt Đầu Dịch AIREAD] ở cột phải'}
                       onChange={(e) => handleTextChange(d.id, e.target.value)}
                       style={{
                         width: '100%',
                         padding: '8px 12px',
-                        background: hasVi ? '#ffffff' : '#fefce8',
-                        border: hasVi ? '1px solid #cbd5e1' : '1px solid #fde047',
+                        background: hasVi ? '#ffffff' : isSilent ? '#f8fafc' : '#fefce8',
+                        border: hasVi ? '1px solid #cbd5e1' : isSilent ? '1px dashed #cbd5e1' : '1px solid #fde047',
                         borderRadius: '6px',
                         color: 'var(--text-main)',
                         fontSize: '14.5px',

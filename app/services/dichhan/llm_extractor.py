@@ -90,13 +90,17 @@ CHI TIẾT 6 NHÓM THỰC THỂ BẮT BUỘC KHÔNG ĐƯỢC BỎ SÓT:
 5. 'ITEM': Vật phẩm, trang bị, bảo vật:
    - Pháp bảo, thần binh, vũ khí, đan dược, linh thảo, linh dược, điển tịch, tác phẩm văn học, điển cố nghệ thuật. Kể cả tên đồ vật, pháp bảo bình dị đều dịch âm Hán-Việt.
 
-6. 'SKILL': Võ học, công pháp:
+6. 'SKILL': Võ học, công pháp, tuyệt kỹ, chiêu thức:
    - Tuyệt kỹ võ công, tâm pháp tu luyện, thần thông, chiêu thức, trận pháp, bí thuật, cấm thuật.
+   - LƯU Ý ĐẶC BIỆT VỚI NHÃN [nghi_van_chieu_thuc]:
+     * Với các câu/cụm từ có gắn nhãn [nghi_van_chieu_thuc]: Đây là các câu ngắn rơi vào nhịp hành động, ra đòn. BẮT BUỘC quan sát kỹ ngữ cảnh xung quanh: nếu câu đó thực sự là tên chiêu thức, thế đòn hoặc khẩu quyết võ công được thi triển/tung ra, hãy bóc tách vào nhóm 'SKILL' và dịch âm Hán-Việt viết hoa trang trọng.
+     * Lưu ý đây chỉ là gợi ý khả năng, quyết định cuối cùng phải dựa trên ngữ cảnh thực tế của câu chuyện; nếu chỉ là lời nói chuyện thông thường thì bỏ qua không bóc tách.
 
 7. 'OTHER' (BẢN SẮC THỂ LOẠI, THUẬT NGỮ THẾ GIỚI QUAN & CẢNH GIỚI):
    - Cảnh giới tu vi & Thứ bậc cao thủ: Bắt buộc bóc tách (ví dụ: 筑基 -> Trúc Cơ, 金丹 -> Kim Đan, 元婴 -> Nguyên Anh, 后天 -> Hậu Thiên, 先天 -> Tiên Thiên, 宗师 -> Tông Sư, 大宗师 -> Đại Tông Sư, 三流高手 -> Tam Lưu Cao Thủ...).
    - Khái niệm, hiện tượng & Quy ước thế giới quan: (ví dụ: 道侣 -> Đạo Lữ, 走火入魔 -> Tẩu Hỏa Nhập Ma, 夺舍 -> Đoạt Xá, 陨落 -> Vẫn Lạc, 心魔 -> Tâm Ma, 气海 -> Khí Hải, 丹田 -> Đan Điền, 任督二脉 -> Nhâm Đốc Nhị Mạch, 瓶颈 -> Bình Cảnh, 顿悟 -> Đốn Ngộ...).
    - Hệ thống (System), bảng trạng thái, nhiệm vụ: (ví dụ: 大反派系统 -> Đại Phản Phái Hệ Thống, 属性面板 -> Bảng Thuộc Tính...).
+      * ĐẶC BIỆT CHÚ Ý THUẬT NGỮ CƠ CHẾ HỆ THỐNG: Thuật ngữ 词条 (hoặc ASR nhận nhầm thành 磁条) trong thể loại hệ thống BẮT BUỘC dịch là Từ Khóa hoặc Thuộc Tính, TUYỆT ĐỐI CẤM DỊCH THÀNH từ điều thô cứng!
    - Thần vị, danh hiệu truyền thuyết, tước vị đặc thù: (ví dụ: 太上老君 -> Thái Thượng Lão Quân, 纯阳真人 -> Thuần Dương Chân Nhân, 镇元大仙 -> Trấn Nguyên Đại Tiên...).
    - Tiền tệ & Tài nguyên đặc thù của thể loại: (ví dụ: 灵石 -> Linh Thạch, 灵钱 -> Linh Tiền...).
 
@@ -143,12 +147,21 @@ def inject_chapter_extraction_prompts(text: str) -> str:
 
 
 async def extract_batch_entities_direct_llm(
-    combined_raw_text: str,
+    combined_raw_text: str = None,
     existing_entities: Dict[str, Any] = None,
     return_author_notes: bool = False,
     genre_key: str = "xianxia",
-    genre_profile_desc: str = ""
+    genre_profile_desc: str = "",
+    raw_text: str = None,
+    genre: str = None,
+    **kwargs: Any
 ) -> Any:
+    # Hỗ trợ tương thích ngược cho caller truyền raw_text hoặc genre
+    if combined_raw_text is None and raw_text is not None:
+        combined_raw_text = raw_text
+    if genre is not None and (genre_key == "xianxia" or not genre_key):
+        genre_key = genre
+
     """
     Bóc tách thực thể trực tiếp từ toàn văn RAW của lô chương bằng LLM Reasoning (Zero Code Heuristics).
     - Quét trực tiếp toàn bộ các chương trong lô theo đúng Profile Bản Sắc Thể Loại của truyện.

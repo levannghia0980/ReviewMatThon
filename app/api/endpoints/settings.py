@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional
 from groq import Groq
@@ -190,3 +190,29 @@ async def test_gemini_connection(req: TestGeminiRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Lỗi kết nối tới Google Gemini API: {str(e)}")
+
+@router.post("/upload-cookie", summary="Tải lên trực tiếp file cookies.txt vào hệ thống")
+async def upload_cookie_file(file: UploadFile = File(...)):
+    if not (file.filename or "").lower().endswith((".txt", ".cookie")):
+        raise HTTPException(status_code=400, detail="Vui lòng tải lên file văn bản định dạng .txt (ví dụ: cookies.txt)!")
+    
+    content = await file.read()
+    if not content or len(content.strip()) == 0:
+        raise HTTPException(status_code=400, detail="File cookie rỗng, vui lòng chọn file cookie có dữ liệu hợp lệ!")
+    
+    target_path = settings.BASE_DIR / "cookies.txt"
+    try:
+        with open(target_path, "wb") as f:
+            f.write(content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Không thể ghi file cookies.txt: {e}")
+        
+    settings.save_to_env({"BILIBILI_COOKIE_FILE": "cookies.txt"})
+    
+    return {
+        "status": "success",
+        "message": f"🎉 Đã nạp thành công file {file.filename} vào hệ thống!",
+        "cookie_file": "cookies.txt",
+        "has_bilibili_cookie": True,
+        "resolved_bilibili_cookie": str(target_path.resolve())
+    }

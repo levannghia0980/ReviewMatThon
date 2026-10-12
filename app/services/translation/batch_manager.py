@@ -13,17 +13,39 @@ class BatchManager:
         Đóng gói danh sách câu thoại thành mảng Object JSON tinh gọn cho LLM:
         [{"i": 1, "zh": "全球诡异爆发。"}, ...]
         Dùng key ngắn gọn 'i' và 'zh' để tiết kiệm token tối đa cho Gemini Lite.
+        Đặc biệt: Gắn thêm 'hint': 'nghi_van_chieu_thuc' cho các câu ngắn rơi vào nhịp khoảng lặng/hành động.
         """
         items = []
         for idx, s in enumerate(segments):
             text = (s.clean_text or s.text or "").strip()
             text = re.sub(r'[\r\n\t]+', ' ', text).strip()
-            if not text:
-                text = "..."
-            else:
-                if not re.search(r'[\。\！\？\.\!\?\,\，…]$', text):
-                    text = text + "。"
-            items.append({"i": idx + 1, "zh": text})
+            
+            # Tính gap khoảng lặng trước và sau câu
+            start_t = getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0
+            end_t = getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0
+            gap_prev = 0.0
+            gap_next = 0.0
+            if idx > 0:
+                prev_end = getattr(segments[idx - 1], 'end', 0.0) or getattr(segments[idx - 1], 'end_time', 0.0) or 0.0
+                gap_prev = max(0.0, start_t - prev_end)
+            if idx < len(segments) - 1:
+                next_start = getattr(segments[idx + 1], 'start', 0.0) or getattr(segments[idx + 1], 'start_time', 0.0) or 0.0
+                gap_next = max(0.0, next_start - end_t)
+
+            is_action_candidate = len(text) <= 5 and (gap_prev >= 1.0 or gap_next >= 1.0)
+
+            start_t = round(float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0), 2)
+            end_t = round(float(getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0), 2)
+            
+            item_dict = {
+                "i": idx + 1,
+                "s": start_t,
+                "e": end_t,
+                "zh": text
+            }
+            if is_action_candidate:
+                item_dict["hint"] = "nghi_van_chieu_thuc"
+            items.append(item_dict)
         return items
 
     @classmethod
@@ -35,18 +57,31 @@ class BatchManager:
         items = cls.pack_dialogues_to_json_items(segments)
         return json.dumps(items, ensure_ascii=False, indent=None)
 
-
-
     @staticmethod
     def pack_dialogues_to_clean_text(segments: List[DialogueSegment]) -> str:
         """
         Gom toàn bộ nội dung chữ Hán của lô thành văn bản mạch lạc phục vụ LLM 1 trích xuất thực thể.
+        Nếu câu là nghi vấn chiêu thức, thêm nhãn nhẹ [nghi_van_chieu_thuc] để LLM 1 chú ý bóc tách.
         """
         lines = []
-        for s in segments:
+        for idx, s in enumerate(segments):
             text = (s.clean_text or s.text or "").strip()
             if text:
-                lines.append(text)
+                start_t = getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0
+                end_t = getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0
+                gap_prev = 0.0
+                gap_next = 0.0
+                if idx > 0:
+                    prev_end = getattr(segments[idx - 1], 'end', 0.0) or getattr(segments[idx - 1], 'end_time', 0.0) or 0.0
+                    gap_prev = max(0.0, start_t - prev_end)
+                if idx < len(segments) - 1:
+                    next_start = getattr(segments[idx + 1], 'start', 0.0) or getattr(segments[idx + 1], 'start_time', 0.0) or 0.0
+                    gap_next = max(0.0, next_start - end_t)
+
+                if len(text) <= 5 and (gap_prev >= 1.0 or gap_next >= 1.0):
+                    lines.append(f"{text} [nghi_van_chieu_thuc]")
+                else:
+                    lines.append(text)
         return "\n".join(lines)
 
     @staticmethod

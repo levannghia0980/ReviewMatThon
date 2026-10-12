@@ -4,6 +4,7 @@ import {
   Download, Sliders, ShieldCheck, Clock, Layers
 } from 'lucide-react';
 import { ALL_VOICES } from '../constants/voices';
+import { startSafePolling } from '../utils/safePolling';
 
 export default function VoiceoverStudioTab({ initialProjectId }) {
   const [projects, setProjects] = useState([]);
@@ -68,31 +69,32 @@ export default function VoiceoverStudioTab({ initialProjectId }) {
 
   // Poll TTS Task
   useEffect(() => {
-    let interval = null;
-    if (isSynthesizing && taskId) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/v1/tts/status/${taskId}`);
-          if (!res.ok) return;
-          const data = await res.json();
-          setProgress(data.progress || 0);
+    if (!isSynthesizing || !taskId) return;
 
-          if (data.status === 'completed') {
-            setIsSynthesizing(false);
-            clearInterval(interval);
-            loadProjectDetails(selectedProjectId);
-            alert('✔ Đã sản xuất toàn bộ âm thanh lồng tiếng TikTok TTS!');
-          } else if (data.status === 'failed') {
-            setIsSynthesizing(false);
-            clearInterval(interval);
-            alert(`Lỗi TTS: ${data.error}`);
-          }
-        } catch (e) {
-          console.error(e);
+    const stopPolling = startSafePolling({
+      interval: 1500,
+      timeoutMs: 4000,
+      fn: async (signal) => {
+        const res = await fetch(`/api/v1/tts/status/${taskId}`, { signal });
+        if (!res.ok) return true;
+        const data = await res.json();
+        setProgress(data.progress || 0);
+
+        if (data.status === 'completed') {
+          setIsSynthesizing(false);
+          loadProjectDetails(selectedProjectId);
+          alert('✔ Đã sản xuất toàn bộ âm thanh lồng tiếng TikTok TTS!');
+          return false;
+        } else if (data.status === 'failed') {
+          setIsSynthesizing(false);
+          alert(`Lỗi TTS: ${data.error}`);
+          return false;
         }
-      }, 1200);
-    }
-    return () => clearInterval(interval);
+        return true;
+      }
+    });
+
+    return () => stopPolling();
   }, [isSynthesizing, taskId]);
 
   const handleStartBatchTTS = async () => {

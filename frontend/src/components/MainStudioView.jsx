@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
 import { ALL_VOICES } from '../constants/voices';
+import { startSafePolling } from '../utils/safePolling';
 
 export default function MainStudioView({ onNavigateTab }) {
   const [url, setUrl] = useState('');
@@ -147,40 +148,120 @@ export default function MainStudioView({ onNavigateTab }) {
   useEffect(() => {
     loadProjects();
     loadSettings();
-    checkActiveTask();
+    checkActiveTask(); // Gọi đúng 1 lần khi mở app
 
-    const handleVisibility = () => {
-      if (!document.hidden) {
-        checkActiveTask();
+    // KẾT NỐI SERVER-SENT EVENTS (SSE): Nhận tín hiệu thời gian thực khi BE có sự kiện
+    // Không bao giờ spam polling lặp đi lặp lại!
+    let eventSource = null;
+    try {
+      eventSource = new EventSource('/api/v1/pipeline/events');
+      eventSource.onmessage = (e) => {
+        try {
+          const packet = JSON.parse(e.data);
+          if (packet.event === 'log') {
+            const { project_id, log } = packet.data || {};
+            // Nếu log thuộc về project đang xem thì thêm ngay vào bảng log
+            if (log) {
+              setLogs(prev => {
+                const updated = [...prev, log];
+                if (updated.length > 500) updated.shift();
+                return updated;
+              });
+            }
+          } else if (packet.event === 'task_update') {
+            const task = packet.data || {};
+            if (task.project_id) {
+              setActiveTasksMap(prev => ({
+                ...prev,
+                [task.project_id]: task
+              }));
+            }
+            // Nếu là task của project đang xem
+            if (task.id === taskId || (task.project_id && selectedProject?.id === task.project_id)) {
+              setProgress(task.progress || 0);
+              setCurrentStep(task.step || 1);
+              if (task.status === 'completed' || task.status === 'error' || task.status === 'cancelled') {
+                setIsRunning(false);
+                loadProjects();
+              } else if (task.status === 'running') {
+                setIsRunning(true);
+              }
+            }
+          } else if (packet.event === 'task_cancelled') {
+            setIsRunning(false);
+            checkActiveTask();
+          }
+        } catch (err) {}
+      };
+      eventSource.onerror = () => {
+        // Tự động kết nối lại khi rớt mạng
+      };
+    } catch (err) {
+      console.warn('SSE Error:', err);
+    }
+
+    return () => {
+      if (eventSource) {
+        eventSource.close();
       }
     };
-    document.addEventListener('visibilitychange', handleVisibility);
-    window.addEventListener('focus', handleVisibility);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibility);
-      window.removeEventListener('focus', handleVisibility);
-    };
-  }, []);
+  }, [taskId, selectedProject?.id]);
+
+  const [activeTasksMap, setActiveTasksMap] = useState({}); // { project_id: task_object }
 
   const checkActiveTask = async () => {
     try {
+      // 1. Quét danh sách tất cả các task đang chạy ngầm trên toàn bộ server (Đa nhiệm)
+      const resTasks = await fetch('/api/v1/pipeline/active-tasks');
+      if (resTasks.ok) {
+        const data = await resTasks.json();
+        const map = {};
+        (data.tasks || []).forEach(t => {
+          if (t.project_id) map[t.project_id] = t;
+        });
+        setActiveTasksMap(map);
+
+        // Nếu project đang chọn có task đang chạy, tự động kết nối
+        if (selectedProject && map[selectedProject.id]) {
+          const curT = map[selectedProject.id];
+          setTaskId(curT.id);
+          setIsRunning(true);
+          setProgress(curT.progress || 0);
+          setCurrentStep(curT.step || 1);
+        }
+      }
+
+      // 2. Tương thích ngược với active-task đơn
       const res = await fetch('/api/v1/pipeline/active-task');
       if (res.ok) {
         const data = await res.json();
         if (data && data.id && (data.status === 'running' || data.status === 'pending')) {
-          setTaskId(data.id);
-          setIsRunning(true);
-          setProgress(data.progress || 0);
-          setCurrentStep(data.step || 1);
-          if (data.logs && data.logs.length > 0) setLogs(data.logs);
-          if (data.meta?.project_id) {
-            loadProjects(data.meta.project_id);
+          if (!selectedProject || (data.meta?.project_id && selectedProject.id === data.meta.project_id)) {
+            setTaskId(data.id);
+            setIsRunning(true);
+            setProgress(data.progress || 0);
+            setCurrentStep(data.step || 1);
+            if (data.logs && data.logs.length > 0) setLogs(data.logs);
           }
         }
       }
     } catch (e) {
       console.warn('Lỗi kiểm tra active task:', e);
     }
+  };
+
+  // Nạp lại log từ Server cho project đang chọn
+  const loadProjectServerLogs = async (projectId) => {
+    if (!projectId) return;
+    try {
+      const res = await fetch(`/api/v1/pipeline/projects/${projectId}/logs`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.logs && data.logs.length > 0) {
+          setLogs(data.logs);
+        }
+      }
+    } catch (e) {}
   };
 
   const loadSettings = async () => {
@@ -219,41 +300,42 @@ export default function MainStudioView({ onNavigateTab }) {
     }
   };
 
-  // Poll Task Status
+  // Poll Task Status An Toàn
   useEffect(() => {
-    let interval = null;
-    if (isRunning && taskId) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/v1/pipeline/status/${taskId}`);
-          if (!res.ok) return;
-          const data = await res.json();
-          setProgress(data.progress || 0);
-          setCurrentStep(data.step || 1);
-          if (data.logs) setLogs(data.logs);
+    if (!isRunning || !taskId) return;
 
-          if (data.status === 'completed') {
-            setIsRunning(false);
-            setResult(data.result);
-            if (data.result?.final_video_path) {
-              setVideoViewMode('final');
-            } else {
-              setVideoViewMode('raw');
-            }
-            clearInterval(interval);
-            loadProjects(data.result?.project_id);
-            window.dispatchEvent(new CustomEvent('video-projects-updated'));
-          } else if (data.status === 'failed') {
-            setIsRunning(false);
-            clearInterval(interval);
-            alert(`Lỗi: ${data.error}`);
+    const stopPolling = startSafePolling({
+      interval: 1500,
+      timeoutMs: 4000,
+      fn: async (signal) => {
+        const res = await fetch(`/api/v1/pipeline/status/${taskId}`, { signal });
+        if (!res.ok) return true;
+        const data = await res.json();
+        setProgress(data.progress || 0);
+        setCurrentStep(data.step || 1);
+        if (data.logs) setLogs(data.logs);
+
+        if (data.status === 'completed') {
+          setIsRunning(false);
+          setResult(data.result);
+          if (data.result?.final_video_path) {
+            setVideoViewMode('final');
+          } else {
+            setVideoViewMode('raw');
           }
-        } catch (e) {
-          console.error(e);
+          loadProjects(data.result?.project_id);
+          window.dispatchEvent(new CustomEvent('video-projects-updated'));
+          return false;
+        } else if (data.status === 'failed') {
+          setIsRunning(false);
+          alert(`Lỗi: ${data.error}`);
+          return false;
         }
-      }, 1200);
-    }
-    return () => clearInterval(interval);
+        return true;
+      }
+    });
+
+    return () => stopPolling();
   }, [isRunning, taskId]);
 
   // Keyboard navigation for Subtitle Up/Down & Play/Pause
@@ -1851,14 +1933,28 @@ export default function MainStudioView({ onNavigateTab }) {
               ) : (
                 filteredProjects.map((p) => {
                   const isSelected = selectedProject?.id === p.id;
+                  const activeT = activeTasksMap[p.id];
                   return (
                     <div
                       key={p.id}
-                      onClick={() => setSelectedProject(p)}
+                      onClick={() => {
+                        setSelectedProject(p);
+                        loadProjectServerLogs(p.id);
+                        if (activeTasksMap[p.id]) {
+                          const curT = activeTasksMap[p.id];
+                          setTaskId(curT.id);
+                          setIsRunning(true);
+                          setProgress(curT.progress || 0);
+                          setCurrentStep(curT.step || 1);
+                        } else {
+                          setIsRunning(false);
+                          setTaskId(null);
+                        }
+                      }}
                       style={{
                         padding: '8px 12px',
                         background: isSelected ? '#eff6ff' : '#f8fafc',
-                        border: isSelected ? '1.5px solid #2563eb' : '1px solid #e2e8f0',
+                        border: isSelected ? '1.5px solid #2563eb' : (activeT ? '1.5px solid #10b981' : '1px solid #e2e8f0'),
                         borderRadius: '8px',
                         cursor: 'pointer',
                         display: 'flex',
@@ -1888,7 +1984,23 @@ export default function MainStudioView({ onNavigateTab }) {
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-                        {getStatusBadge(p)}
+                        {activeT ? (
+                          <span style={{
+                            background: '#dcfce7',
+                            color: '#15803d',
+                            border: '1px solid #86efac',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            fontSize: '10.5px',
+                            fontWeight: 800,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            animation: 'pulse 1.5s infinite'
+                          }} title={`Đang chạy: ${activeT.last_log || 'Đang xử lý...'}`}>
+                            ⚡ {activeT.progress || 0}%
+                          </span>
+                        ) : getStatusBadge(p)}
                         <button
                           type="button"
                           onClick={(e) => handleResetProject(e, p.id, p.title)}

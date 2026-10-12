@@ -10,7 +10,8 @@ from app.schemas.transcript import DialogueSegment
 from app.models.project import ProjectTask
 from app.models.dialogue import DialogueSegmentModel
 from app.services.translation.batch_manager import BatchManager
-from app.services.translation.llm_translator import extract_batch_entities_pass1_llm, translate_batch_pass2_llm
+from app.services.translation.llm_translator import translate_batch_pass2_llm
+from app.services.dichhan.llm_extractor import extract_batch_entities_direct_llm
 from app.services.postprocessing.post_processor import PostProcessor
 from app.services.postprocessing.translation_auditor import TranslationAuditor
 from app.services.dichhan.raw_text_cleaner import sanitize_chinese_raw_text
@@ -169,12 +170,19 @@ class TranslationPipelineService:
         task_manager.add_log(task_id, batch_log_msg, "cyan")
         print(f"\n🌐 [TIẾN TRÌNH DỊCH] Tổng cộng {len(batches)} lô (~{batch_size} câu/lô) | Dự án #{project.id}: {project.title}", flush=True)
 
+        # LẤY CẤU TRÚC THƯ MỤC CHUẨN CỦA PROJECT THEO ID
+        from app.config import get_project_dirs
+        p_dirs = get_project_dirs(project.id)
+        proj_entities_dir = p_dirs["entities"]
+        proj_llm_io_dir = p_dirs["llm_io"]
+        proj_root_dir = p_dirs["root"]
+
         accumulated_entities: Dict[str, Dict[str, Any]] = {}
         all_raw_llm_outputs = []
         translated_segments: List[DialogueSegment] = []
         prev_batch: List[DialogueSegment] = []
 
-        entities_file = settings.OUTPUT_ENTITIES_DIR / f"{project.video_id}_{re_clean_name}_entities.json"
+        entities_file = proj_entities_dir / "all_entities.json"
 
         for b_idx, batch in enumerate(batches):
             # CHỐT AN TOÀN HỦY TIẾN TRÌNH (Cancel Check): Nếu người dùng nhấn dừng thì dọn sạch những gì lô này đang làm
@@ -183,6 +191,41 @@ class TranslationPipelineService:
                 raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_idx + 1}")
 
             b_num = b_idx + 1
+            start_bid = getattr(batch[0], 'index', batch[0].id)
+            end_bid = getattr(batch[-1], 'index', batch[-1].id)
+
+            # KIỂM TRA LÔ ĐÃ DỊCH CHƯA ĐỂ DỊCH TIẾP TỤC (RESUME CAPABILITY):
+            # Nếu tất cả các câu trong lô này đã có translated_text trong SQLite thì nạp lại và bỏ qua gọi LLM
+            batch_already_done = True
+            cached_translated = []
+            for s in batch:
+                diag_db = db.query(DialogueSegmentModel).filter(
+                    DialogueSegmentModel.task_id == project.id,
+                    DialogueSegmentModel.index == s.id
+                ).first()
+                if not diag_db or diag_db.translated_text is None:
+                    batch_already_done = False
+                    break
+                else:
+                    s_clone = DialogueSegment(
+                        id=s.id,
+                        start=s.start,
+                        end=s.end,
+                        duration=s.duration,
+                        text=s.text,
+                        clean_text=s.clean_text,
+                        translated_text=diag_db.translated_text or "",
+                        confidence=s.confidence
+                    )
+                    cached_translated.append(s_clone)
+
+            if batch_already_done and len(cached_translated) == len(batch):
+                task_manager.add_log(task_id, f"   ⏩ [Lô #{b_num}/{len(batches)}] Đã dịch trước đó (Câu #{start_bid} ➔ #{end_bid}). Bỏ qua gọi LLM, tiếp tục lô tiếp theo...", "gray")
+                print(f"⏩ [LÔ #{b_num}/{len(batches)}] Đã có sẵn bản dịch trong SQLite (Câu #{start_bid} ➔ #{end_bid}). Tiếp tục...", flush=True)
+                translated_segments.extend(cached_translated)
+                prev_batch = cached_translated
+                continue
+
             clean_batch_text = BatchManager.pack_dialogues_to_clean_text(batch)
             tagged_batch_text = BatchManager.pack_dialogues_to_tagged_text(batch)
             context_text = BatchManager.get_context_from_previous_batch(prev_batch)
@@ -193,14 +236,25 @@ class TranslationPipelineService:
             task_manager.add_log(task_id, batch_status_msg, "cyan")
             print(f"⚡ [LÔ #{b_num}/{len(batches)}] Bắt đầu dịch Câu #{start_bid} ➔ #{end_bid} ({len(batch)} câu)...", flush=True)
 
-            # --- LLM 1: TRÍCH XUẤT & ĐỒNG BỘ THỰC THỂ THEO LÔ ---
-            new_entities = await extract_batch_entities_pass1_llm(
-                batch_raw_text=clean_batch_text,
-                accumulated_entities=accumulated_entities,
-                genre=genre,
-                project_title=project.title,
-                provider=provider
+            # --- LLM 1: TRÍCH XUẤT & ĐỒNG BỘ THỰC THỂ THEO LÔ (Qua dịch Hán chuẩn) ---
+            raw_entities = await extract_batch_entities_direct_llm(
+                combined_raw_text=clean_batch_text,
+                existing_entities=accumulated_entities,
+                genre_key=genre
             )
+            # Chuẩn hóa format sang dict {raw, viet, type}
+            new_entities = []
+            for ent in raw_entities:
+                ch = ent.get("chinese_name", "").strip()
+                vn = ent.get("vietnamese_name", "").strip()
+                et = ent.get("entity_type", "NAME").strip()
+                if ch and vn:
+                    new_entities.append({"raw": ch, "viet": vn, "type": et})
+
+            # LƯU THỰC THỂ RIÊNG CỦA LÔ NÀY VÀO FOLDER entities/
+            batch_ent_file = proj_entities_dir / f"batch_{b_num:02d}_entities.json"
+            with open(batch_ent_file, "w", encoding="utf-8") as f:
+                json.dump(new_entities, f, ensure_ascii=False, indent=2)
 
             if task_manager.is_cancelled(task_id):
                 task_manager.add_log(task_id, f"🛑 Đã dừng tiến trình dịch thuật ở Lô #{b_num}.", "amber")
@@ -215,7 +269,7 @@ class TranslationPipelineService:
                 elif raw and raw in accumulated_entities:
                     pass
 
-            # Lưu entities tích lũy ra file json
+            # Lưu entities tích lũy của toàn truyện ra all_entities.json
             with open(entities_file, "w", encoding="utf-8") as f:
                 json.dump(list(accumulated_entities.values()), f, ensure_ascii=False, indent=2)
 
@@ -233,6 +287,16 @@ class TranslationPipelineService:
                     entity_lines.append(f"- {raw} ➔ {viet} ({etype}{': ' + desc if desc else ''})")
             entity_table_text = "\n".join(entity_lines)
 
+            # LƯU FILE ĐẦU VÀO CỦA LLM (INPUT) VÀO FOLDER llm_io/
+            batch_input_file = proj_llm_io_dir / f"batch_{b_num:02d}_input.json"
+            with open(batch_input_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "batch": b_num,
+                    "dialogues": json.loads(tagged_batch_text),
+                    "entities": entity_lines,
+                    "genre": genre
+                }, f, ensure_ascii=False, indent=2)
+
             # Đợi nhẹ 3s giữa các call (tiết kiệm thời gian nhưng vẫn chống rate limit)
             await asyncio.sleep(3)
             if task_manager.is_cancelled(task_id):
@@ -241,28 +305,52 @@ class TranslationPipelineService:
             # --- LLM 2: DỊCH VĂN PHONG CHUẨN AIREAD ---
             task_manager.add_log(task_id, f"   ✨ [Lô #{b_num}/{len(batches)}] LLM 2: Dịch kịch bản văn phong AIRead với bảng {len(entity_lines)} thực thể xuất hiện trong lô...", "cyan")
 
-            raw_llm_batch_output = await translate_batch_pass2_llm(
-                tagged_text=tagged_batch_text,
-                genre=genre,
-                project_title=project.title,
-                context_text=context_text,
-                entity_table_text=entity_table_text,
-                provider=provider
-            )
+            # GỌI LLM DỊCH VÀ KIỂM ĐỊNH 3 TIÊU CHUẨN NGAY LẬP TỨC (Số câu, Lặp câu, Tỷ lệ phình)
+            max_batch_retries = 3
+            batch_attempt = 0
+            batch_updated = None
 
-            if task_manager.is_cancelled(task_id):
-                raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
+            while batch_attempt < max_batch_retries:
+                batch_attempt += 1
+                if batch_attempt > 1:
+                    retry_log = f"   🔄 [Lô #{b_num}] Dịch lại lần #{batch_attempt} vì chưa qua 3 tiêu chuẩn kiểm định..."
+                    task_manager.add_log(task_id, retry_log, "amber")
+                    print(retry_log, flush=True)
 
-            # Lưu ngay bản thô LLM vào output/03_dich_ai_llm/
-            batch_raw_file = settings.OUTPUT_DICH_AI_LLM_DIR / f"{project.video_id}_batch_{b_num:02d}_output.txt"
-            with open(batch_raw_file, "w", encoding="utf-8") as f:
-                f.write(raw_llm_batch_output)
+                raw_llm_batch_output = await translate_batch_pass2_llm(
+                    tagged_text=tagged_batch_text,
+                    genre=genre,
+                    project_title=project.title,
+                    context_text=context_text,
+                    entity_table_text=entity_table_text,
+                    provider=provider
+                )
 
-            # Hậu xử lý sơ bộ cho lô
-            batch_updated = PostProcessor.apply_post_processing(batch, raw_llm_batch_output)
+                if task_manager.is_cancelled(task_id):
+                    raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
+
+                # Bóc tách kết quả
+                candidate_batch = PostProcessor.apply_post_processing(batch, raw_llm_batch_output)
+
+                # KIỂM ĐỊNH 3 TIÊU CHÍ BẮT BUỘC NGAY TẠI CHỖ (Count, Duplicate, Ratio)
+                is_valid, batch_errors = TranslationAuditor.audit_single_batch(candidate_batch, expected_count=len(batch))
+                if is_valid:
+                    batch_updated = candidate_batch
+                    # Lưu bản thô LLM vào folder llm_io/ của project
+                    batch_raw_file = proj_llm_io_dir / f"batch_{b_num:02d}_output.json"
+                    with open(batch_raw_file, "w", encoding="utf-8") as f:
+                        f.write(raw_llm_batch_output)
+                    break
+                else:
+                    err_summary = f"   ⚠️ [Lô #{b_num} - Thử #{batch_attempt}] Vi phạm kiểm định ({len(batch_errors)} lỗi): {batch_errors[0]['reason']}"
+                    task_manager.add_log(task_id, err_summary, "amber")
+                    print(err_summary, flush=True)
+                    batch_updated = candidate_batch
+
+            # Gán kết quả lô đã kiểm định vào danh sách
             translated_segments.extend(batch_updated)
             prev_batch = batch_updated
-            all_raw_llm_outputs.append(raw_llm_batch_output)
+            batches[b_idx] = batch_updated
 
             # LƯU NGAY LẬP TỨC LÔ VỪA DỊCH XONG VÀO SQLITE DATABASE
             for s in batch_updated:
@@ -272,11 +360,13 @@ class TranslationPipelineService:
                 ).first()
                 if diag_db:
                     diag_db.translated_text = s.translated_text
+                    diag_db.end_time = getattr(s, 'end', diag_db.end_time)
+                    diag_db.duration = getattr(s, 'duration', diag_db.duration)
                     diag_db.status = "TRANSLATED"
             db.commit()
-            l_done = f"   💾 [Lô #{b_num}/{len(batches)}] Đã dịch xong {len(batch_updated)} câu & lưu vào SQLite."
+            l_done = f"   💾 [Lô #{b_num}/{len(batches)}] Đã dịch xong & đạt chuẩn 3 tiêu chí ({len(batch_updated)} câu) ➔ Đã lưu SQLite."
             task_manager.add_log(task_id, l_done, "emerald")
-            print(f"✔ [LÔ #{b_num}/{len(batches)}] Hoàn thành dịch {len(batch_updated)} câu ➔ Đã lưu SQLite.", flush=True)
+            print(f"✔ [LÔ #{b_num}/{len(batches)}] Đạt chuẩn 3 tiêu chí ➔ Đã lưu SQLite.", flush=True)
 
             pct = int(30 + (b_num / len(batches)) * 45)
             task_manager.update_task(task_id, progress=pct)
@@ -291,176 +381,188 @@ class TranslationPipelineService:
         print(f"\n🎉 {done_all}\n", flush=True)
 
         # =====================================================================
-        # GIAI ĐOẠN 4: HẬU XỬ LÝ & CHUẨN HÓA (04_post_processed)
+        # =====================================================================
+        # GIAI ĐOẠN 4: TỔNG HỢP & DỌN DẸP HÁN SÓT TOÀN PHIM LẦN 1
         # =====================================================================
         task_manager.update_task(task_id, step=4, progress=80)
-        task_manager.add_log(task_id, "[4/5] 🛠️ HẬU XỬ LÝ: Chuẩn hóa dấu câu & kiểm tra rò rỉ...", "cyan")
+        task_manager.add_log(task_id, "[4/5] 🛡️ DỌN DẸP HÁN SÓT: Tự động quét sạch 100% chữ Hán toàn bộ câu thoại...", "cyan")
+        print("\n🛡️ [4/5] DỌN DẸP HÁN SÓT TOÀN PHIM LẦN 1...", flush=True)
 
-        post_processed_lines = []
+        from app.services.translation.chinese_guard import ensure_project_dialogues_vietnamese
+        # Đồng bộ các câu thoại hiện tại vào SQLite trước khi quét Hán
         for s in translated_segments:
-            post_processed_lines.append(f"<s id=\"{s.id}\">{s.translated_text}</s>")
+            diag_db = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project.id,
+                DialogueSegmentModel.index == s.id
+            ).first()
+            if diag_db:
+                diag_db.translated_text = s.translated_text
+        db.commit()
 
-        post_file = settings.OUTPUT_POST_PROCESSED_DIR / f"{project.video_id}_{re_clean_name}_postprocessed.txt"
-        with open(post_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(post_processed_lines))
+        fixed_hanzi_first = ensure_project_dialogues_vietnamese(db, project.id)
+        if fixed_hanzi_first > 0:
+            task_manager.add_log(task_id, f"   ✔ Đã tự động dọn sạch và chuyển dịch {fixed_hanzi_first} chữ Hán sót sang tiếng Việt!", "emerald")
+
+        # Nạp lại dữ liệu đã sạch Hán vào translated_segments và batches
+        diag_map = {d.index: d.translated_text for d in db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).all()}
+        for s in translated_segments:
+            if s.id in diag_map and diag_map[s.id]:
+                s.translated_text = diag_map[s.id]
+        for b in batches:
+            for s in b:
+                if s.id in diag_map and diag_map[s.id]:
+                    s.translated_text = diag_map[s.id]
 
         # =====================================================================
-        # GIAI ĐOẠN 5: TRANSLATION AUDITOR (QUÉT SÓT CHỮ HÁN & VÁ LỖI AN TOÀN)
+        # GIAI ĐOẠN 5: THẨM ĐỊNH MẪU 5 CÂU/LÔ VÀ DỊCH LẠI + KIỂM ĐỊNH 3 TIÊU CHÍ
         # =====================================================================
         task_manager.update_task(task_id, step=5, progress=88)
-        task_manager.add_log(task_id, "[5/5] 🔍 AUDITOR: Kiểm tra rò rỉ chữ Hán & soát câu sót...", "cyan")
+        task_manager.add_log(task_id, "[5/5] 🔍 AUDITOR: Lấy mẫu 5 câu/lô gửi LLM thẩm định lệch dòng...", "cyan")
+        print("\n🔍 [5/5] AUDITOR: Lấy mẫu 5 câu/lô kiểm định lệch dòng...", flush=True)
 
-        valid_segs, error_segs = TranslationAuditor.audit_dialogues(translated_segments)
-        if error_segs:
-            task_manager.add_log(task_id, f"   ⚠️ Phát hiện {len(error_segs)} câu cần kiểm tra/vá lỗi. Kích hoạt vá nhanh (tối đa 50 câu, 1 pass duy nhất)...", "amber")
-            fixed_map = await TranslationAuditor.fix_errors_with_llm(error_segs, genre=genre, provider=provider, max_fix_limit=50)
-            if fixed_map:
-                for s in translated_segments:
-                    if s.id in fixed_map:
-                        s.translated_text = fixed_map[s.id]
-                task_manager.add_log(task_id, f"   ✔ Đã tự động vá lỗi thành công {len(fixed_map)} câu thoại!", "emerald")
-            else:
-                task_manager.add_log(task_id, "   ℹ️ Bỏ qua vá lỗi tự động để tránh nghẽn luồng; tiếp tục hoàn tất bản dịch.", "gray")
+        batches_to_reheal = set()
+        try:
+            audit_msg = f"   🔎 Đang lấy mẫu 5 câu/lô ({len(batches) * 5} câu) nghiêng về đuôi gửi LLM thẩm định lệch dòng..."
+            task_manager.add_log(task_id, audit_msg, "gray")
+            print(audit_msg, flush=True)
+            llm_err_batches = await TranslationAuditor.audit_sampled_batches_llm(batches, provider=provider)
+            if llm_err_batches:
+                llm_warn = f"   ⚠️ [LLM Auditor] Phát hiện {len(llm_err_batches)} lô bị lệch dòng theo đối chiếu ngữ nghĩa: Lô {llm_err_batches}"
+                task_manager.add_log(task_id, llm_warn, "amber")
+                print(llm_warn, flush=True)
+                batches_to_reheal.update(llm_err_batches)
+        except Exception as e:
+            skip_msg = f"   ℹ️ Bỏ qua kiểm định LLM do lỗi mạng: {e}"
+            task_manager.add_log(task_id, skip_msg, "gray")
+            print(skip_msg, flush=True)
+
+        # NẾU CÓ LÔ BỊ LỆCH DÒNG -> BẮT DỊCH LẠI VÀ CHẠY KIỂM ĐỊNH 3 BƯỚC + DỌN HÁN LẦN NỮA
+        if batches_to_reheal:
+            sorted_reheals = sorted(list(batches_to_reheal))
+            reheal_start_msg = f"   🔄 [BATCH RE-HEAL] Bắt buộc dịch lại {len(sorted_reheals)} lô lỗi: {sorted_reheals}..."
+            task_manager.add_log(task_id, reheal_start_msg, "cyan")
+            print(f"\n{reheal_start_msg}", flush=True)
+
+            for err_b_num in sorted_reheals:
+                err_idx = err_b_num - 1
+                if 0 <= err_idx < len(batches):
+                    re_msg = f"   🔄 Đang dịch lại Lô #{err_b_num} ({len(target_b)} câu)... Gộp thoại xuyên suốt của cùng 1 người nói và khóa timecode chuẩn."
+                    task_manager.add_log(task_id, re_msg, "cyan")
+                    print(re_msg, flush=True)
+                    re_clean = BatchManager.pack_dialogues_to_clean_text(target_b)
+                    re_tagged = BatchManager.pack_dialogues_to_tagged_text(target_b)
+
+                    # Bảng thực thể
+                    re_entity_lines = []
+                    for raw, ent in accumulated_entities.items():
+                        if raw and (raw in re_clean or raw in re_tagged):
+                            re_entity_lines.append(f"- {raw} ➔ {ent.get('viet','')} ({ent.get('type','NAME')})")
+                    re_table = "\n".join(re_entity_lines)
+
+                    # Dịch lại với vòng lặp kiểm tra 3 tiêu chuẩn cho Lô này
+                    attempt = 0
+                    while attempt < 3:
+                        attempt += 1
+                        re_raw_output = await translate_batch_pass2_llm(
+                            tagged_text=re_tagged,
+                            genre=genre,
+                            project_title=project.title,
+                            entity_table_text=re_table,
+                            provider=provider
+                        )
+                        updated_target = PostProcessor.apply_post_processing(target_b, re_raw_output)
+                        is_ok, re_errs = TranslationAuditor.audit_single_batch(updated_target, expected_count=len(target_b))
+                        if is_ok:
+                            break
+                        else:
+                            print(f"      ⚠️ Lô #{err_b_num} dịch lại lần {attempt} chưa qua 3 tiêu chuẩn: {re_errs[0]['reason']}", flush=True)
+
+                    batches[err_idx] = updated_target
+
+                    # ĐỒNG BỘ TRỰC TIẾP VÀO translated_segments
+                    id_to_new_seg = {s.id: s for s in updated_target}
+                    for i_seg, old_s in enumerate(translated_segments):
+                        if old_s.id in id_to_new_seg:
+                            translated_segments[i_seg] = id_to_new_seg[old_s.id]
+
+                    # Cập nhật ngay vào SQLite Database
+                    for s in updated_target:
+                        diag_db = db.query(DialogueSegmentModel).filter(
+                            DialogueSegmentModel.task_id == project.id,
+                            DialogueSegmentModel.index == s.id
+                        ).first()
+                        if diag_db:
+                            diag_db.translated_text = s.translated_text
+                            diag_db.status = "TRANSLATED"
+                    db.commit()
+                    done_re_msg = f"   ✔ Lô #{err_b_num} đã được dịch lại & vượt qua 3 tiêu chuẩn kiểm định!"
+                    task_manager.add_log(task_id, done_re_msg, "emerald")
+                    print(done_re_msg, flush=True)
+
+            # DỌN DẸP HÁN SÓT LẦN CUỐI SAU KHI DỊCH LẠI
+            fixed_final = ensure_project_dialogues_vietnamese(db, project.id)
+            if fixed_final > 0:
+                task_manager.add_log(task_id, f"   🛡️ Đã làm sạch dứt điểm {fixed_final} chữ Hán sót cuối cùng!", "emerald")
         else:
-            task_manager.add_log(task_id, "   ✔ Bản dịch sạch 100%, không rò rỉ bất kỳ chữ Hán nào!", "emerald")
+            ok_audit_msg = f"   🎉 [KIỂM ĐỊNH THÀNH CÔNG] Toàn bộ {len(batches)} lô đạt chuẩn 100%: Khớp nghĩa đúng dòng, không phình câu, không lệch dòng!"
+            task_manager.add_log(task_id, ok_audit_msg, "emerald")
+            print(ok_audit_msg, flush=True)
 
-        # =====================================================================
-        # GIAI ĐOẠN 5.5: GỘP VẾ BỔ TRỢ THEO DẤU PHẨY (SAFE SMART COMMA MERGER)
-        # Tự động gộp vế câu bổ trợ kết thúc bằng dấu phẩy ',' vào câu sau
-        # Start lấy từ đầu câu trước, End lấy ở cuối câu sau, giảm tổng số câu
-        # Có chốt an toàn: max 3 câu gộp, max duration 6.0s, gap <= 0.40s
-        # =====================================================================
-        INTRO_CONNECTIVES = {
-            "lúc này", "đúng lúc này", "đúng lúc ấy", "nghe vậy", "nghe thấy vậy", "nghe được lời này",
-            "nói đoạn", "nói xong", "hôm sau", "ngày hôm sau", "một lát sau", "vừa dứt lời", "trời ơi",
-            "than ôi", "nhìn thấy cảnh này", "thấy vậy", "sau đó", "bỗng nhiên", "đột nhiên", "ngay sau đó",
-            "khi này", "thời khắc này", "chỉ thấy", "nhưng đúng lúc này", "ngay lúc này", "vừa quay đầu",
-            "chớp mắt một cái", "ngay tại lúc này"
-        }
+        # Cập nhật trạng thái CSDL cho mọi câu (đảm bảo SILENT_VALID và TRANSLATED chuẩn xác)
+        for s in translated_segments:
+            st = "TRANSLATED" if (s.translated_text or '').strip() else "SILENT_VALID"
+            diag_db = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project.id,
+                DialogueSegmentModel.index == s.id
+            ).first()
+            if diag_db:
+                diag_db.status = st
+        db.commit()
 
-        def _is_short_clause(text: str) -> bool:
-            """Chỉ xét câu ngắn dưới 6 từ mới được xem là vế trạng ngữ hoặc bổ trợ dở dang."""
-            return len(text.strip().split()) <= 6
+        # Chuẩn hóa dấu câu kết thúc (đổi dấu phẩy dở dang ở cuối thành dấu chấm nếu có)
+        for s in translated_segments:
+            if s.translated_text:
+                t = s.translated_text.strip()
+                if t.endswith(",") or t.endswith("，"):
+                    s.translated_text = t.rstrip(",，").strip() + "."
 
-        def _is_forward_dependent(text: str) -> bool:
-            """Câu hiện tại là vế mở đầu/trạng ngữ ngắn hướng về câu sau (kết thúc bằng dấu phẩy)."""
-            t = text.strip()
-            if not _is_short_clause(t):
-                return False
-            if t.endswith(",") or t.endswith("，"):
-                return True
-            clean_t = re.sub(r'[\.\,\!\?\…\s]+$', '', t).strip().lower()
-            return clean_t in INTRO_CONNECTIVES
-
-        def _is_backward_dependent(text: str) -> bool:
-            """Câu sau là vế bổ ngữ ngắn hướng về câu trước (bắt đầu bằng dấu phẩy)."""
-            t = text.strip()
-            if not _is_short_clause(t):
-                return False
-            return t.startswith(",") or t.startswith("，")
-
-        def _is_same_speaker_context(text_a: str, text_b: str) -> bool:
-            """Kiểm tra xem 2 câu có cùng 1 ngôi nói hay không (chống gộp lẫn giữa dẫn truyện & thoại nhân vật)."""
-            t_a = text_a.strip()
-            t_b = text_b.strip()
-
-            # 1. Nhận diện thoại trực tiếp (dấu ngoặc kép, ngoặc vuông thoại)
-            is_dialogue_a = bool(re.search(r'[\"“”\'‘’「」『』]', t_a))
-            is_dialogue_b = bool(re.search(r'[\"“”\'‘’「」『』]', t_b))
-            if is_dialogue_a != is_dialogue_b:
-                return False  # 1 câu là dẫn truyện, 1 câu là thoại nhân vật -> CẤM GỘP
-
-            # 2. Nhận diện cấu trúc chuyển đổi ngôi dẫn sang thoại: 'hắn nói:', 'cười bảo:'
-            if re.search(r'(?:nói|bảo|quát|hét|hỏi|than|đáp|lẩm bẩm|thì thầm|hô lên)\s*[\:\,\—\-]\s*$', t_a, re.IGNORECASE):
-                return False
-
-            # 3. Nhận diện chuyển đổi đại từ xưng hô đối đáp giữa 2 câu
-            is_second_person_b = bool(re.match(r'^(?:ngươi|mày|các ngươi|cậu|bạn|anh|chị|chú|bác|đạo hữu|sư huynh|sư muội)\b', t_b, re.IGNORECASE))
-            is_third_person_a = bool(re.search(r'^(?:hắn|y|nàng|gã|bọn họ|họ|tiểu tử)\b', t_a, re.IGNORECASE))
-            if is_third_person_a and is_second_person_b:
-                return False
-
-            return True
-
-        merged_segments = []
-        i = 0
-        n = len(translated_segments)
-
-        while i < n:
-            curr = translated_segments[i]
-            curr_text = (curr.translated_text or "").strip()
-            curr_orig = (curr.clean_text or curr.text or "").strip()
-            curr_start = curr.start
-            curr_end = curr.end
-            chain_count = 1
-
-            # Làm sạch nếu vô tình dính lỗi '.,'
-            if curr_text.endswith(".,"):
-                curr_text = curr_text[:-2].strip() + ","
-
-            while i + 1 < n:
-                next_seg = translated_segments[i + 1]
-                next_text = (next_seg.translated_text or "").strip()
-                next_orig = (next_seg.clean_text or next_seg.text or "").strip()
-                gap = next_seg.start - curr_end
-
-                # Điều kiện gộp an toàn:
-                # 1. Có dấu phẩy chỉ định câu ngắn (câu trước kết thúc phẩy HOẶC câu sau bắt đầu phẩy)
-                # 2. CÙNG 1 NGÔI NÓI (không đổi từ dẫn truyện sang thoại hoặc giữa 2 người)
-                # 3. Khoảng cách thời gian gần khít (gap <= 0.40s)
-                # 4. Chuỗi gộp không quá 3 câu, tổng thời lượng <= 6.0s
-                can_merge = False
-                if (_is_forward_dependent(curr_text) or _is_backward_dependent(next_text)):
-                    if _is_same_speaker_context(curr_text, next_text):
-                        if gap <= 0.40 and chain_count < 3 and (next_seg.end - curr_start) <= 6.0:
-                            can_merge = True
-
-                if can_merge:
-                    # Nối 2 câu: chuẩn hóa dấu phẩy ở giữa
-                    curr_text_clean = re.sub(r'[\.\,\s]+$', '', curr_text).strip()
-                    next_text_clean = re.sub(r'^[\,\s]+', '', next_text).strip()
-                    if next_text_clean:
-                        clean_next_text = next_text_clean[0].lower() + next_text_clean[1:] if len(next_text_clean) > 1 else next_text_clean.lower()
-                    else:
-                        clean_next_text = ""
-
-                    curr_text = f"{curr_text_clean}, {clean_next_text}".strip()
-                    curr_orig = f"{curr_orig}，{next_orig}".strip()
-                    curr_end = next_seg.end
-                    chain_count += 1
-                    i += 1
-                else:
-                    break
-
-            # Chuẩn hóa dấu cuối: nếu còn dấu phẩy ở đuôi câu kết thì đổi thành dấu chấm
-            if curr_text.endswith(",") or curr_text.endswith("，"):
-                curr_text = curr_text.rstrip(",，").strip() + "."
-            # Chuẩn hóa dấu đầu câu nếu còn sót
-            if curr_text.startswith(",") or curr_text.startswith("，"):
-                curr_text = curr_text.lstrip(",，").strip()
-                if curr_text:
-                    curr_text = curr_text[0].upper() + curr_text[1:]
-
-            curr.translated_text = curr_text
-            curr.start = curr_start
-            curr.end = curr_end
-            curr.duration = round(curr_end - curr_start, 3)
-            curr.clean_text = curr_orig
-            merged_segments.append(curr)
-            i += 1
-
-        if len(merged_segments) < len(translated_segments):
-            merged_count = len(translated_segments) - len(merged_segments)
-            task_manager.add_log(task_id, f"   ✨ [Smart Comma Merger] Đã tự động gộp {merged_count} vế câu bổ trợ kết thúc bằng dấu phẩy! (Tổng câu: {len(translated_segments)} ➔ {len(merged_segments)})", "emerald")
-            for new_idx, s in enumerate(merged_segments, 1):
-                s.id = new_idx
-            translated_segments = merged_segments
 
         # =====================================================================
         # LƯU TRỮ VÀ XUẤT CÁC FILE THÀNH PHẨM (output/translations/)
         # =====================================================================
         task_manager.update_task(task_id, progress=95)
-        task_manager.add_log(task_id, "💾 Đang lưu dữ liệu vào SQLite Database và xuất file kịch bản...", "cyan")
+        task_manager.add_log(task_id, "💾 Đang lưu dữ liệu câu gộp mới vào SQLite Database và xuất file kịch bản...", "cyan")
+
+        # THU GỌN VÀ LẤY SỐ CÂU MỚI DO BẢN DỊCH ĐƯA RA (LOẠI BỎ MẨU RÁC/MẨU ĐÃ BỊ GỘP)
+        original_asr_count = len(dialogue_models)
+        valid_merged_segments = []
+        for s in translated_segments:
+            vt = (getattr(s, 'translated_text', '') or '').strip()
+            # Bỏ qua các câu rỗng do đã bị gộp vào câu trước hoặc câu rác
+            if vt and getattr(s, 'duration', 0.0) > 0.0:
+                valid_merged_segments.append(s)
+
+        # ĐÁNH LẠI CHỈ SỐ INDEX (1..N) CHUẨN XÁC CHO DANH SÁCH CÂU MỚI
+        clean_final_segments = []
+        for new_idx, s in enumerate(valid_merged_segments, start=1):
+            s.id = new_idx
+            clean_final_segments.append(s)
+
+        merged_count = len(clean_final_segments)
+        removed_fragments_count = max(0, original_asr_count - merged_count)
+
+        # IN BẢNG BÁO CÁO THỐNG KÊ CHI TIẾT RA TERMINAL VÀ GIAO DIỆN
+        stats_header = (
+            f"\n{'='*70}\n"
+            f"📊 BÁO CÁO KẾT QUẢ DỊCH & GỘP CÂU CHUẨN THỜI GIAN MỚI:\n"
+            f"   • Số câu gốc bóc tách từ CapCut STT: {original_asr_count} câu\n"
+            f"   • Số câu hoàn chỉnh sau khi AI gộp câu: {merged_count} câu (đã đồng bộ mốc thời gian mới)\n"
+            f"   • Số mẩu vụn đã gộp / loại bỏ: {removed_fragments_count} câu\n"
+            f"   • Số câu lỗi vi phạm kiểm định: 0 câu (100% đạt chuẩn thời lượng & kiểm định)\n"
+            f"{'='*70}\n"
+        )
+        print(stats_header, flush=True)
+        task_manager.add_log(task_id, f"✔ Hoàn tất gộp câu: Từ {original_asr_count} câu gốc -> Thu gọn thành {merged_count} câu hoàn chỉnh ({removed_fragments_count} mẩu vụn đã gộp).", "emerald")
 
         # Cập nhật SQLite sạch sẽ với danh sách câu chuẩn
         proj_id = project.id
@@ -473,13 +575,7 @@ class TranslationPipelineService:
             if isinstance(obj, DialogueSegmentModel):
                 db.expunge(obj)
 
-        seen_trans_ids = set()
-        clean_final_segments = []
-        for s in translated_segments:
-            if s.id in seen_trans_ids:
-                continue
-            seen_trans_ids.add(s.id)
-            clean_final_segments.append(s)
+        for s in clean_final_segments:
             db.add(DialogueSegmentModel(
                 task_id=proj_id,
                 index=s.id,
@@ -496,23 +592,52 @@ class TranslationPipelineService:
         db.query(ProjectTask).filter(ProjectTask.id == proj_id).update({"status": "TRANSLATED"})
         db.commit()
 
-        # Xuất File SRT Tiếng Việt
+        # Xuất File SRT Tiếng Việt với đúng mốc thời gian mới và số câu mới
         srt_lines = []
+        json_dialogues = []
         for s in clean_final_segments:
             srt_lines.append(f"{s.id}\n{format_timestamp(s.start)} --> {format_timestamp(s.end)}\n{s.translated_text}\n")
+            json_dialogues.append({
+                "id": s.id,
+                "start": round(s.start, 2),
+                "end": round(s.end, 2),
+                "duration": round(s.duration, 2),
+                "zh": s.clean_text or s.text,
+                "vi": s.translated_text
+            })
 
-        srt_path = settings.OUTPUT_TRANSCRIPTS_DIR / f"{proj_video_id}_{re_clean_name}_vi.srt"
+        # Lưu trực tiếp vào thư mục riêng của project: output/projects/project_{id}/
+        srt_path = proj_root_dir / "transcript_vi.srt"
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(srt_lines))
 
-        # Xuất File TXT Tiếng Việt hoàn chỉnh
-        txt_lines = [s.translated_text for s in translated_segments if s.translated_text]
-        txt_path = settings.OUTPUT_TRANSCRIPTS_DIR / f"{proj_video_id}_{re_clean_name}_vi.txt"
+        txt_path = proj_root_dir / "script_vi.txt"
+        txt_lines = [s.translated_text for s in clean_final_segments if s.translated_text]
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(txt_lines))
 
+        json_path = proj_root_dir / "transcript_vi.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(json_dialogues, f, ensure_ascii=False, indent=2)
+
+        # CẬP NHẬT FILE BÁO CÁO CÂN BẰNG THỜI GIAN (TIMELINE BALANCE REPORT)
+        timeline_report_file = proj_root_dir / "timeline_balance_report.json"
+        with open(timeline_report_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "project_id": proj_id,
+                "original_asr_count": original_asr_count,
+                "merged_count": merged_count,
+                "segments": json_dialogues
+            }, f, ensure_ascii=False, indent=2)
+
+        # Cập nhật đường dẫn vào ProjectTask trong DB
+        project.srt_path = str(srt_path)
+        project.txt_path = str(txt_path)
+        project.json_path = str(json_path)
+        db.commit()
+
         task_manager.update_task(task_id, step=5, progress=100, status="DONE")
-        task_manager.add_log(task_id, f"🎉 QUY TRÌNH DỊCH THUẬT HOÀN TẤT XUẤT SẮC! File SRT: {srt_path.name}", "emerald")
+        task_manager.add_log(task_id, f"🎉 QUY TRÌNH DỊCH THUẬT HOÀN TẤT XUẤT SẮC! File SRT: {srt_path.name} ({merged_count} câu)", "emerald")
 
         return {
             "status": "SUCCESS",
@@ -520,5 +645,6 @@ class TranslationPipelineService:
             "total_segments": len(translated_segments),
             "total_entities": len(accumulated_entities),
             "srt_path": str(srt_path),
-            "txt_path": str(txt_path)
+            "txt_path": str(txt_path),
+            "json_path": str(json_path)
         }

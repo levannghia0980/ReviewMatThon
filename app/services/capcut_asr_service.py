@@ -56,8 +56,8 @@ class CapCutASRService:
                     duration_ms=duration_ms,
                     language=lang_code,
                     translation_language="vi-VN",
-                    use_translation=use_translation,
-                    words_per_line=60
+                    use_translation=False,
+                    words_per_line=14
                 )
 
                 tasks = (stt_res.get("data") or {}).get("tasks") or []
@@ -91,42 +91,96 @@ class CapCutASRService:
                 utts = payload.get("utterances", [])
 
                 raw_segments = []
-                for idx, u in enumerate(utts, 1):
+                seg_counter = 1
+                for u in utts:
                     words = u.get("words", [])
-                    utt_start_ms = u.get("start_time")
-                    utt_end_ms = u.get("end_time")
+                    utt_text = u.get("text", "").strip()
+                    utt_start_ms = u.get("start_time", 0)
+                    utt_end_ms = u.get("end_time", utt_start_ms + 1000)
 
-                    if words:
-                        w_first_ms = words[0].get("start_time", 0)
-                        w_last_ms = words[-1].get("end_time", w_first_ms + 300)
-                        # Giữ khoảng lấy hơi đầu câu và nhả âm tự nhiên cuối câu
-                        real_start_ms = min(w_first_ms, utt_start_ms) if utt_start_ms is not None else w_first_ms
-                        real_end_ms = max(w_last_ms, utt_end_ms) if utt_end_ms is not None else w_last_ms
+                    # TÁCH CÂU THÔNG MINH DỰA TRÊN KHOẢNG NGHỈ GIỮA CÁC TỪ (SILENCE GAP SPLITTING)
+                    # Nếu 2 từ cách nhau >= 350ms (hoặc nhóm từ >= 14 chữ có nghỉ hơi >= 220ms):
+                    # Tự động ngắt thành câu riêng biệt để người đối thoại không bị dính vào nhau!
+                    if words and len(words) > 1:
+                        current_word_group = []
+                        for w_i, w in enumerate(words):
+                            if not current_word_group:
+                                current_word_group.append(w)
+                                continue
+
+                            prev_w = current_word_group[-1]
+                            gap_ms = w.get("start_time", 0) - prev_w.get("end_time", 0)
+
+                            should_split = (gap_ms >= 350) or (len(current_word_group) >= 14 and gap_ms >= 220)
+
+                            if should_split:
+                                grp_text = "".join(gw.get("text", "") for gw in current_word_group).strip()
+                                if grp_text:
+                                    s_ms = current_word_group[0].get("start_time", 0)
+                                    e_ms = current_word_group[-1].get("end_time", s_ms + 300)
+                                    s_sec = round((s_ms / 1000.0) + time_offset, 3)
+                                    e_sec = round((e_ms / 1000.0) + time_offset, 3)
+                                    if e_sec <= s_sec:
+                                        e_sec = round(s_sec + 0.3, 3)
+                                    raw_segments.append(
+                                        DialogueSegment(
+                                            id=seg_counter,
+                                            start=s_sec,
+                                            end=e_sec,
+                                            duration=round(e_sec - s_sec, 3),
+                                            text=grp_text,
+                                            clean_text=grp_text,
+                                            translated_text="",
+                                            confidence=0.98
+                                        )
+                                    )
+                                    seg_counter += 1
+                                current_word_group = [w]
+                            else:
+                                current_word_group.append(w)
+
+                        if current_word_group:
+                            grp_text = "".join(gw.get("text", "") for gw in current_word_group).strip()
+                            if grp_text:
+                                s_ms = current_word_group[0].get("start_time", 0)
+                                e_ms = current_word_group[-1].get("end_time", s_ms + 300)
+                                s_sec = round((s_ms / 1000.0) + time_offset, 3)
+                                e_sec = round((e_ms / 1000.0) + time_offset, 3)
+                                if e_sec <= s_sec:
+                                    e_sec = round(s_sec + 0.3, 3)
+                                raw_segments.append(
+                                    DialogueSegment(
+                                        id=seg_counter,
+                                        start=s_sec,
+                                        end=e_sec,
+                                        duration=round(e_sec - s_sec, 3),
+                                        text=grp_text,
+                                        clean_text=grp_text,
+                                        translated_text="",
+                                        confidence=0.98
+                                    )
+                                )
+                                seg_counter += 1
                     else:
-                        real_start_ms = utt_start_ms if utt_start_ms is not None else 0
-                        real_end_ms = utt_end_ms if utt_end_ms is not None else (real_start_ms + 1000)
-
-                    start_sec = round((real_start_ms / 1000.0) + time_offset, 3)
-                    end_sec = round((real_end_ms / 1000.0) + time_offset, 3)
-                    if end_sec <= start_sec:
-                        end_sec = round(start_sec + 0.3, 3)
-                    dur_sec = round(end_sec - start_sec, 3)
-
-                    text = u.get("text", "").strip()
-                    trans_text = u.get("translation_text", "").strip()
-
-                    raw_segments.append(
-                        DialogueSegment(
-                            id=idx,
-                            start=start_sec,
-                            end=end_sec,
-                            duration=dur_sec,
-                            text=text,
-                            clean_text=text,
-                            translated_text=trans_text,
-                            confidence=0.98
+                        real_start_ms = utt_start_ms
+                        real_end_ms = utt_end_ms
+                        start_sec = round((real_start_ms / 1000.0) + time_offset, 3)
+                        end_sec = round((real_end_ms / 1000.0) + time_offset, 3)
+                        if end_sec <= start_sec:
+                            end_sec = round(start_sec + 0.3, 3)
+                        raw_segments.append(
+                            DialogueSegment(
+                                id=seg_counter,
+                                start=start_sec,
+                                end=end_sec,
+                                duration=round(end_sec - start_sec, 3),
+                                text=utt_text,
+                                clean_text=utt_text,
+                                translated_text="",
+                                confidence=0.98
+                            )
                         )
-                    )
+                        seg_counter += 1
                 return raw_segments
 
             except Exception as e:
@@ -154,23 +208,23 @@ class CapCutASRService:
         total_duration = AudioExtractorService.get_audio_duration(audio_path)
         logger.info(f"[CapCut ASR] Tổng thời lượng video: {total_duration:.2f}s ({total_duration/60:.1f} phút)")
 
-        # CẮT THEO LƯỢNG TỐI ĐA 1 CHUNK (45 phút = 2700s, overlap 45s).
-        # Video <= 45 phút: GIỮ NGUYÊN 1 CHUNK DUY NHẤT 100%, không chia nhỏ để tránh mọi lỗi ghép!
-        # Video > 45 phút: Cắt đúng theo lượng tối đa 45 phút/chunk (ít mối nối nhất có thể, tránh chia nhỏ làm 8 mảnh vụn).
-        chunks = AudioExtractorService.split_audio_chunks_with_overlap(audio_path, chunk_length_sec=2700, overlap_sec=45)
+        # PHÂN ĐOẠN 20 PHÚT/CHUNK (1200s), GỐI ĐẦU OVERLAP 60 GIÂY (1 PHÚT) ĐỂ NỐI CHUẨN XÁC
+        # Video <= 20 phút: GIỮ NGUYÊN 1 CHUNK DUY NHẤT 100%
+        # Video > 20 phút: Cắt 1200s/chunk, gối đầu 60s, chạy song song tới 16 luồng
+        chunks = AudioExtractorService.split_audio_chunks_with_overlap(audio_path, chunk_length_sec=1200, overlap_sec=60)
         total_chunks = len(chunks)
 
-        # Cấu hình số luồng song song (Mặc định 8 luồng)
-        max_workers = getattr(settings, "ASR_MAX_WORKERS", 8)
+        # Cấu hình số luồng song song (Mặc định 16 luồng)
+        max_workers = getattr(settings, "ASR_MAX_WORKERS", 16)
         workers = min(total_chunks, max(1, max_workers))
 
         if total_chunks == 1:
-            log_desc = f"Audio {total_duration/60:.1f}p <= 45p -> Xử lý 1 chunk duy nhất 100% (Không chia nhỏ, 0% lỗi ghép)"
+            log_desc = f"Audio {total_duration/60:.1f}p <= 20p -> Xử lý 1 chunk duy nhất 100% (Không chia nhỏ, 0% lỗi ghép)"
             logger.info(f"[CapCut ASR] {log_desc}")
             if task_id:
                 task_manager.add_log(task_id, f"   • {log_desc}", "cyan")
         else:
-            log_desc = f"Audio {total_duration/60:.1f}p > 45p -> Chia theo lượng tối đa 45p/chunk thành {total_chunks} chunks (Overlap 45s, Chạy song song {workers} luồng)"
+            log_desc = f"Audio {total_duration/60:.1f}p > 20p -> Chia {total_chunks} chunks (mỗi đoạn 20p, gối đầu 1p, chạy song song {workers} luồng)"
             logger.info(f"[CapCut ASR] {log_desc}")
             if task_id:
                 task_manager.add_log(task_id, f"   • {log_desc}", "cyan")

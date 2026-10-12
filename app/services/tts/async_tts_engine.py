@@ -506,14 +506,18 @@ class AsyncTTSEngine:
                             results_map[d_id] = audio_data
                             completed_count += 1
 
-                            channel_info = "DIRECT-IP (Xẻng Kim Cương)" if used_direct else f"Proxy [{current_proxy}]"
-                            retry_tag = f" (Vá Lần #{attempts})" if attempts > 0 else ""
-                            log_msg = f"⚡ [W#{worker_id:02d}] Câu #{chunk_idx + 1:03d}{retry_tag} | {channel_info} | {elapsed:.2f}s | ✔ Hoàn tất"
-                            try:
-                                if log_callback:
-                                    log_callback(log_msg, "emerald" if attempts == 0 else "amber")
-                            except Exception:
-                                pass
+                            # Điều tiết log: Chỉ bắn log chi tiết khi câu bị retry, hoặc mỗi 10 câu/mốc hoàn thành
+                            should_log = (attempts > 0) or (completed_count % 10 == 0) or (completed_count == total)
+                            if should_log:
+                                channel_info = "DIRECT-IP" if used_direct else f"Proxy"
+                                retry_tag = f" (Vá Lần #{attempts})" if attempts > 0 else ""
+                                pct = int((completed_count / total) * 100)
+                                log_msg = f"⚡ TTS: {completed_count}/{total} câu ({pct}%) | [W#{worker_id:02d}] Câu #{chunk_idx + 1:03d}{retry_tag} | {channel_info} | ✔"
+                                try:
+                                    if log_callback:
+                                        log_callback(log_msg, "emerald" if attempts == 0 else "amber")
+                                except Exception:
+                                    pass
                             try:
                                 if progress_callback:
                                     progress_callback(completed_count, total)

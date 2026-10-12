@@ -203,10 +203,11 @@ class TimelineBorrower:
         # -------------------------------------------------------------
         # BƯỚC 3: CẬP NHẬT MỐC START/END VÀ BẢO TOÀN KHOẢNG NGHỈ
         # -------------------------------------------------------------
+        index_to_pos = {d.index: k for k, d in enumerate(dialogues)}
+
         for trans in borrow_transactions:
             c_idx = trans["index"]
-            # Tìm chỉ số mảng
-            idx_in_list = next((k for k, d in enumerate(dialogues) if d.index == c_idx), None)
+            idx_in_list = index_to_pos.get(c_idx)
             if idx_in_list is None:
                 continue
 

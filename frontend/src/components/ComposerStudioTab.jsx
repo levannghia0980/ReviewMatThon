@@ -3,6 +3,7 @@ import {
   Film, Download, RefreshCw, CheckCircle2, Play, 
   Sliders, ShieldCheck, Music, Sparkles, Terminal, Eye
 } from 'lucide-react';
+import { startSafePolling } from '../utils/safePolling';
 
 export default function ComposerStudioTab({ initialProjectId }) {
   const [projects, setProjects] = useState([]);
@@ -69,35 +70,36 @@ export default function ComposerStudioTab({ initialProjectId }) {
     }
   };
 
-  // Poll Compose Task
+  // Poll Compose Task An Toàn
   useEffect(() => {
-    let interval = null;
-    if (isRendering && taskId) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/v1/composer/status/${taskId}`);
-          if (!res.ok) return;
-          const data = await res.json();
-          setProgress(data.progress || 0);
-          if (data.logs) setLogs(data.logs);
+    if (!isRendering || !taskId) return;
 
-          if (data.status === 'completed') {
-            setIsRendering(false);
-            clearInterval(interval);
-            setRenderResult(data.result);
-            loadProjectDetails(selectedProjectId);
-            alert('🎉 Video thành phẩm đã render hoàn tất!');
-          } else if (data.status === 'failed') {
-            setIsRendering(false);
-            clearInterval(interval);
-            alert(`Lỗi Render: ${data.error}`);
-          }
-        } catch (e) {
-          console.error(e);
+    const stopPolling = startSafePolling({
+      interval: 1500,
+      timeoutMs: 4000,
+      fn: async (signal) => {
+        const res = await fetch(`/api/v1/composer/status/${taskId}`, { signal });
+        if (!res.ok) return true;
+        const data = await res.json();
+        setProgress(data.progress || 0);
+        if (data.logs) setLogs(data.logs);
+
+        if (data.status === 'completed') {
+          setIsRendering(false);
+          setRenderResult(data.result);
+          loadProjectDetails(selectedProjectId);
+          alert('🎉 Video thành phẩm đã render hoàn tất!');
+          return false;
+        } else if (data.status === 'failed') {
+          setIsRendering(false);
+          alert(`Lỗi Render: ${data.error}`);
+          return false;
         }
-      }, 1200);
-    }
-    return () => clearInterval(interval);
+        return true;
+      }
+    });
+
+    return () => stopPolling();
   }, [isRendering, taskId]);
 
   const handleStartCompose = async () => {

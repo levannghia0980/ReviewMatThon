@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 import re
@@ -134,6 +135,7 @@ async def post_gemini_with_retry(
                 fallback_map = {
                     "gemini-3.1-flash-lite": "gemini-3.5-flash-lite",
                     "gemini-3.5-flash-lite": "gemini-3.1-flash-lite",
+                    "gemini-flash-latest": "gemini-3.1-flash-lite",
                     "gemini-3.8-flash": "gemini-3.5-flash",
                 }
                 if model_name in fallback_map:
@@ -405,5 +407,30 @@ def safe_json_loads(text: str) -> Any:
             repaired_cleaned = try_repair_truncated_json(cleaned)
             if repaired_cleaned is not None:
                 return repaired_cleaned
+
+        # Lần 6: CỨU VỚT TỪNG PHẦN TỬ OBJECT BẰNG REGEX (LINE-BY-LINE RECOVERY)
+        # Nếu chỉ bị lỗi cú pháp ở 1 dòng (ví dụ thiếu nháy kép), vẫn bóc tách được tất cả các câu hợp lệ còn lại!
+        rescued_items = []
+        for obj_match in re.finditer(r'\{[^{}]*\}', text):
+            obj_str = obj_match.group(0)
+            try:
+                item = json.loads(obj_str)
+                if isinstance(item, dict) and ("i" in item or "vi" in item or "zh" in item):
+                    rescued_items.append(item)
+            except Exception:
+                # Thử cứu vớt nhẹ nhàng nếu thiếu nháy kép quanh key hoặc phẩy thừa
+                try:
+                    fixed_obj = re.sub(r'([{,])\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', obj_str)
+                    fixed_obj = re.sub(r',\s*}', '}', fixed_obj)
+                    item = json.loads(fixed_obj)
+                    if isinstance(item, dict):
+                        rescued_items.append(item)
+                except Exception:
+                    pass
+
+        if rescued_items:
+            return rescued_items
+
         raise e
+
 

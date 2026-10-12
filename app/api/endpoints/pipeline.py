@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 import uuid
 import threading
@@ -47,8 +48,18 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             if not req.url:
                 raise ValueError("Cần cung cấp URL video hoặc Project ID có sẵn!")
             
-            task_manager.add_log(task_id, f"[1/5] 📥 [1-Shot] Đang tải video từ: {req.url}", "cyan")
-            video_path, info = DownloaderService.download_video(url=req.url, quality=req.quality)
+            task_manager.add_log(task_id, f"[1/5] 📥 [1-Shot] Đang kết nối và tải video từ: {req.url}", "cyan")
+            last_log_t = 0.0
+            def on_fa_download(pct: float, msg: str):
+                nonlocal last_log_t
+                step_pct = round(2.0 + (pct / 100.0) * 8.0, 1)
+                task_manager.update_task(task_id, progress=step_pct)
+                now = time.time()
+                if now - last_log_t >= 1.0 or pct >= 100:
+                    last_log_t = now
+                    task_manager.add_log(task_id, f"[1/5] {msg}", "cyan")
+
+            video_path, info = DownloaderService.download_video(url=req.url, quality=req.quality, progress_callback=on_fa_download)
             task_manager.add_log(task_id, f"   ✔ Video đã tải: {info['title']}", "emerald")
 
             task_manager.update_task(task_id, step=1, progress=10)
@@ -86,7 +97,28 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 txt_path=txt_path,
                 json_path=json_path
             )
-            db.flush()
+            db.add(project)
+            db.commit()
+            db.refresh(project)
+            project_id = project.id
+
+            # Di chuyển và đồng bộ file video/audio gốc vào thư mục chuẩn output/projects/project_{id}/
+            p_dirs = get_project_dirs(project_id)
+            if video_path and os.path.exists(video_path):
+                dest_video = p_dirs["root"] / f"{project.video_id}_raw{Path(video_path).suffix}"
+                if str(os.path.abspath(video_path)) != str(dest_video.resolve()):
+                    shutil.move(video_path, dest_video)
+                    project.video_path = str(dest_video)
+                    video_path = str(dest_video)
+
+            if audio_path and os.path.exists(audio_path):
+                dest_audio = p_dirs["root"] / f"{project.video_id}_raw{Path(audio_path).suffix}"
+                if str(os.path.abspath(audio_path)) != str(dest_audio.resolve()):
+                    shutil.move(audio_path, dest_audio)
+                    project.audio_path = str(dest_audio)
+                    audio_path = str(dest_audio)
+
+            db.commit()
 
             # Xóa sạch các câu thoại cũ nếu có (chống nhân đôi câu)
             db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete(synchronize_session=False)
@@ -109,7 +141,6 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 ))
             db.commit()
             db.refresh(project)
-            project_id = project.id
             task_manager.add_log(task_id, f"   ✔ Đã tạo Project #{project_id} trong SQLite CSDL.", "emerald")
         else:
             project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
@@ -117,14 +148,27 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 raise ValueError(f"Không tìm thấy Project #{project_id}")
             task_manager.add_log(task_id, f"✔ Sử dụng Project #{project_id} có sẵn: {project.title}", "emerald")
 
+            p_dirs = get_project_dirs(project_id)
+
             # Tự động kiểm tra và tải lại nếu file video gốc bị thiếu trên ổ đĩa
             if not project.video_path or not os.path.exists(project.video_path):
                 if project.source_url:
-                    task_manager.add_log(task_id, f"⚠️ File video gốc bị thiếu trên ổ đĩa. Đang tự động tải lại từ nguồn...", "amber")
-                    downloaded_vpath, _ = DownloaderService.download_video(project.source_url)
-                    project.video_path = downloaded_vpath
+                    last_rd_t = 0.0
+                    def on_redownload(pct: float, msg: str):
+                        nonlocal last_rd_t
+                        now = time.time()
+                        if now - last_rd_t >= 1.0 or pct >= 100:
+                            last_rd_t = now
+                            task_manager.add_log(task_id, f"📥 {msg}", "cyan")
+                    downloaded_vpath, _ = DownloaderService.download_video(project.source_url, progress_callback=on_redownload)
+                    dest_v = p_dirs["root"] / f"{project.video_id}_raw{Path(downloaded_vpath).suffix}"
+                    if str(os.path.abspath(downloaded_vpath)) != str(dest_v.resolve()):
+                        shutil.move(downloaded_vpath, dest_v)
+                        project.video_path = str(dest_v)
+                    else:
+                        project.video_path = downloaded_vpath
                     db.commit()
-                    task_manager.add_log(task_id, f"✔ Đã tải video gốc thành công: {Path(downloaded_vpath).name}", "emerald")
+                    task_manager.add_log(task_id, f"✔ Đã tải video gốc thành công: {Path(project.video_path).name}", "emerald")
                 else:
                     raise FileNotFoundError(f"Không tìm thấy file video gốc trên ổ đĩa: {project.video_path}")
 
@@ -228,16 +272,18 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         # 1. Tạo file Karaoke ASS trước
         db.commit()
-        ass_file = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass"
+        p_dirs = get_project_dirs(project_id)
+        ass_file = p_dirs["root"] / f"{project.video_id}_karaoke.ass"
         dialogues_db = db.query(DialogueSegmentModel).filter(
             DialogueSegmentModel.task_id == project_id
         ).order_by(DialogueSegmentModel.index.asc()).all()
 
-        # Khử trùng lặp tuyệt đối theo index để tránh bị vẽ đè 2 tầng sub
+        # Khử trùng lặp tuyệt đối theo index & chỉ lấy các câu có nội dung dịch thực tế (> 0s)
         seen_d_idx = set()
         unique_dialogues_db = []
         for d in dialogues_db:
-            if d.index not in seen_d_idx:
+            vt = (d.translated_text or "").strip()
+            if d.index not in seen_d_idx and vt and getattr(d, 'duration', 0.0) > 0.0:
                 seen_d_idx.add(d.index)
                 unique_dialogues_db.append(d)
         dialogues_db = unique_dialogues_db
@@ -311,14 +357,14 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 with open(ass_file, "w", encoding="utf-8") as f:
                     f.write("")
 
-        temp_visual_video = settings.OUTPUT_FINAL_VIDEOS_DIR / f"temp_{project.video_id}_visual.mp4"
+        temp_visual_video = p_dirs["temp"] / f"temp_{project.video_id}_visual.mp4"
         if temp_visual_video.exists():
             try:
                 temp_visual_video.unlink(missing_ok=True)
             except Exception:
                 pass
 
-        mixed_audio_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_mixed_final.mp3"
+        mixed_audio_file = p_dirs["temp"] / f"{project.video_id}_mixed_final.mp3"
         output_final_path = settings.OUTPUT_FINAL_VIDEOS_DIR / f"{project.video_id}_{safe_title}_final.mp4"
 
         audio_res_container = {}
@@ -327,12 +373,16 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         def _audio_worker():
             db_audio = SessionLocal()
             try:
-                # TTS: Tự động kiểm tra file voiceover đã xuất thành công trước đó để tránh lãng phí thời gian tạo lại hàng ngàn câu thoại
+                # XÓA BỎ CACHE CŨ KHI CHẠY FULL-AUTO PIPELINE ĐỂ BẢO ĐẢM TẠO MỚI 100% THEO CÂU GỘP MỚI
                 safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip() or f"project_{project.id}"
                 cached_master = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"
-                force_regen = not (cached_master.exists() and cached_master.stat().st_size > 500_000)
-                if not force_regen:
-                    task_manager.add_log(task_id, f"⚡ Phát hiện file Voiceover hoàn chỉnh đã có sẵn ({cached_master.name}). Bỏ qua bước chờ TTS!", "emerald")
+                if cached_master.exists():
+                    try:
+                        cached_master.unlink(missing_ok=True)
+                        task_manager.add_log(task_id, f"🧹 Đã xóa file voiceover cũ ({cached_master.name}) để tạo mới 100% theo câu gộp mới.", "gray")
+                    except Exception:
+                        pass
+                force_regen = True
 
                 engine = getattr(settings, "TTS_ENGINE", "capcut").lower()
                 if engine in ("capcut", "capcut_cloud"):
@@ -367,8 +417,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         voiceover_mp3=str(voiceover_file),
                         output_mixed_audio=str(mixed_audio_file),
                         dialogue_segments=segments,
-                        bgm_volume_when_speaking=0.08,  # 0.08 (8%) khi đang có thuyết minh tiếng Việt
-                        bgm_volume_normal=0.36,  # 0.36 (36%) khi không nói để giữ rõ âm thanh môi trường và BGM
+                        bgm_volume_when_speaking=0.036,  # 0.036 (3.6%) khi đang có thuyết minh tiếng Việt
+                        bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM
                         voiceover_volume=1.05
                     )
                     audio_res_container["audio_path"] = str(mixed_path)
@@ -491,7 +541,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         mux_ok = VideoComposerService.mux_final_video(
             visual_video_path=str(temp_visual_video),
             audio_source_path=audio_src,
-            output_final_path=str(output_final_path)
+            output_final_path=str(output_final_path),
+            task_id=task_id
         )
 
         # Dọn dẹp file tạm
@@ -540,14 +591,25 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
     """Worker chạy background thread độc lập, không block HTTP request"""
     db = SessionLocal()
     try:
-        task_manager.update_task(task_id, status="running", step=1, progress=10)
+        task_manager.update_task(task_id, status="running", step=1, progress=5)
         task_manager.add_log(task_id, f"[1/4] 📥 Bắt đầu tải video từ URL: {req.url}", "cyan")
         task_manager.add_log(task_id, f"      Cấu hình: {req.quality} | Ngôn ngữ: {req.source_language}", "cyan")
+
+        last_ingest_t = 0.0
+        def on_ingest_download(pct: float, msg: str):
+            nonlocal last_ingest_t
+            step_pct = round(5.0 + (pct / 100.0) * 80.0, 1)
+            task_manager.update_task(task_id, progress=step_pct)
+            now = time.time()
+            if now - last_ingest_t >= 1.0 or pct >= 100:
+                last_ingest_t = now
+                task_manager.add_log(task_id, f"📥 {msg}", "cyan")
 
         # Bước 1: Tải Video
         video_path, info = DownloaderService.download_video(
             url=req.url,
-            quality=req.quality
+            quality=req.quality,
+            progress_callback=on_ingest_download
         )
         task_manager.add_log(task_id, f"✔ Video đã tải xong: {info['title']}", "emerald")
 
@@ -575,6 +637,8 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
                     json_path=None
                 )
                 db.add(project)
+                db.commit()
+                db.refresh(project)
             else:
                 project.video_path = video_path
                 project.status = "DOWNLOADED"
@@ -582,9 +646,18 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
                     project.title = info["title"]
                 if not project.duration:
                     project.duration = info.get("duration", 0.0)
+                db.commit()
+                db.refresh(project)
 
-            db.commit()
-            db.refresh(project)
+            # Di chuyển video gốc vào đúng folder project_{id}
+            p_dirs = get_project_dirs(project.id)
+            if video_path and os.path.exists(video_path):
+                dest_v = p_dirs["root"] / f"{project.video_id}_raw{Path(video_path).suffix}"
+                if str(os.path.abspath(video_path)) != str(dest_v.resolve()):
+                    shutil.move(video_path, dest_v)
+                    project.video_path = str(dest_v)
+                    video_path = str(dest_v)
+                    db.commit()
 
             result_data = {
                 "status": "success",
@@ -592,7 +665,7 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
                 "project_id": project.id,
                 "video_id": info["id"],
                 "title": info["title"],
-                "video_path": video_path,
+                "video_path": project.video_path,
                 "duration": info.get("duration", 0.0),
                 "total_dialogues": 0
             }
@@ -647,7 +720,26 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
             json_path=json_path
         )
         db.add(project)
-        db.flush()
+        db.commit()
+        db.refresh(project)
+
+        # Di chuyển và đồng bộ file video/audio gốc vào thư mục chuẩn output/projects/project_{id}/
+        p_dirs = get_project_dirs(project.id)
+        if video_path and os.path.exists(video_path):
+            dest_video = p_dirs["root"] / f"{project.video_id}_raw{Path(video_path).suffix}"
+            if str(os.path.abspath(video_path)) != str(dest_video.resolve()):
+                shutil.move(video_path, dest_video)
+                project.video_path = str(dest_video)
+                video_path = str(dest_video)
+
+        if audio_path and os.path.exists(audio_path):
+            dest_audio = p_dirs["root"] / f"{project.video_id}_raw{Path(audio_path).suffix}"
+            if str(os.path.abspath(audio_path)) != str(dest_audio.resolve()):
+                shutil.move(audio_path, dest_audio)
+                project.audio_path = str(dest_audio)
+                audio_path = str(dest_audio)
+
+        db.commit()
 
         # Xóa sạch các câu thoại cũ nếu có (chống nhân đôi câu)
         db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).delete(synchronize_session=False)
@@ -785,6 +877,60 @@ def get_active_pipeline_task():
             if t.get("status") in ["running", "pending"]:
                 return t
     return {"status": "none"}
+
+
+@router.get("/active-tasks", summary="Lấy toàn bộ danh sách tác vụ đang chạy đồng thời (Đa nhiệm)")
+def get_all_active_pipeline_tasks():
+    """Trả về toàn bộ tác vụ đang chạy ngầm trên toàn bộ hệ thống (dùng khi nạp trang lần đầu)"""
+    active = task_manager.get_all_active_tasks()
+    return {"tasks": active}
+
+
+@router.get("/events", summary="SSE Stream: Tín hiệu đồng bộ thời gian thực từ Backend sang Frontend")
+async def pipeline_events_stream():
+    """
+    Server-Sent Events (SSE) Stream:
+    Frontend mở 1 kết nối duy nhất, Backend tự động PUSH log và tiến trình sang Frontend ngay khi có sự kiện.
+    Loại bỏ hoàn toàn polling spam HTTP request mỗi 1-2 giây!
+    """
+    from fastapi.responses import StreamingResponse
+    import json
+
+    q = task_manager.subscribe()
+
+    async def event_generator():
+        try:
+            # Gửi tín hiệu chào mừng ban đầu
+            yield f"data: {json.dumps({'event': 'connected', 'timestamp': time.time()})}\n\n"
+            while True:
+                try:
+                    # Chờ sự kiện có log hoặc cập nhật tiến trình với timeout 15s để giữ keep-alive
+                    payload = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    # Gửi heartbeat ping giữ kết nối
+                    yield f": keep-alive\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            task_manager.unsubscribe(q)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@router.get("/projects/{project_id}/logs", summary="Lấy lịch sử log từ Terminal server theo Project")
+def get_project_logs_endpoint(project_id: int):
+    """Giúp Frontend tải lại toàn bộ log từ Backend Terminal của riêng project đó"""
+    logs = task_manager.get_project_logs(project_id)
+    return {"project_id": project_id, "logs": logs}
 
 
 @router.post("/cancel/{task_id}", summary="Hủy tác vụ đang chạy và tự động dọn dẹp các chunk tạm")
