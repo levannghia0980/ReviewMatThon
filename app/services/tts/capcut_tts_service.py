@@ -370,7 +370,10 @@ class CapCutTTSService:
         num_workers = max(1, min(128, num_workers))
 
         safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip() or f"project_{project.id}"
-        master_voice_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"
+        from app.config import get_project_dirs
+        p_dirs = get_project_dirs(project.id)
+        master_voice_file = p_dirs["root"] / f"{project.video_id}_voiceover.mp3"
+        master_voice_file.parent.mkdir(parents=True, exist_ok=True)
 
         if not force_regenerate and master_voice_file.exists() and master_voice_file.stat().st_size > 50000:
             task_manager.add_log(task_id, f"✔ Tái sử dụng file âm thanh lồng tiếng đã lưu sẵn: output/voiceover/{master_voice_file.name}", "emerald")

@@ -155,11 +155,11 @@ class TranslationPipelineService:
             segments.append(seg)
             cleaned_lines.append(f"<s id=\"{seg.id}\">{cleaned}</s>")
 
-        # Lưu vào output/01_raw_cleaned
-        raw_cleaned_path = settings.OUTPUT_RAW_CLEANED_DIR / f"{project.video_id}_{re_clean_name}_cleaned.txt"
+        # Lưu bản sạch vào thư mục project
+        raw_cleaned_path = p_dirs["root"] / f"{project.video_id}_cleaned.txt"
         with open(raw_cleaned_path, "w", encoding="utf-8") as f:
             f.write("\n".join(cleaned_lines))
-        task_manager.add_log(task_id, f"   ✔ Đã lưu bản sạch: output/01_raw_cleaned/{raw_cleaned_path.name}", "emerald")
+        task_manager.add_log(task_id, f"   ✔ Đã lưu bản sạch: {raw_cleaned_path.name}", "emerald")
 
         # =====================================================================
         # GIAI ĐOẠN 2 & 3: CHIA LÔ & CHẠY 2 LLM CHO TỪNG LÔ (02_entities + 03_dich_ai_llm)

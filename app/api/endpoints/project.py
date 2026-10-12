@@ -200,10 +200,13 @@ def get_project_entities(project_id: int, db: Session = Depends(get_db)):
     if not project:
         raise HTTPException(status_code=404, detail="Không tìm thấy project")
         
-    # Tìm file entities trong output/02_entities
-    entities_files = list(settings.OUTPUT_ENTITIES_DIR.glob(f"{project.video_id}*.json"))
-    if entities_files and entities_files[0].exists():
-        with open(entities_files[0], "r", encoding="utf-8") as f:
+    # Tìm file entities trong project_{id}/entities/
+    from app.config import get_project_dirs
+    p_dirs = get_project_dirs(project_id)
+    all_ent_file = p_dirs["entities"] / "all_entities.json"
+    
+    if all_ent_file.exists():
+        with open(all_ent_file, "r", encoding="utf-8") as f:
             data = json.load(f)
             
             entities_list = []
@@ -249,8 +252,9 @@ def save_project_entities(project_id: int, payload: Dict[str, Any] = Body(...), 
     if not project:
         raise HTTPException(status_code=404, detail="Không tìm thấy project")
         
-    clean_title = re.sub(r'[^\w\-_\. ]', '_', project.title)
-    target_file = settings.OUTPUT_ENTITIES_DIR / f"{project.video_id}_{clean_title}_entities.json"
+    from app.config import get_project_dirs
+    p_dirs = get_project_dirs(project_id)
+    target_file = p_dirs["entities"] / "all_entities.json"
     
     with open(target_file, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
