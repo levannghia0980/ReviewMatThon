@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
-title [CAI DAT HE THONG] STUDIO REVIEW MAT THAN
+title [CAI DAT HE THONG] STUDIO MAT THON REVIEW
 cd /d "%~dp0"
 
 echo ==============================================================================
-echo        STUDIO REVIEW MAT THAN - BO CAI DAT HE THONG TU DONG 1-CLICK
+echo        STUDIO MAT THON REVIEW - BO CAI DAT HE THONG TU DONG 1-CLICK
 echo ==============================================================================
 echo  Quy trinh tu dong thuc hien:
 echo   1. Kiem tra Python [Tu dong tai va cai Python 3.11 neu may chua co]
@@ -203,14 +203,14 @@ echo.
 :: ------------------------------------------------------------------------------
 echo [6/6] Dang tao phim tat khoi dong ngoai man hinh Desktop...
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([IO.Path]::Combine([Environment]::GetFolderPath('Desktop'), 'Review Mat Than.lnk')); $s.TargetPath = '%~dp02_KHOI_DONG.bat'; $s.WorkingDirectory = '%~dp0'; $s.IconLocation = 'shell32.dll,14'; $s.Description = 'Khoi dong Studio Review Mat Than'; $s.Save()"
-echo   [OK] Da tao phim tat 'Review Mat Than' ngoai Desktop!
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([IO.Path]::Combine([Environment]::GetFolderPath('Desktop'), 'Mat Thon Review.lnk')); $s.TargetPath = '%~dp02_KHOI_DONG.bat'; $s.WorkingDirectory = '%~dp0'; $s.IconLocation = 'shell32.dll,14'; $s.Description = 'Khoi dong Studio Mat Thon Review'; $s.Save()"
+echo   [OK] Da tao phim tat 'Mat Thon Review' ngoai Desktop!
 
 echo.
 echo ==============================================================================
 echo   CHUC MUNG! HE THONG DA DUOC CAI DAT HOAN TAT 100%!
 echo ==============================================================================
-echo   - Tu nay ban chi can nhan vao bieu tuong 'Review Mat Than' ngoai Desktop
+echo   - Tu nay ban chi can nhan vao bieu tuong 'Mat Thon Review' ngoai Desktop
 echo     hoac chay file '2_KHOI_DONG.bat' de mo chuong trinh.
 echo   - Khi muon tat chuong trinh, chi can dong cua so dong lenh [hoac bam Ctrl+C].
 echo ==============================================================================

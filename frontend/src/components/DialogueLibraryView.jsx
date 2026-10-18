@@ -14,11 +14,15 @@ export default function DialogueLibraryView() {
   const [isLoading, setIsLoading] = useState(false);
   const [isDiagLoading, setIsDiagLoading] = useState(false);
 
-  // Search & Filters in Reader
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('ALL'); // ALL, TRANSLATED, UNTRANSLATED
+  // Filters in Reader
+  const [filter, setFilter] = useState('ALL'); // ALL, TRANSLATED
   const [readMode, setReadMode] = useState('bilingual'); // 'bilingual' | 'vietnamese_only'
   const [activeChapterIndex, setActiveChapterIndex] = useState('ALL'); // 'ALL' | number (0, 1, 2...)
+
+  // Editing & Saving State
+  const [unsavedIds, setUnsavedIds] = useState(new Set());
+  const [savingIds, setSavingIds] = useState(new Set());
+  const [isSavingAll, setIsSavingAll] = useState(false);
 
   // AIREAD Translation Engine Settings
   const [genre, setGenre] = useState(DEFAULT_GENRE);
@@ -60,109 +64,103 @@ export default function DialogueLibraryView() {
     }
   };
 
-  // Nạp toàn bộ câu thoại an toàn (tránh lỗi 422 phân trang)
-  const fetchAllDialogues = async (projectId) => {
+  const [batchesData, setBatchesData] = useState({ total_items: 0, total_translated: 0, batches: [] });
+  const [activeBatchIndex, setActiveBatchIndex] = useState(0); // 0 = Lô 1
+
+  // Nạp danh mục Lô (Chương) siêu nhẹ chuẩn AIREAD
+  const loadBatches = async (projectId, targetBatchIndex = 0) => {
     try {
-      let allItems = [];
-      let page = 1;
-      let totalPages = 1;
-
-      // Gọi lần đầu với page_size=1000
-      const firstRes = await fetch(`/api/v1/projects/${projectId}/dialogues?page=1&page_size=1000`);
-      if (firstRes.ok) {
-        const firstData = await firstRes.json();
-        allItems = allItems.concat(firstData.items || []);
-        totalPages = firstData.total_pages || 1;
-
-        // Nếu có nhiều trang hơn
-        for (let p = 2; p <= totalPages; p++) {
-          const nextRes = await fetch(`/api/v1/projects/${projectId}/dialogues?page=${p}&page_size=1000`);
-          if (nextRes.ok) {
-            const nextData = await nextRes.json();
-            allItems = allItems.concat(nextData.items || []);
-          }
+      const res = await fetch(`/api/v1/projects/${projectId}/batches?batch_size=${batchSize}`);
+      if (res.ok) {
+        const data = await res.json();
+        setBatchesData(data);
+        if (data.batches && data.batches.length > 0) {
+          const validIndex = Math.min(Math.max(0, targetBatchIndex), data.batches.length - 1);
+          setActiveBatchIndex(validIndex);
+          await fetchBatchDialogues(projectId, validIndex);
+        } else {
+          setDialogues([]);
         }
       }
-      return allItems;
     } catch (e) {
-      console.error("Lỗi khi nạp dialogues:", e);
-      return [];
+      console.error("Lỗi khi nạp batches:", e);
     }
+  };
+
+  // Nạp câu thoại của ĐÚNG 1 LÔ (Ưu tiên nạp câu gộp kịch bản TTS chuẩn nhân vật)
+  const fetchBatchDialogues = async (projectId, bIndex) => {
+    setIsDiagLoading(true);
+    setUnsavedIds(new Set());
+    try {
+      // 1. Thử nạp từ bảng câu gộp TTS (có nhân vật & thời lượng lồng tiếng)
+      const ttsRes = await fetch(`/api/v1/projects/${projectId}/tts-dialogues${bIndex !== undefined ? `?batch_index=${bIndex + 1}` : ''}`);
+      if (ttsRes.ok) {
+        const ttsData = await ttsRes.json();
+        if (ttsData.items && ttsData.items.length > 0) {
+          const normalized = ttsData.items.map(t => ({
+            ...t,
+            index: t.tts_index,
+            text: t.original_text,
+            clean_text: t.original_text,
+            translated_text: t.translated_text,
+            role: t.speaker || 'NARRATOR',
+            speaker: t.speaker || 'NARRATOR'
+          }));
+          setDialogues(normalized);
+          setIsDiagLoading(false);
+          return;
+        }
+      }
+
+      // 2. Fallback nạp từ danh sách câu thoại ASR gốc
+      const res = await fetch(`/api/v1/projects/${projectId}/dialogues?batch_index=${bIndex}&page_size=${batchSize}`);
+      if (res.ok) {
+        const data = await res.json();
+        setDialogues(data.items || []);
+      }
+    } catch (e) {
+      console.error("Lỗi khi nạp câu thoại theo lô:", e);
+    } finally {
+      setIsDiagLoading(false);
+    }
+  };
+
+  const handleSelectBatch = async (bIndex) => {
+    if (bIndex === activeBatchIndex || !selectedProject) return;
+    setActiveBatchIndex(bIndex);
+    await fetchBatchDialogues(selectedProject.id, bIndex);
   };
 
   const handleOpenProject = async (project) => {
     setSelectedProject(project);
-    setActiveChapterIndex('ALL');
+    setActiveBatchIndex(0);
     setIsDiagLoading(true);
-    const items = await fetchAllDialogues(project.id);
-    setDialogues(items);
+    setUnsavedIds(new Set());
+    await loadBatches(project.id, 0);
     setIsDiagLoading(false);
   };
 
   const handleBackToLibrary = () => {
     setSelectedProject(null);
     setDialogues([]);
+    setUnsavedIds(new Set());
+    setBatchesData({ total_items: 0, total_translated: 0, batches: [] });
     loadProjects();
   };
 
-  // Chia danh sách câu thoại thành các Chương / Lô (Mỗi lô = 1 chương)
-  const chapters = useMemo(() => {
-    if (!dialogues || dialogues.length === 0) return [];
-    const size = batchSize > 0 ? batchSize : 250;
-    const list = [];
-    const total = dialogues.length;
-
-    for (let i = 0; i < total; i += size) {
-      const slice = dialogues.slice(i, i + size);
-      const chNum = Math.floor(i / size) + 1;
-      const startNum = i + 1;
-      const endNum = Math.min(i + size, total);
-      const transCount = slice.filter(d => ['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) || (d.translated_text !== null && d.translated_text !== undefined)).length;
-      const isDone = transCount === slice.length;
-
-      list.push({
-        chapterIndex: chNum - 1,
-        title: `Chương ${chNum} (Lô #${chNum})`,
-        rangeLabel: `Câu ${startNum} - ${endNum}`,
-        totalCount: slice.length,
-        translatedCount: transCount,
-        isDone: isDone,
-        startIndex: i,
-        endIndex: i + size
-      });
-    }
-    return list;
-  }, [dialogues, batchSize]);
-
-  // Lọc câu thoại theo Chương, Search và Trạng thái
+  // Lọc câu thoại trong Lô đang chọn theo Trạng thái
   const filteredDialogues = useMemo(() => {
     let list = dialogues;
-
-    // Lọc theo Chương
-    if (activeChapterIndex !== 'ALL' && chapters[activeChapterIndex]) {
-      const ch = chapters[activeChapterIndex];
-      list = dialogues.slice(ch.startIndex, ch.endIndex);
-    }
-
-    // Lọc theo tìm kiếm
-    if (search.trim()) {
-      const s = search.toLowerCase();
-      list = list.filter(d => {
-        const raw = (d.clean_text || d.original_text || '').toLowerCase();
-        const trans = (d.translated_text || '').toLowerCase();
-        return raw.includes(s) || trans.includes(s);
-      });
-    }
-
-    // Lọc theo trạng thái
     if (filter === 'TRANSLATED') {
       list = list.filter(d => ['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) || (d.translated_text !== null && d.translated_text !== undefined));
-    } else if (filter === 'UNTRANSLATED') {
-      list = list.filter(d => !['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) && (d.translated_text === null || d.translated_text === undefined));
     }
-
     return list;
-  }, [dialogues, activeChapterIndex, chapters, search, filter]);
+  }, [dialogues, filter]);
+
+  const currentBatch = useMemo(() => {
+    if (!batchesData.batches || batchesData.batches.length === 0) return null;
+    return batchesData.batches[activeBatchIndex] || batchesData.batches[0];
+  }, [batchesData.batches, activeBatchIndex]);
 
   // Poll AIREAD Translation Task
   useEffect(() => {
@@ -179,10 +177,8 @@ export default function DialogueLibraryView() {
           if (['completed', 'DONE', 'success', 'SUCCESS'].includes(data.status)) {
             setIsTranslating(false);
             clearInterval(interval);
-            // Chỉ tải lại toàn bộ câu thoại ĐÚNG 1 LẦN DUY NHẤT khi tiến trình hoàn tất
             if (selectedProject) {
-              const updatedItems = await fetchAllDialogues(selectedProject.id);
-              setDialogues(updatedItems);
+              await loadBatches(selectedProject.id, activeBatchIndex);
             }
             loadProjects();
           } else if (data.status === 'cancelled') {
@@ -199,7 +195,7 @@ export default function DialogueLibraryView() {
       }, 2000);
     }
     return () => clearInterval(interval);
-  }, [isTranslating, taskId, selectedProject?.id]);
+  }, [isTranslating, taskId, selectedProject?.id, activeBatchIndex]);
 
   // Poll STT Extraction Task
   useEffect(() => {
@@ -217,8 +213,7 @@ export default function DialogueLibraryView() {
             setIsExtracting(false);
             clearInterval(interval);
             if (selectedProject) {
-              const updatedItems = await fetchAllDialogues(selectedProject.id);
-              setDialogues(updatedItems);
+              await loadBatches(selectedProject.id, 0);
             }
             loadProjects();
           } else if (data.status === 'failed' || data.status === 'FAILED') {
@@ -232,7 +227,7 @@ export default function DialogueLibraryView() {
       }, 2000);
     }
     return () => clearInterval(interval);
-  }, [isExtracting, extractTaskId, selectedProject]);
+  }, [isExtracting, extractTaskId, selectedProject, activeBatchIndex]);
 
   const handleExtractSTT = async () => {
     if (!selectedProject) return;
@@ -269,8 +264,7 @@ export default function DialogueLibraryView() {
       setIsTranslating(false);
       setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), text: '🛑 Đã dừng tiến trình dịch thuật! Dữ liệu các lô đã dịch xong được bảo toàn nguyên vẹn.', type: 'amber' }]);
       if (selectedProject) {
-        const updatedItems = await fetchAllDialogues(selectedProject.id);
-        setDialogues(updatedItems);
+        await loadBatches(selectedProject.id, activeBatchIndex);
       }
       loadProjects();
     } catch (e) {
@@ -293,8 +287,7 @@ export default function DialogueLibraryView() {
           project_id: selectedProject.id,
           genre: genre,
           batch_size: batchSize,
-          max_chars: 22000,
-          provider: 'gemini'
+          max_chars: 22000
         })
       });
 
@@ -309,11 +302,102 @@ export default function DialogueLibraryView() {
 
   const handleTextChange = (id, newText) => {
     setDialogues(prev => prev.map(d => d.id === id ? { ...d, translated_text: newText } : d));
+    setUnsavedIds(prev => new Set(prev).add(id));
+  };
+
+  const handleSaveSingle = async (id) => {
+    const diag = dialogues.find(d => d.id === id);
+    if (!diag || !selectedProject) return;
+    setSavingIds(prev => new Set(prev).add(id));
+    try {
+      const res = await fetch(`/api/v1/projects/${selectedProject.id}/dialogues/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: [{
+            id: diag.id,
+            translated_text: diag.translated_text || '',
+            speaker: diag.speaker || diag.role || null
+          }]
+        })
+      });
+      if (res.ok) {
+        setUnsavedIds(prev => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error("Lỗi tự động lưu câu:", err);
+    } finally {
+      setSavingIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const handleSaveAll = async () => {
+    if (!selectedProject || dialogues.length === 0) return;
+    setIsSavingAll(true);
+    try {
+      const targetDialogues = unsavedIds.size > 0 
+        ? dialogues.filter(d => unsavedIds.has(d.id))
+        : dialogues;
+
+      const payload = {
+        items: targetDialogues.map(d => ({
+          id: d.id,
+          translated_text: d.translated_text || '',
+          speaker: d.speaker || d.role || null
+        }))
+      };
+
+      const res = await fetch(`/api/v1/projects/${selectedProject.id}/dialogues/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUnsavedIds(new Set());
+        alert(data.message || `✔ Đã lưu thành công ${targetDialogues.length} câu thoại vào Database SQLite!`);
+      } else {
+        alert(`Lỗi khi lưu: ${data.detail || 'Không thể lưu'}`);
+      }
+    } catch (err) {
+      alert(`Lỗi kết nối: ${err.message}`);
+    } finally {
+      setIsSavingAll(false);
+    }
+  };
+
+  const handleResetTranslation = async () => {
+    if (!selectedProject) return;
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN XÓA SẠCH BẢN DỊCH ĐỂ DỊCH LẠI?\n\n"${selectedProject.title}" (ID: #${selectedProject.id})\n\nThao tác này sẽ:\n✓ GIỮ NGUYÊN video gốc và toàn bộ câu thoại tiếng Trung gốc\n✗ XÓA SẠCH toàn bộ kịch bản dịch tiếng Việt cả trên máy và Database\n✗ Xóa sạch toàn bộ audio thuyết minh và video render\n\nBạn có thể bấm "Bắt Đầu Dịch" ngay lập tức để AI dịch lại từ đầu mà không cần bóc tách lại thoại!`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/v1/projects/${selectedProject.id}/reset-translation`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || 'Đã reset sạch toàn bộ bản dịch tiếng Việt thành công!');
+        await loadBatches(selectedProject.id, 0);
+        loadProjects();
+      } else {
+        alert(`Lỗi khi reset bản dịch: ${data.detail || 'Không thể reset'}`);
+      }
+    } catch (err) {
+      alert(`Lỗi kết nối: ${err.message}`);
+    }
   };
 
   const handleResetToDownloaded = async () => {
     if (!selectedProject) return;
-    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VỀ LÚC MỚI TẢI XONG?\n\n"${selectedProject.title}" (ID: #${selectedProject.id})\n\nThao tác này sẽ:\n✓ Giữ nguyên file video gốc\n✗ XÓA SẠCH TOÀN BỘ CÂU THOẠI & BẢN DỊCH\n✗ Xóa sạch toàn bộ audio thuyết minh và video render\n\nDự án sẽ trở về trạng thái như vừa tải video xong!`)) {
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VỀ LÚC MỚI TẢI XONG?\n\n"${selectedProject.title}" (ID: #${selectedProject.id})\n\nThao tác này sẽ:\n✓ Giữ nguyên file video gốc\n✗ XÓA SẠCH TOÀN BỘ CÂU THOẠI & BẢN DỊCH CẢ TRÊN MÁY VÀ DATABASE\n✗ Xóa sạch toàn bộ audio thuyết minh và video render\n\nDự án sẽ trở về trạng thái như vừa tải video xong!`)) {
       return;
     }
 
@@ -323,6 +407,7 @@ export default function DialogueLibraryView() {
       if (res.ok) {
         alert(data.message || 'Đã reset về lúc mới tải xong thành công!');
         setDialogues([]);
+        setBatchesData({ total_items: 0, total_translated: 0, batches: [] });
         loadProjects();
         setSelectedProject(prev => prev ? { ...prev, status: 'DOWNLOADED', total_dialogues: 0 } : null);
       } else {
@@ -333,10 +418,6 @@ export default function DialogueLibraryView() {
     }
   };
 
-  const handleSaveAll = () => {
-    alert('✔ Đã lưu tất cả thay đổi kịch bản vào Database SQLite!');
-  };
-
   const formatDuration = (sec) => {
     if (!sec) return '00:00';
     const m = Math.floor(sec / 60);
@@ -344,8 +425,10 @@ export default function DialogueLibraryView() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const translatedCount = dialogues.filter(d => ['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) || (d.translated_text !== null && d.translated_text !== undefined)).length;
-  const translatedPercent = dialogues.length > 0 ? Math.round((translatedCount / dialogues.length) * 100) : 0;
+  // Tổng câu và số câu đã dịch toàn bộ phim (Dựa trên metadata từ batchesData chuẩn chỉ, không phụ thuộc vào Lô hiện tại)
+  const totalDialoguesAll = batchesData.total_items || (selectedProject ? selectedProject.total_dialogues : 0) || 0;
+  const translatedCountAll = batchesData.total_translated || (selectedProject ? selectedProject.translated_dialogues : 0) || 0;
+  const translatedPercentAll = totalDialoguesAll > 0 ? Math.round((translatedCountAll / totalDialoguesAll) * 100) : 0;
 
   // =========================================================================
   // VIEW 1: THƯ VIỆN CÁC BỘ TRUYỆN / VIDEO (AIREAD BOOK LIBRARY GRID)
@@ -504,7 +587,12 @@ export default function DialogueLibraryView() {
                 {selectedProject.title}
               </h2>
               <div style={{ fontSize: '12px', color: 'var(--text-sub)', marginTop: '2px' }}>
-                Tổng số: <strong>{dialogues.length} câu</strong> • Đã dịch: <strong style={{ color: '#059669' }}>{translatedCount}/{dialogues.length} câu ({translatedPercent}%)</strong>
+                Toàn bộ phim: <strong>{totalDialoguesAll} câu ASR gốc</strong> • Đã dịch: <strong style={{ color: '#059669' }}>{translatedCountAll}/{totalDialoguesAll} câu ({translatedPercentAll}%)</strong>
+                {currentBatch && (
+                  <span style={{ marginLeft: '10px', background: '#e0e7ff', color: '#4338ca', padding: '2px 8px', borderRadius: '4px', fontWeight: 700 }}>
+                    Kịch bản lồng tiếng: {dialogues.length} câu đã gộp ({currentBatch.title} • {currentBatch.range_label})
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -518,7 +606,7 @@ export default function DialogueLibraryView() {
                 onClick={() => setReadMode('bilingual')}
                 className={`btn btn-sm ${readMode === 'bilingual' ? 'btn-primary' : 'btn-secondary'}`}
                 style={{ padding: '4px 10px', fontSize: '12px', border: 'none' }}
-                title="Đọc Song Ngữ Hán - Việt Đối Chiếu"
+                title="Đọc Song Ngữ Hán - Việt Đối Chiối"
               >
                 <Columns size={13} /> Song Ngữ
               </button>
@@ -532,31 +620,63 @@ export default function DialogueLibraryView() {
               </button>
             </div>
 
-            <input
-              type="text"
-              placeholder="🔍 Tìm thoại..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{ padding: '6px 12px', width: '150px', fontSize: '12px' }}
-            />
-            
             <button
               className={`btn btn-sm ${filter === 'ALL' ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setFilter('ALL')}
             >
-              Tất Cả ({dialogues.length})
+              Lô Này ({dialogues.length})
             </button>
             <button
               className={`btn btn-sm ${filter === 'TRANSLATED' ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setFilter('TRANSLATED')}
             >
-              Đã Dịch ({translatedCount})
+              Đã Dịch ({dialogues.filter(d => ['TRANSLATED', 'SILENT_VALID', 'DUBBED'].includes(d.status) || (d.translated_text !== null && d.translated_text !== undefined)).length})
             </button>
             <button
-              className={`btn btn-sm ${filter === 'UNTRANSLATED' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setFilter('UNTRANSLATED')}
+              className="btn btn-sm"
+              onClick={handleSaveAll}
+              disabled={isSavingAll}
+              style={{
+                background: unsavedIds.size > 0 ? '#10b981' : '#f0fdf4',
+                color: unsavedIds.size > 0 ? '#ffffff' : '#15803d',
+                border: '1.5px solid ' + (unsavedIds.size > 0 ? '#059669' : '#86efac'),
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontWeight: 700,
+                padding: '5px 12px',
+                fontSize: '12px',
+                cursor: isSavingAll ? 'not-allowed' : 'pointer',
+                boxShadow: unsavedIds.size > 0 ? '0 2px 8px rgba(16, 185, 129, 0.35)' : 'none',
+                transition: 'all 0.2s ease'
+              }}
+              title="Lưu tất cả thay đổi kịch bản của lô này vào Database SQLite"
             >
-              Chưa Dịch ({dialogues.length - translatedCount})
+              <Save size={13} />
+              {isSavingAll 
+                ? 'Đang lưu...' 
+                : unsavedIds.size > 0 
+                  ? `Lưu Sửa Đổi (${unsavedIds.size})` 
+                  : 'Lưu Kịch Bản'}
+            </button>
+
+            <button
+              className="btn btn-sm"
+              onClick={handleResetTranslation}
+              style={{
+                background: '#fef3c7',
+                color: '#b45309',
+                border: '1px solid #fde68a',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontWeight: 700,
+                padding: '5px 10px',
+                fontSize: '12px'
+              }}
+              title="Xóa sạch toàn bộ bản dịch tiếng Việt cả trên máy và DB (giữ nguyên câu gốc tiếng Trung để dịch lại ngay)"
+            >
+              <RotateCcw size={12} /> Reset Bản Dịch
             </button>
 
             <button
@@ -573,50 +693,74 @@ export default function DialogueLibraryView() {
                 padding: '5px 10px',
                 fontSize: '12px'
               }}
-              title="Reset về lúc mới tải xong (giữ lại video gốc, xóa toàn bộ câu thoại và bản dịch)"
+              title="Reset về lúc mới tải xong (xóa toàn bộ câu thoại và bản dịch cả trên máy và DB)"
             >
-              <RotateCcw size={12} /> Reset Mới Tải
+              <Trash2 size={12} /> Reset Mới Tải
             </button>
           </div>
         </div>
 
-        {/* 2. CHAPTER / LÔ NAVIGATOR BAR (Mỗi Lô = 1 Chương - Chuẩn AIREAD) */}
+        {/* 2. BREADCRUMB / MINI LÔ NAVIGATOR BAR */}
         <div style={{
-          padding: '10px 24px',
+          padding: '8px 24px',
           background: '#ffffff',
           borderBottom: '1px solid var(--border)',
           display: 'flex',
           alignItems: 'center',
-          gap: '8px',
-          overflowX: 'auto',
-          whiteSpace: 'nowrap'
+          justifyContent: 'space-between',
+          gap: '8px'
         }}>
-          <span style={{ fontSize: '12px', fontWeight: 800, color: 'var(--text-dim)', textTransform: 'uppercase', marginRight: '4px' }}>
-            📖 Chọn Chương:
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '12px', fontWeight: 800, color: 'var(--text-dim)', textTransform: 'uppercase' }}>
+              📦 Đang xem:
+            </span>
+            {currentBatch ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{
+                  fontSize: '13px',
+                  fontWeight: 800,
+                  color: '#4338ca',
+                  background: '#e0e7ff',
+                  padding: '3px 10px',
+                  borderRadius: '6px'
+                }}>
+                  {currentBatch.title} ({currentBatch.range_label})
+                </span>
+                <span style={{ fontSize: '12px', color: 'var(--text-sub)' }}>
+                  Trạng thái: <strong style={{ color: currentBatch.is_done ? '#059669' : currentBatch.translated > 0 ? '#d97706' : '#64748b' }}>
+                    {currentBatch.is_done ? '✔ Đã dịch xong' : currentBatch.translated > 0 ? `⏳ Đang dịch dở (${currentBatch.translated}/${currentBatch.total})` : '⚪ Chưa dịch'}
+                  </strong>
+                </span>
+              </div>
+            ) : (
+              <span style={{ fontSize: '12px', color: 'var(--text-sub)' }}>Chưa có lô nào</span>
+            )}
+          </div>
 
-          <button
-            onClick={() => setActiveChapterIndex('ALL')}
-            className={`chapter-chip ${activeChapterIndex === 'ALL' ? 'active' : ''}`}
-          >
-            <Layers size={13} /> Tất Cả Các Chương ({dialogues.length} câu)
-          </button>
-
-          {chapters.map((ch) => {
-            const isActive = activeChapterIndex === ch.chapterIndex;
-            return (
+          {/* Nút chuyển Lô nhanh Trước / Sau */}
+          {batchesData.batches && batchesData.batches.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <button
-                key={ch.chapterIndex}
-                onClick={() => setActiveChapterIndex(ch.chapterIndex)}
-                className={`chapter-chip ${isActive ? 'active' : ''} ${ch.isDone ? 'completed' : ''}`}
-                title={`${ch.title}: ${ch.rangeLabel} (${ch.translatedCount}/${ch.totalCount} câu)`}
+                className="btn btn-secondary btn-sm"
+                disabled={activeBatchIndex === 0}
+                onClick={() => handleSelectBatch(activeBatchIndex - 1)}
+                style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700 }}
               >
-                <span>{ch.title}</span>
-                <span style={{ fontSize: '11px', opacity: 0.8 }}>({ch.rangeLabel})</span>
-                {ch.isDone && <Check size={12} color={isActive ? '#ffffff' : '#059669'} />}
+                ◀ Lô trước
               </button>
-            );
-          })}
+              <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)' }}>
+                {activeBatchIndex + 1} / {batchesData.batches.length}
+              </span>
+              <button
+                className="btn btn-secondary btn-sm"
+                disabled={activeBatchIndex >= batchesData.batches.length - 1}
+                onClick={() => handleSelectBatch(activeBatchIndex + 1)}
+                style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700 }}
+              >
+                Lô sau ▶
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 3. SCRIPT READER BODY (Clean White Paper Layout) */}
@@ -660,11 +804,31 @@ export default function DialogueLibraryView() {
             </div>
           ) : (
             /* CHẾ ĐỘ: ĐỌC SONG NGỮ HÁN - VIỆT ĐỐI CHIẾU (CHUẨN STUDIO AIREAD) */
-            filteredDialogues.map((d) => {
+            filteredDialogues.map((d, dIdx) => {
+              const isMergedChild = d.status === 'MERGED_CHILD' || (d.translated_text === '' && d.duration === 0);
               const isUntranslated = d.translated_text === null || d.translated_text === undefined;
-              const isSilent = !isUntranslated && !d.translated_text.trim();
-              const hasVi = !isUntranslated && !!d.translated_text.trim();
+              const hasVi = !isUntranslated && !isMergedChild && !!d.translated_text.trim();
+              const isSilent = !isUntranslated && !hasVi && !isMergedChild;
               const chIndex = Math.floor((d.index - 1) / (batchSize || 250)) + 1;
+
+              // Tìm xem câu này gộp bao nhiêu câu sau (nếu các câu liền sau là MERGED_CHILD)
+              let mergedCount = 1;
+              if (hasVi) {
+                for (let nextI = dIdx + 1; nextI < filteredDialogues.length; nextI++) {
+                  const nextD = filteredDialogues[nextI];
+                  if (nextD.status === 'MERGED_CHILD' || (nextD.translated_text === '' && nextD.duration === 0)) {
+                    mergedCount++;
+                  } else {
+                    break;
+                  }
+                }
+              }
+
+              // Nếu là câu con đã được gộp vào câu trước (khi chưa tách): Bỏ qua không render dòng xám rác
+              if (isMergedChild) {
+                return null;
+              }
+
 
               return (
                 <div
@@ -672,7 +836,7 @@ export default function DialogueLibraryView() {
                   style={{
                     padding: '14px 18px',
                     background: '#ffffff',
-                    borderLeft: hasVi ? '4px solid #2563eb' : isSilent ? '4px solid #94a3b8' : '4px solid #d97706',
+                    borderLeft: hasVi ? (mergedCount > 1 ? '5px solid #7c3aed' : '4px solid #2563eb') : isSilent ? '4px solid #94a3b8' : '4px solid #d97706',
                     borderRadius: '0 8px 8px 0',
                     borderTop: '1px solid var(--border)',
                     borderRight: '1px solid var(--border)',
@@ -689,40 +853,117 @@ export default function DialogueLibraryView() {
                       <span className="tag-badge cyan" style={{ fontSize: '11px', padding: '2px 7px' }}>
                         Chương {chIndex} • #{d.index}
                       </span>
+
+                      {/* Huy hiệu phân vai minh bạch: HỆ THỐNG / NARRATOR / NHÂN VẬT */}
+                      {(d.speaker === 'HỆ THỐNG' || d.role === 'HỆ THỐNG' || d.speaker === 'SYSTEM' || d.role === 'SYSTEM') ? (
+                        <span style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 800, background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                          🔔 HỆ THỐNG
+                        </span>
+                      ) : (d.speaker === 'NARRATOR' || d.role === 'NARRATOR' || !d.speaker) ? (
+                        <span style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 800, background: '#fee2e2', color: '#000000', border: '1.5px solid #dc2626', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                          🎙️ NARRATOR
+                        </span>
+                      ) : (
+                        <span className="tag-badge purple" style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 700 }}>
+                          👤 {d.speaker || d.role}
+                        </span>
+                      )}
+
                       <span style={{ color: 'var(--text-dim)', background: '#f1f5f9', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--border)' }}>
                         ⏱ {formatDuration(d.start_time)} ➔ {formatDuration(d.end_time)}
                       </span>
+
+                      {/* Hiển thị chi tiết câu gộp thực tế từ bảng TTS */}
+                      {(d.orig_count > 1 || (d.src_indices && d.src_indices.includes(','))) ? (
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          color: '#7c3aed',
+                          background: '#f3e8ff',
+                          border: '1px solid #d8b4fe',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}>
+                          🔗 Gộp {d.orig_count || d.src_indices.split(',').length} câu ASR (#{d.src_start_index || d.src_indices.split(',')[0]} ➔ #{d.src_end_index || d.src_indices.split(',').slice(-1)[0]} | ⏱ {d.duration ? `${d.duration.toFixed(1)}s` : ''})
+                        </span>
+                      ) : (mergedCount > 1 ? (
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          color: '#7c3aed',
+                          background: '#f3e8ff',
+                          border: '1px solid #d8b4fe',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}>
+                          🔗 Gộp {mergedCount} câu gốc (#{d.index} ➔ #{d.index + mergedCount - 1})
+                        </span>
+                      ) : null)}
                     </div>
 
-                    <span className={`tag-badge ${hasVi ? 'emerald' : isSilent ? 'gray' : 'amber'}`} style={{ fontSize: '10px' }}>
-                      {hasVi ? '✓ ĐÃ DỊCH' : isSilent ? '🔇 IM LẶNG / BỎ QUA' : 'CHỜ DỊCH'}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      {savingIds.has(d.id) ? (
+                        <span style={{ fontSize: '10px', padding: '2px 7px', background: '#fef3c7', color: '#b45309', borderRadius: '4px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                          ⏳ Đang lưu...
+                        </span>
+                      ) : unsavedIds.has(d.id) ? (
+                        <span style={{ fontSize: '10px', padding: '2px 7px', background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d', borderRadius: '4px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                          ✏️ Đã sửa (chưa lưu)
+                        </span>
+                      ) : null}
+
+                      <span className={`tag-badge ${hasVi ? 'emerald' : isSilent ? 'gray' : 'amber'}`} style={{ fontSize: '10px' }}>
+                        {hasVi ? ((d.orig_count > 1 || mergedCount > 1) ? `✓ ĐÃ DỊCH GỘP (${d.orig_count || mergedCount} CÂU)` : '✓ ĐÃ DỊCH') : isSilent ? '🔇 IM LẶNG / BỎ QUA' : 'CHỜ DỊCH'}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Chinese Raw Text (Hán Gốc) */}
-                  <div style={{ fontSize: '14.5px', color: '#334155', lineHeight: 1.6, padding: '4px 0' }}>
+                  <div style={{ fontSize: '14.5px', color: '#334155', lineHeight: 1.6, padding: '4px 0', fontWeight: mergedCount > 1 ? 600 : 400 }}>
                     {d.clean_text || d.original_text}
                   </div>
 
                   {/* Vietnamese Text (Bản Dịch Tiếng Việt - Inline Edit) */}
                   <div>
                     <textarea
-                      rows={1}
+                      ref={(el) => {
+                        if (el) {
+                          el.style.height = 'auto';
+                          el.style.height = `${Math.max(46, el.scrollHeight + 2)}px`;
+                        }
+                      }}
                       value={d.translated_text || ''}
                       placeholder={isSilent ? '(Đoạn này giữ im lặng / không tạo audio TTS)' : 'Chưa có bản dịch... Nhấn [Bắt Đầu Dịch AIREAD] ở cột phải'}
-                      onChange={(e) => handleTextChange(d.id, e.target.value)}
+                      onChange={(e) => {
+                        handleTextChange(d.id, e.target.value);
+                        e.target.style.height = 'auto';
+                        e.target.style.height = `${Math.max(46, e.target.scrollHeight + 2)}px`;
+                      }}
+                      onBlur={() => {
+                        if (unsavedIds.has(d.id)) {
+                          handleSaveSingle(d.id);
+                        }
+                      }}
                       style={{
                         width: '100%',
                         padding: '8px 12px',
                         background: hasVi ? '#ffffff' : isSilent ? '#f8fafc' : '#fefce8',
-                        border: hasVi ? '1px solid #cbd5e1' : isSilent ? '1px dashed #cbd5e1' : '1px solid #fde047',
+                        border: hasVi ? (mergedCount > 1 ? '1.5px solid #c084fc' : '1px solid #cbd5e1') : isSilent ? '1px dashed #cbd5e1' : '1px solid #fde047',
                         borderRadius: '6px',
                         color: 'var(--text-main)',
                         fontSize: '14.5px',
                         fontWeight: 600,
                         lineHeight: 1.5,
                         resize: 'vertical',
-                        fontFamily: 'var(--font-main)'
+                        overflow: 'hidden',
+                        fontFamily: 'var(--font-main)',
+                        boxSizing: 'border-box'
                       }}
                     />
                   </div>
@@ -748,13 +989,114 @@ export default function DialogueLibraryView() {
           <Sparkles size={18} color="#7c3aed" /> Bảng Dịch Thuật AIREAD
         </div>
 
+        {/* KHUNG DANH SÁCH LÔ / CHƯƠNG VUÔNG NHỎ GỌN (CHUẨN WEB ĐỌC TRUYỆN AIREAD) */}
+        {batchesData.batches && batchesData.batches.length > 0 && (
+          <div className="glass-panel" style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px', background: '#faf5ff', border: '1px solid #e9d5ff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#6b21a8', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Layers size={14} color="#7c3aed" /> Mục Lục Lô ({batchesData.batches.length} lô)
+              </span>
+              <span style={{ fontSize: '11px', color: '#7c3aed', fontWeight: 700 }}>
+                {batchesData.total_translated}/{batchesData.total_items} câu ({translatedPercentAll}%)
+              </span>
+            </div>
+
+            {/* Chú thích màu sắc */}
+            <div style={{ display: 'flex', gap: '10px', fontSize: '10.5px', color: 'var(--text-dim)' }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#10b981', display: 'inline-block' }}></span> Xong
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#f59e0b', display: 'inline-block' }}></span> Dở dang
+              </span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '2px', background: '#cbd5e1', display: 'inline-block' }}></span> Chưa dịch
+              </span>
+            </div>
+
+            {/* Grid các ô vuông nhỏ gọn dễ thao tác */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(5, 1fr)',
+              gap: '6px',
+              maxHeight: '190px',
+              overflowY: 'auto',
+              padding: '4px',
+              background: '#ffffff',
+              borderRadius: '8px',
+              border: '1px solid #f3e8ff'
+            }}>
+              {batchesData.batches.map((b) => {
+                const isSelected = activeBatchIndex === b.batch_index;
+                const isDone = b.is_done;
+                const isPartial = !isDone && b.translated > 0;
+
+                // Màu sắc trực quan
+                let bg = '#f8fafc';
+                let color = '#475569';
+                let borderColor = '#e2e8f0';
+
+                if (isDone) {
+                  bg = isSelected ? '#059669' : '#ecfdf5';
+                  color = isSelected ? '#ffffff' : '#047857';
+                  borderColor = '#a7f3d0';
+                } else if (isPartial) {
+                  bg = isSelected ? '#d97706' : '#fffbeb';
+                  color = isSelected ? '#ffffff' : '#b45309';
+                  borderColor = '#fde68a';
+                } else {
+                  if (isSelected) {
+                    bg = '#7c3aed';
+                    color = '#ffffff';
+                    borderColor = '#6d28d9';
+                  }
+                }
+
+                return (
+                  <button
+                    key={b.batch_index}
+                    onClick={() => handleSelectBatch(b.batch_index)}
+                    title={`${b.title}: ${b.range_label} (${b.translated}/${b.total} câu) - ${b.status}`}
+                    style={{
+                      height: '36px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: bg,
+                      color: color,
+                      border: `1.5px solid ${isSelected ? (isDone ? '#047857' : isPartial ? '#b45309' : '#5b21b6') : borderColor}`,
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      position: 'relative',
+                      boxShadow: isSelected ? '0 0 0 2px rgba(124, 58, 237, 0.3)' : 'none',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <span>#{b.batch_number}</span>
+                    {isDone && <span style={{ fontSize: '8px', lineHeight: 1 }}>✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+            
+            {currentBatch && (
+              <div style={{ fontSize: '11px', color: '#6b21a8', textAlign: 'center', fontWeight: 600 }}>
+                Đang xem: <strong>{currentBatch.title}</strong> ({currentBatch.range_label})
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Extraction Status Card */}
         <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', background: 'var(--bg-sub)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-sub)' }}>Trạng thái Lời Thoại:</span>
-            {dialogues && dialogues.length > 0 ? (
+            {totalDialoguesAll > 0 ? (
               <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--emerald)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <CheckCircle2 size={14} /> Đã lấy ({dialogues.length} câu)
+                <CheckCircle2 size={14} /> Đã có ({totalDialoguesAll} câu)
               </span>
             ) : (
               <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--rose)', display: 'flex', alignItems: 'center', gap: '4px' }}>

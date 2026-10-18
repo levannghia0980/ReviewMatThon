@@ -7,9 +7,9 @@ from app.schemas.transcript import (
     CleanTextRequest,
     CleanTextResponse
 )
-from app.services.audio_extractor import AudioExtractorService
-from app.services.whisper_service import WhisperService
-from app.services.text_cleaner import TextCleanerService
+from app.services.step_02_stt.audio_extractor import AudioExtractorService
+from app.services.step_02_stt.whisper_service import WhisperService
+from app.services.step_02_stt.text_cleaner import TextCleanerService
 
 router = APIRouter()
 

@@ -86,7 +86,6 @@ export default function QuickAutoTab({ onNavigateStudio }) {
           quality: quality,
           source_language: 'zh',
           genre: genre,
-          provider: 'gemini',
           voice_code: voiceCode,
           margin_v: marginV,
           backdrop_opacity_hex: backdropOpacity,

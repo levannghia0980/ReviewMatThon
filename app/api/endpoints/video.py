@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from app.schemas.video import VideoDownloadRequest, VideoDownloadResponse, VideoInfoResponse
-from app.services.downloader_service import DownloaderService
-from app.services.audio_extractor import AudioExtractorService
+from app.services.step_01_download.downloader_service import DownloaderService
+from app.services.step_02_stt.audio_extractor import AudioExtractorService
 
 router = APIRouter()
 

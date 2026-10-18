@@ -39,10 +39,20 @@ from app.api.api_v1 import api_router
 FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 FRONTEND_DIST_DIR.mkdir(parents=True, exist_ok=True)
 
+import asyncio
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Tuân thủ quy tắc: KHÔNG khởi động ngầm Chromium khi mở app.
+    # Chromium chỉ khởi động On-Demand khi người dùng thực sự bấm nút dịch.
     yield
+    # Tự động tắt sạch triệt để tiến trình Chromium nếu còn mở khi đóng ứng dụng
+    try:
+        from app.services.step_03_translation.gemini_web_service import GeminiWebService
+        await GeminiWebService.shutdown_worker()
+    except Exception:
+        pass
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

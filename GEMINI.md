@@ -38,5 +38,17 @@ Khi chuyển mã nguồn dự án này sang máy tính khác (hoặc khi Agent p
 - Mọi đường dẫn trong dự án BẮT BUỘC phải dùng đường dẫn tương đối từ `BASE_DIR` (ví dụ: `BASE_DIR / "cookies.txt"`).
 - Mọi file đầu vào (như cookie, video, audio) phải được nạp thông qua giao diện Web hoặc đặt trong thư mục dự án, đảm bảo bất kỳ máy nào clone về cũng hoạt động độc lập ngay lập tức mà không dính đường dẫn máy cũ.
 
+---
+
+## 4. BÀI HỌC KINH NGHIỆM & QUY TẮC BẮT BUỘC VỀ BỘ NHỚ (RAM) VÀ TIẾN TRÌNH NGẦM (CHROMIUM / PLAYWRIGHT)
+- **Tuyệt đối KHÔNG chạy ngầm Chromium khi mở app**:
+  - Không được phép tự động khởi động Chromium/Playwright (`init_worker`) ngay trong sự kiện khởi động server (`lifespan`).
+  - Chromium CHỈ ĐƯỢC PHÉP mở theo cơ chế **On-Demand** (khi người dùng thực sự bấm nút dịch).
+- **Quy tắc đóng phiên dứt điểm (Không để lại Zombie Process)**:
+  - Khi tác vụ dịch hoàn thành (`completed`), bị lỗi (`failed`), hoặc bị dừng (`cancelled`): Bắt buộc trong khối `finally` phải gọi đóng triệt để 100% Chromium context & page (`shutdown_worker()`), tuyệt đối không để tiến trình nằm lì trong RAM.
+  - Khi tắt server (`run.py` - Ctrl+C hoặc exit): Bắt buộc phải có signal/atexit handler để quét và diệt sạch mọi tiến trình con `chrome-headless-shell.exe` và `node.exe` liên quan đến profile của dự án, tránh hiện tượng sinh nhiều phiên đè lên nhau làm tràn RAM máy tính.
+- **Tính toán trung thực tài nguyên phần cứng**:
+  - Nghiêm cấm việc đưa ra con số ước tính lý thuyết sai lệch (như 100-200MB) cho các nhân trình duyệt thực tế. Một phiên Chromium chạy web nặng như Gemini luôn ngốn 300MB - 600MB RAM, do đó cơ chế vòng đời phải được lập trình cực kỳ cẩn trọng, không được làm ẩu làm tắt.
+
 
 

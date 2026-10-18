@@ -108,8 +108,7 @@ export default function DialogueModal({ isOpen, onClose, projectId, projectTitle
           project_id: projectId,
           genre: genre,
           batch_size: batchSize,
-          max_chars: 50000,
-          provider: 'gemini'
+          max_chars: 50000
         })
       });
 

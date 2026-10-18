@@ -11,6 +11,8 @@ class DialogueSegment(BaseModel):
     translated_text: Optional[str] = Field(default="", description="Bản dịch Tiếng Việt chuẩn AIREAD")
     final_text: Optional[str] = Field(default="", description="Bản dịch sau hậu xử lý & kiểm định")
     confidence: Optional[float] = Field(default=0.0, description="Độ tin cậy của AI ASR")
+    role: Optional[str] = Field(default="NARRATOR", description="Vai diễn: NARRATOR hoặc tên nhân vật")
+    speaker: Optional[str] = Field(default="NARRATOR", description="Tên người nói")
 
 class TranscribeRequest(BaseModel):
     audio_or_video_path: str = Field(..., description="Đường dẫn file video MP4 hoặc audio WAV trên máy")

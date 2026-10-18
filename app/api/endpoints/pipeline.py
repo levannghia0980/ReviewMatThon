@@ -1,5 +1,7 @@
 import os
 import time
+import shutil
+import logging
 from pathlib import Path
 import uuid
 import threading
@@ -7,9 +9,11 @@ import asyncio
 import concurrent.futures
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 from app.db.session import SessionLocal, get_db
 from app.models.project import ProjectTask
-from app.models.dialogue import DialogueSegmentModel
+from app.models.dialogue import DialogueSegmentModel, TTSDialogueSegmentModel
 from app.schemas.pipeline import (
     IngestPipelineRequest,
     FullAutoPipelineRequest,
@@ -19,15 +23,15 @@ from app.schemas.pipeline import (
     ExtractSTTRequest
 )
 from app.schemas.transcript import DialogueSegment
-from app.services.downloader_service import DownloaderService
-from app.services.audio_extractor import AudioExtractorService
-from app.services.whisper_service import WhisperService
-from app.services.translation.translation_pipeline import TranslationPipelineService
-from app.services.tts.capcut_tts_service import CapCutTTSService
-from app.services.tts.tiktok_tts_service import TikTokTTSService
-from app.services.video.video_composer_service import VideoComposerService
-from app.services.video.karaoke_subtitle_service import KaraokeSubtitleService
-from app.services.video.audio_mixer_service import AudioMixerService
+from app.services.step_01_download.downloader_service import DownloaderService
+from app.services.step_02_stt.audio_extractor import AudioExtractorService
+from app.services.step_02_stt.whisper_service import WhisperService
+from app.services.step_03_translation.translation_pipeline import TranslationPipelineService
+from app.services.step_04_tts.capcut_tts_service import CapCutTTSService
+from app.services.step_04_tts.tiktok_tts_service import TikTokTTSService
+from app.services.step_05_video.video_composer_service import VideoComposerService
+from app.services.step_05_video.karaoke_subtitle_service import KaraokeSubtitleService
+from app.services.step_05_video.audio_mixer_service import AudioMixerService
 from app.services.task_manager import task_manager
 from app.config import settings, get_project_dirs
 
@@ -118,6 +122,20 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     project.audio_path = str(dest_audio)
                     audio_path = str(dest_audio)
 
+            # Đồng bộ file transcript JSON & SRT gốc vào thư mục project để dễ dàng đối chiếu
+            if json_path and os.path.exists(json_path):
+                dest_json = p_dirs["root"] / f"{project.video_id}_raw_clean.json"
+                try:
+                    shutil.copyfile(json_path, dest_json)
+                except Exception as e:
+                    logger.warning(f"Lỗi sao chép json transcript sang project dir: {e}")
+            if srt_path and os.path.exists(srt_path):
+                dest_srt = p_dirs["root"] / f"{project.video_id}_raw_clean.srt"
+                try:
+                    shutil.copyfile(srt_path, dest_srt)
+                except Exception as e:
+                    logger.warning(f"Lỗi sao chép srt transcript sang project dir: {e}")
+
             db.commit()
 
             # Xóa sạch các câu thoại cũ nếu có (chống nhân đôi câu)
@@ -203,6 +221,21 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 project.txt_path = txt_path
                 project.json_path = json_path
                 project.status = "TRANSCRIBED"
+
+                # Đồng bộ file transcript JSON & SRT gốc vào thư mục project
+                if json_path and os.path.exists(json_path):
+                    dest_json = p_dirs["root"] / f"{project.video_id}_raw_clean.json"
+                    try:
+                        shutil.copyfile(json_path, dest_json)
+                    except Exception as e:
+                        logger.warning(f"Lỗi sao chép json transcript sang project dir: {e}")
+                if srt_path and os.path.exists(srt_path):
+                    dest_srt = p_dirs["root"] / f"{project.video_id}_raw_clean.srt"
+                    try:
+                        shutil.copyfile(srt_path, dest_srt)
+                    except Exception as e:
+                        logger.warning(f"Lỗi sao chép srt transcript sang project dir: {e}")
+
                 db.commit()
 
                 # Xóa sạch các câu thoại cũ trước khi lưu (chống nhân đôi câu)
@@ -244,21 +277,36 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            trans_res = loop.run_until_complete(
-                TranslationPipelineService.translate_project_dialogues(
-                    task_id=task_id,
-                    project_id=project_id,
-                    db=db,
-                    genre=req.genre,
-                    batch_size=req.batch_size or settings.TRANSLATION_BATCH_SIZE or 500,
-                    max_chars=settings.TRANSLATION_MAX_CHARS or 50000,
-                    provider=req.provider
+            effective_provider = req.provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")
+            effective_batch = req.batch_size or getattr(settings, "TRANSLATION_BATCH_SIZE", 500)
+            effective_max_chars = getattr(settings, "TRANSLATION_MAX_CHARS", 50000)
+            try:
+                trans_res = loop.run_until_complete(
+                    TranslationPipelineService.translate_project_dialogues(
+                        task_id=task_id,
+                        project_id=project_id,
+                        db=db,
+                        genre=req.genre,
+                        batch_size=effective_batch,
+                        max_chars=effective_max_chars,
+                        provider=effective_provider
+                    )
                 )
-            )
+            finally:
+                # GIỮ NGUYÊN PHIÊN GEMINI WEB CHO CÁC VIDEO TIẾP THEO (KHÔNG TẮT GIỮA CHỪNG)
+                try:
+                    loop.close()
+                except Exception:
+                    pass
             task_manager.add_log(task_id, f"   ✔ Dịch thuật & Quét lỗi Hán hoàn tất ({trans_res.get('total_segments', 0)} câu).", "emerald")
         else:
             task_manager.update_task(task_id, step=2, progress=50)
             task_manager.add_log(task_id, f"[2/5] ✔ Video đã có bản dịch hoàn chỉnh ({total_dialogues} câu). Bỏ qua dịch lại -> Chuyển sang TTS & Render.", "emerald")
+
+        p_dirs = get_project_dirs(project_id)
+
+        p_dirs = get_project_dirs(project_id)
+        # Kịch bản TTS đã được hoàn tất và đóng gói chuẩn hóa từ Bước 3 (Translation).
 
         # BƯỚC 3 & 4: CHẠY SONG SONG 100% (PARALLEL MULTI-THREADING TĂNG TỐC 50%)
         task_manager.update_task(task_id, step=3, progress=55)
@@ -272,7 +320,6 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         # 1. Tạo file Karaoke ASS trước
         db.commit()
-        p_dirs = get_project_dirs(project_id)
         ass_file = p_dirs["root"] / f"{project.video_id}_karaoke.ass"
         dialogues_db = db.query(DialogueSegmentModel).filter(
             DialogueSegmentModel.task_id == project_id
@@ -351,6 +398,11 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 blur_height=blur_h_val,
                 sub_bottom_offset=sub_offset_val
             )
+            try:
+                shutil.copyfile(ass_file, settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass")
+                shutil.copyfile(ass_file, p_dirs["video_subtitles"] / "subtitles_karaoke.ass")
+            except Exception:
+                pass
         else:
             task_manager.add_log(task_id, "[1/4] ⚡ Chế độ 'Không Sub': Bỏ qua tạo phụ đề Karaoke & dải mờ, chỉ Crop khung hình & lồng tiếng!", "cyan")
             if not ass_file.exists():
@@ -370,111 +422,87 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         audio_res_container = {}
         video_res_container = {}
 
-        def _audio_worker():
-            db_audio = SessionLocal()
-            try:
-                # XÓA BỎ CACHE CŨ KHI CHẠY FULL-AUTO PIPELINE ĐỂ BẢO ĐẢM TẠO MỚI 100% THEO CÂU GỘP MỚI
-                safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip() or f"project_{project.id}"
-                cached_master = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"
-                if cached_master.exists():
-                    try:
-                        cached_master.unlink(missing_ok=True)
-                        task_manager.add_log(task_id, f"🧹 Đã xóa file voiceover cũ ({cached_master.name}) để tạo mới 100% theo câu gộp mới.", "gray")
-                    except Exception:
-                        pass
-                force_regen = True
+        # =====================================================================
+        # BƯỚC 1: SẢN XUẤT GIỌNG LỒNG TIẾNG MASTER & ĐỒNG BỘ PHỤ ĐỀ KARAOKE
+        # =====================================================================
+        task_manager.add_log(task_id, "[2/4] 🎙️ Bắt đầu sản xuất giọng lồng tiếng & cân bằng Timeline...", "cyan")
+        db_tts = SessionLocal()
+        voiceover_file = None
+        try:
+            safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip() or f"project_{project.id}"
+            cached_master = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"
+            if cached_master.exists():
+                try:
+                    cached_master.unlink(missing_ok=True)
+                    task_manager.add_log(task_id, f"🧹 Đã xóa file voiceover cũ ({cached_master.name}) để tạo mới 100% theo câu gộp mới.", "gray")
+                except Exception:
+                    pass
+            force_regen = True
 
-                engine = getattr(settings, "TTS_ENGINE", "capcut").lower()
-                if engine in ("capcut", "capcut_cloud"):
-                    tts_res = CapCutTTSService.produce_project_voiceover(
-                        task_id=task_id,
-                        project_id=project_id,
-                        db=db_audio,
-                        voice_code=req.voice_code,
-                        apply_mastering=True,
-                        auto_fit_timeline=True,
-                        max_workers=settings.TTS_MAX_WORKERS or 96,
-                        force_regenerate=force_regen
-                    )
-                else:
-                    tts_res = TikTokTTSService.produce_project_voiceover(
-                        task_id=task_id,
-                        project_id=project_id,
-                        db=db_audio,
-                        voice_code=req.voice_code,
-                        apply_mastering=True,
-                        auto_fit_timeline=True,
-                        max_workers=settings.TTS_MAX_WORKERS or 96,
-                        force_regenerate=force_regen
-                    )
-                voiceover_file = tts_res.get("audio_path") or tts_res.get("master_voice_path")
-                
-                # MIX NHẠC NỀN BGM & HIỆU ỨNG ÂM THANH (CHỈ THAY THOẠI, GIỮ NGUYÊN BGM & SFX)
-                if voiceover_file and os.path.exists(voiceover_file):
-                    task_manager.add_log(task_id, "   🎵 Đang hòa trộn BGM gốc & lồng tiếng Việt (Vocal Ducking)...", "cyan")
-                    mixed_path = AudioMixerService.mix_bgm_and_voiceover(
-                        original_video_or_audio=project.video_path,
-                        voiceover_mp3=str(voiceover_file),
-                        output_mixed_audio=str(mixed_audio_file),
-                        dialogue_segments=segments,
-                        bgm_volume_when_speaking=0.036,  # 0.036 (3.6%) khi đang có thuyết minh tiếng Việt
-                        bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM
-                        voiceover_volume=1.05
-                    )
-                    audio_res_container["audio_path"] = str(mixed_path)
-                    audio_res_container["success"] = True
-                    task_manager.add_log(task_id, "   ✔ [Luồng Audio] Đã lồng tiếng Việt & giữ BGM hoàn tất.", "emerald")
-                else:
-                    err_msg = tts_res.get("error") or "Không tạo được file lồng tiếng TikTok TTS!"
-                    raise RuntimeError(f"Lỗi tạo giọng lồng tiếng: {err_msg}")
+            from app.services.step_04_tts.tts_factory import TTSFactory
+            tts_service = TTSFactory.get_service()
+            tts_res = tts_service.produce_project_voiceover(
+                task_id=task_id,
+                project_id=project_id,
+                db=db_tts,
+                voice_code=req.voice_code,
+                apply_mastering=True,
+                auto_fit_timeline=True,
+                max_workers=getattr(req, "tts_workers", None) or getattr(settings, "TTS_MAX_WORKERS", 128),
+                force_regenerate=force_regen
+            )
+            voiceover_file = tts_res.get("audio_path") or tts_res.get("master_voice_path")
+            if not voiceover_file or not os.path.exists(voiceover_file):
+                err_msg = tts_res.get("error") or "Không tạo được file lồng tiếng!"
+                raise RuntimeError(f"Lỗi tạo giọng lồng tiếng: {err_msg}")
+        except Exception as e:
+            task_manager.add_log(task_id, f"   ❌ [Lỗi Audio TTS] {str(e)}", "rose")
+            raise
+        finally:
+            db_tts.close()
+
+        # Đồng bộ file ASS mới nhất (vừa được sinh ra sau TTS) sang ass_file dùng cho video render
+        if render_subs:
+            latest_ass = p_dirs["video_subtitles"] / "subtitles_karaoke.ass"
+            if latest_ass.exists():
+                shutil.copyfile(latest_ass, ass_file)
+                shutil.copyfile(latest_ass, settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass")
+
+        # =====================================================================
+        # BƯỚC 2: CHẠY SONG SONG 2 LUỒNG: HÒA ÂM BGM & RENDER VIDEO GPU
+        # =====================================================================
+        task_manager.add_log(task_id, "[3/4] 🚀 Đang chạy song song: Hòa trộn âm thanh BGM & GPU Render Video...", "cyan")
+
+        def _mixer_worker():
+            try:
+                task_manager.add_log(task_id, "   🎵 Đang hòa trộn BGM gốc & lồng tiếng Việt (Vocal Ducking)...", "cyan")
+                db_mix = SessionLocal()
+                try:
+                    latest_segs = db_mix.query(DialogueSegmentModel).filter(
+                        DialogueSegmentModel.task_id == project.id
+                    ).order_by(DialogueSegmentModel.index.asc()).all()
+                finally:
+                    db_mix.close()
+
+                mixed_path = AudioMixerService.mix_bgm_and_voiceover(
+                    original_video_or_audio=project.video_path,
+                    voiceover_mp3=str(voiceover_file),
+                    output_mixed_audio=str(mixed_audio_file),
+                    dialogue_segments=latest_segs or segments,
+                    bgm_volume_when_speaking=0.036,  # 0.036 (3.6%) khi đang có thuyết minh tiếng Việt
+                    bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM
+                    voiceover_volume=1.05
+                )
+                audio_res_container["audio_path"] = str(mixed_path)
+                audio_res_container["success"] = True
+                task_manager.add_log(task_id, "   ✔ [Luồng Audio] Đã lồng tiếng Việt & giữ BGM hoàn tất.", "emerald")
             except Exception as e:
                 audio_res_container["error"] = str(e)
-                task_manager.add_log(task_id, f"   ❌ [Lỗi Audio] {str(e)}", "rose")
-                task_manager.cancel_task(task_id)  # Dừng ngay video worker để giải phóng GPU/CPU
-            finally:
-                db_audio.close()
+                task_manager.add_log(task_id, f"   ❌ [Lỗi Audio Mixer] {str(e)}", "rose")
+                task_manager.cancel_task(task_id)
 
         def _video_worker():
             try:
-                # Nếu có render sub: Kiểm tra và load mốc timeline mới nhất đã được balance
-                if render_subs:
-                    db_video = SessionLocal()
-                    try:
-                        latest_diags = db_video.query(DialogueSegmentModel).filter(
-                            DialogueSegmentModel.task_id == project.id
-                        ).order_by(DialogueSegmentModel.index.asc()).all()
-                        if latest_diags:
-                            # Tái sinh phụ đề Karaoke ASS khớp 100% với mốc mới sau cân bằng
-                            from app.schemas.transcript import DialogueSegment
-                            synced_segments = [
-                                DialogueSegment(
-                                    id=d.index,
-                                    start=float(d.start_time),
-                                    end=float(d.end_time),
-                                    duration=float(d.duration or (d.end_time - d.start_time)),
-                                    text=d.original_text,
-                                    clean_text=d.clean_text,
-                                    translated_text=d.translated_text
-                                ) for d in latest_diags
-                            ]
-                            KaraokeSubtitleService.create_karaoke_ass_file(
-                                segments=synced_segments,
-                                output_ass_path=str(ass_file),
-                                video_title=project.title,
-                                width=ass_w,
-                                height=ass_h,
-                                font_size=font_sz,
-                                highlight_color=highlight_c,
-                                backdrop_opacity_hex=req.backdrop_opacity_hex,
-                                margin_v=margin_v_val,
-                                box_style=getattr(req, "box_style", "white_box"),
-                                box_padding=box_pad_val,
-                                blur_height=blur_h_val,
-                                sub_bottom_offset=sub_offset_val
-                            )
-                    finally:
-                        db_video.close()
-
                 v_ok = VideoComposerService.render_visual_stream(
                     task_id=task_id,
                     video_input_path=project.video_path,
@@ -508,22 +536,13 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             except Exception as e:
                 video_res_container["error"] = str(e)
                 task_manager.add_log(task_id, f"   ❌ [Lỗi Video] {str(e)}", "rose")
-                task_manager.cancel_task(task_id)  # Dừng ngay audio worker nếu render video lỗi
+                task_manager.cancel_task(task_id)
 
-        # Kiểm tra dung lượng ổ đĩa an toàn trước khi chạy video dài
-        try:
-            import shutil
-            free_gb = shutil.disk_usage(settings.BASE_DIR).free / (1024 ** 3)
-            if free_gb < 15.0:
-                task_manager.add_log(task_id, f"⚠️ Cảnh báo ổ đĩa: Chỉ còn {free_gb:.1f}GB trống. Video dài có thể cần 25-35GB dung lượng đệm!", "amber")
-        except Exception:
-            pass
-
-        # Chạy đồng thời 2 Worker Threads
+        # Chạy đồng thời 2 Worker Threads: Audio Mixer và Video Render
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            f_audio = executor.submit(_audio_worker)
+            f_mix = executor.submit(_mixer_worker)
             f_video = executor.submit(_video_worker)
-            concurrent.futures.wait([f_audio, f_video])
+            concurrent.futures.wait([f_mix, f_video])
 
         if audio_res_container.get("error") or not audio_res_container.get("audio_path") or not os.path.exists(audio_res_container.get("audio_path")):
             err_details = audio_res_container.get("error") or "Không tìm thấy file âm thanh tiếng Việt hoàn chỉnh"

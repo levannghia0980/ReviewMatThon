@@ -5,7 +5,7 @@ import re
 import time
 import threading
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 import logging
 logger = logging.getLogger("llm_client")
@@ -56,13 +56,14 @@ async def post_gemini_with_retry(
     url: str,
     headers: Dict[str, str],
     payload: Dict[str, Any],
-    max_retries: int = 6
+    max_retries: int = 8
 ) -> httpx.Response:
     """
     Tự động gửi request đến Gemini API và xử lý thông minh:
     - Chủ động giãn cách tối thiểu 4.1s giữa các request (Adaptive Pacing) để 100% không chạm mốc 15 RPM.
     - Bắt và thử lại tự động các lỗi mạng/ngắt kết nối.
     - Xử lý thông minh lỗi HTTP 429 (Rate Limit / Quota Exceeded) với delay từ API.
+    - Xử lý lỗi 503 Server Busy: Chờ giãn cách tăng dần từ 20s - 80s và tự động fallback sang gemini-2.5-flash nếu 3.1 quá tải.
     - Tự động gắn bộ lọc safetySettings=BLOCK_NONE để loại bỏ hoàn toàn vi phạm chặn văn bản.
     """
     if payload is not None and "safetySettings" not in payload:
@@ -80,10 +81,10 @@ async def post_gemini_with_retry(
             resp = await client.post(url, headers=headers, json=payload)
         except Exception as e:
             last_exception = e
-            wait_seconds = min(3.0 * attempt, 15.0)
+            wait_seconds = min(5.0 * attempt, 30.0)
             err_name = type(e).__name__
             err_msg = str(e) or err_name
-            log_net = f"⚠️ [LLM MẠNG/DISCONNECT] Gặp lỗi kết nối ({err_name}: {err_msg}). Đang chờ {wait_seconds:.1f}s để thử lại (Lần {attempt}/{max_retries})..."
+            log_net = f"⚠️ [LLM MẠNG/TIMEOUT] Gặp lỗi kết nối ({err_name}: {err_msg}). Đang chờ {wait_seconds:.1f}s để thử lại (Lần {attempt}/{max_retries})..."
             print(log_net)
             _safe_add_log(log_net, "warning")
 
@@ -126,31 +127,27 @@ async def post_gemini_with_retry(
             else:
                 return resp
         elif resp.status_code == 503:
-            wait_s = min(4.0 * attempt + 3.0, 25.0)
+            # Đợi từ từ: Lần 1: 20s, Lần 2: 35s, Lần 3: 50s, Lần 4: 65s (tối đa 80s)
+            wait_s = min(20.0 + (attempt - 1) * 15.0, 80.0)
             m_match = re.search(r"/models/([^:]+):", url)
             model_name = m_match.group(1) if m_match else "Gemini"
 
-            # Tự động chuyển model dự phòng nếu model hiện tại bị Google chặn quá tải
-            if attempt >= 2:
-                fallback_map = {
-                    "gemini-3.1-flash-lite": "gemini-3.5-flash-lite",
-                    "gemini-3.5-flash-lite": "gemini-3.1-flash-lite",
-                    "gemini-flash-latest": "gemini-3.1-flash-lite",
-                    "gemini-3.8-flash": "gemini-3.5-flash",
-                }
-                if model_name in fallback_map:
-                    alt_model = fallback_map[model_name]
-                    url = url.replace(model_name, alt_model)
-                    log_fb = f"🔄 [Tự Động Đổi Model] {model_name} quá tải 503, tự động chuyển sang {alt_model} để không gián đoạn dịch thuật..."
-                    print(log_fb)
-                    _safe_add_log(log_fb, "info")
-
-            log_503 = f"⚠️ [LLM 503 Server Busy] Google AI Studio đang quá tải ({model_name} High Demand). Đang chờ {wait_s:.0f}s để thử lại ({attempt}/{max_retries})..."
+            log_503 = f"⚠️ [LLM 503 Server Busy] Google AI Studio đang quá tải ({model_name} High Demand). Đang chờ từ từ {wait_s:.0f}s để xả tải và thử lại ({attempt}/{max_retries})..."
             try:
                 print(log_503)
             except Exception:
                 pass
             _safe_add_log(log_503, "warning")
+
+            # Fallback tự động thông minh: Nếu model 3.1 bị quá tải 503 từ lần 3 trở đi, tự động đổi URL sang gemini-2.5-flash
+            if attempt >= 3 and "3.1" in url:
+                fallback_url = re.sub(r"gemini-[^:]+", "gemini-2.5-flash", url)
+                if fallback_url != url:
+                    url = fallback_url
+                    log_fb = "🔄 [LLM Fallback] gemini-3.1-flash-lite quá tải liên tục ➔ Tự động chuyển sang gemini-2.5-flash ổn định để hoàn thành lô!"
+                    print(log_fb, flush=True)
+                    _safe_add_log(log_fb, "emerald")
+
             if attempt < max_retries:
                 await asyncio.sleep(wait_s)
             else:
@@ -274,6 +271,161 @@ async def post_grok_local_with_retry(
     raise Exception(f"Grok Local request thất bại: {last_err}")
 
 
+def get_active_gemini_keys() -> List[str]:
+    """Lấy danh sách Gemini API Key từ cấu hình settings hoặc biến môi trường."""
+    from app.config import settings
+    keys = []
+    if getattr(settings, "GEMINI_API_KEY", None):
+        keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
+    if not keys:
+        raw_env = os.getenv("GEMINI_API_KEY", "")
+        keys = [k.strip() for k in raw_env.split(",") if k.strip()]
+    return keys
+
+
+def get_active_openrouter_keys() -> List[str]:
+    """Lấy danh sách OpenRouter API Key từ cấu hình settings hoặc biến môi trường."""
+    from app.config import settings
+    keys = []
+    if getattr(settings, "OPENROUTER_API_KEY", None):
+        keys = [k.strip() for k in settings.OPENROUTER_API_KEY.split(",") if k.strip()]
+    if not keys:
+        raw_env = os.getenv("OPENROUTER_API_KEY", "")
+        keys = [k.strip() for k in raw_env.split(",") if k.strip()]
+    return keys
+
+
+async def execute_llm_call(
+    prompt: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: float = 0.2,
+    response_mime_type: Optional[str] = None,
+    thinking_budget: Optional[int] = 24576,
+    prompt_file_path: Optional[str] = None,
+    timeout: float = 300.0,
+    system_instruction: Optional[str] = None
+) -> str:
+    """
+    CỔNG ĐIỀU PHỐI LLM DUY NHẤT (UNIFIED LLM GATEWAY):
+    Tập trung 100% logic gọi AI cho toàn bộ hệ thống:
+    - Pass 1: Bóc tách thực thể (llm_extractor)
+    - Pass 2: Dịch thoại kịch bản (llm_translator)
+    - Pass 3: Hậu kiểm & Chuốt mượt chữ Hán (translation_auditor)
+
+    Hỗ trợ chuẩn hóa các Provider:
+    1. 'gemini_web': Tự động điều phối qua Browser Worker (chia 2 tin nhắn, New Chat, Thinking UI).
+    2. 'gemini': Google Generative Language API (Pacing 4.1s chống 15 RPM, xoay key, auto-retry, unblock safety).
+    3. 'openrouter': OpenRouter OpenAI-compatible API.
+    4. 'grok_local': Grok Web Automation Server (cổng 8020).
+    """
+    from app.config import settings
+
+    prov = (provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")).lower().strip()
+
+    # 1. NHÁNH GEMINI WEB (Playwright Chromium Worker)
+    if prov == "gemini_web":
+        from app.services.step_03_translation.gemini_web_service import GeminiWebService
+        full_p = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
+        return await GeminiWebService.generate_content(full_p, prompt_file_path=prompt_file_path)
+
+    # 2. NHÁNH GROK LOCAL
+    is_grok_local = (prov in ["grok_local", "grok", "grok_web"]) or ("grok" in str(model).lower())
+    if is_grok_local:
+        grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
+        full_p = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            res_data = await post_grok_local_with_retry(client, grok_url, {"text": full_p, "timeout": timeout})
+            return (res_data.get("translated_text") or "").strip()
+
+    # 3. NHÁNH OPENROUTER
+    is_openrouter = (prov == "openrouter") or (model and ("/" in model or "openrouter" in model.lower()))
+    if is_openrouter:
+        keys = get_active_openrouter_keys()
+        if not keys:
+            raise ValueError("Chưa cấu hình OPENROUTER_API_KEY trong file .env hoặc Cài đặt!")
+        api_key = keys[0]
+        model_name = (model or getattr(settings, "OPENROUTER_MODEL", "google/gemini-2.5-flash") or "google/gemini-2.5-flash").strip()
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        or_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "AiRead"
+        }
+        or_messages = []
+        if system_instruction:
+            or_messages.append({"role": "system", "content": system_instruction})
+        or_messages.append({"role": "user", "content": prompt})
+
+        or_body: Dict[str, Any] = {
+            "model": model_name,
+            "messages": or_messages,
+            "temperature": temperature
+        }
+        if response_mime_type == "application/json":
+            or_body["response_format"] = {"type": "json_object"}
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await post_openrouter_with_retry(client, url, or_headers, or_body)
+            if resp.status_code != 200:
+                raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
+            res_json = resp.json()
+            choices = res_json.get("choices") or []
+            if choices and "message" in choices[0]:
+                return (choices[0]["message"].get("content") or "").strip()
+            raise Exception("OpenRouter không trả về nội dung hợp lệ!")
+
+    # 4. NHÁNH GEMINI API (GOOGLE AI STUDIO)
+    keys = get_active_gemini_keys()
+    if not keys:
+        raise ValueError("Chưa cấu hình GEMINI_API_KEY trong file .env hoặc Cài đặt!")
+    api_key = keys[0]
+    model_name = (model or getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash").strip()
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    payload: Dict[str, Any] = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "topP": 0.95,
+            "topK": 40
+        }
+    }
+    if system_instruction:
+        payload["systemInstruction"] = {
+            "parts": [{"text": system_instruction}]
+        }
+    if thinking_budget is not None and thinking_budget > 0:
+        payload["generationConfig"]["thinkingConfig"] = {
+            "thinkingBudget": thinking_budget
+        }
+    if response_mime_type:
+        payload["generationConfig"]["responseMimeType"] = response_mime_type
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        # Giãn cách 2.5s để nạp từ từ, chống nghẽn và giảm tải cho Google AI Studio
+        await asyncio.sleep(2.5)
+        resp = await post_gemini_with_retry(client, url, headers, payload)
+        if resp.status_code != 200:
+            raise Exception(f"Lỗi gọi Gemini API (HTTP {resp.status_code}): {resp.text}")
+        res_json = resp.json()
+
+        candidates = res_json.get("candidates") or []
+        if candidates and "content" in candidates[0]:
+            parts = candidates[0]["content"].get("parts") or []
+            if parts and "text" in parts[0]:
+                return parts[0]["text"].strip()
+
+        # Kiểm tra nếu bị Safety Filter chặn
+        from app.services.step_03_translation.unblock.unblock_pipeline import is_response_safety_blocked
+        if is_response_safety_blocked(res_json):
+            raise Exception("Phản hồi bị Google chặn bởi Safety Policy (HARM_CATEGORY).")
+
+        raise Exception(f"Gemini API không trả về nội dung: {res_json}")
+
+
 def try_repair_truncated_json(text: str) -> Any:
     """
     Tự động khôi phục JSON bị cắt cụt do LLM chạm giới hạn output token hoặc gián đoạn mạng:
@@ -350,7 +502,8 @@ def safe_json_loads(text: str) -> Any:
     if not text:
         raise ValueError("Văn bản phản hồi từ LLM rỗng.")
 
-    cleaned = text.strip()
+    # Chuẩn hóa khoảng trắng Unicode đặc thù của giao diện Web (NBSP \xa0, IDEOGRAPHIC SPACE \u3000, ZERO-WIDTH \u200b, BOM \ufeff)
+    cleaned = text.replace('\xa0', ' ').replace('\u3000', ' ').replace('\u200b', '').replace('\ufeff', '').strip()
 
     # 1. Bóc tách markdown backticks
     if cleaned.startswith("```"):
@@ -366,6 +519,11 @@ def safe_json_loads(text: str) -> Any:
         candidate = cleaned[first_brace:last_brace + 1]
     else:
         candidate = cleaned
+
+    # Tự động sửa lỗi phổ biến của LLM: thiếu dấu đóng ngoặc mảng trước khóa tiếp theo (ví dụ: "src": [76, 77, 78, "s": -> "src": [76, 77, 78], "s":)
+    candidate = re.sub(r'("src"\s*:\s*\[[\d\s,]+),\s*("s"|"e"|"zh"|"vi"|"text")', r'\1], \2', candidate)
+    # Tự động sửa lỗi LLM bỏ quên key "role": (ví dụ: {"Nhân vật A", "src": ...} -> {"role": "Nhân vật A", "src": ...})
+    candidate = re.sub(r'\{\s*"([^":\n\r]+)"\s*,\s*"(src|s|e|vi|zh|index|i)"', r'{"role": "\1", "\2"', candidate)
 
     # Lần 1: Thử parse trực tiếp candidate
     try:
@@ -418,9 +576,10 @@ def safe_json_loads(text: str) -> Any:
                 if isinstance(item, dict) and ("i" in item or "vi" in item or "zh" in item):
                     rescued_items.append(item)
             except Exception:
-                # Thử cứu vớt nhẹ nhàng nếu thiếu nháy kép quanh key hoặc phẩy thừa
+                # Thử cứu vớt nhẹ nhàng nếu thiếu nháy kép quanh key hoặc phẩy thừa hoặc thiếu key role
                 try:
-                    fixed_obj = re.sub(r'([{,])\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', obj_str)
+                    fixed_obj = re.sub(r'\{\s*"([^":\n\r]+)"\s*,\s*"(src|s|e|vi|zh|index|i)"', r'{"role": "\1", "\2"', obj_str)
+                    fixed_obj = re.sub(r'([{,])\s*([a-zA-Z0-9_]+)\s*:', r'\1"\2":', fixed_obj)
                     fixed_obj = re.sub(r',\s*}', '}', fixed_obj)
                     item = json.loads(fixed_obj)
                     if isinstance(item, dict):

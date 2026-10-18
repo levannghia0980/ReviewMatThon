@@ -46,14 +46,18 @@ def get_project_dirs(project_id: int) -> dict:
     base_proj = OUTPUT_PROJECTS_DIR / f"project_{project_id}"
     entities_dir = base_proj / "entities"
     llm_io_dir = base_proj / "llm_io"
+    tts_voiceover_dir = base_proj / "tts_voiceover"
+    video_subtitles_dir = base_proj / "video_subtitles"
 
-    for d in [base_proj, entities_dir, llm_io_dir]:
+    for d in [base_proj, entities_dir, llm_io_dir, tts_voiceover_dir, video_subtitles_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
     return {
         "root": base_proj,
         "entities": entities_dir,
         "llm_io": llm_io_dir,
+        "tts_voiceover": tts_voiceover_dir,
+        "video_subtitles": video_subtitles_dir,
         "temp": TEMP_DIR,
         "final_videos": OUTPUT_FINAL_VIDEOS_DIR
     }
@@ -119,13 +123,16 @@ class Settings:
     
     # OpenRouter API Settings
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "")
 
     # Translation Settings (Lô lớn 200 - 500 câu theo chuẩn AIRead)
     TRANSLATION_PROVIDER: str = os.getenv("TRANSLATION_PROVIDER", "gemini")
+    GEMINI_WEB_MODEL: str = os.getenv("GEMINI_WEB_MODEL", "flash")
+    GEMINI_WEB_THINKING: str = os.getenv("GEMINI_WEB_THINKING", "medium")
     TRANSLATION_GENRE: str = os.getenv("TRANSLATION_GENRE", "tienhiep")
     TRANSLATION_BATCH_SIZE: int = int(os.getenv("TRANSLATION_BATCH_SIZE", "500"))
     TRANSLATION_MAX_CHARS: int = int(os.getenv("TRANSLATION_MAX_CHARS", "50000"))
+    TRANSLATION_TEMPERATURE: float = float(os.getenv("TRANSLATION_TEMPERATURE", "0.85"))
     
     # STT ASR Settings (Nhận diện giọng nói đa luồng song song: 6 - 8 luồng tối ưu tốc độ)
     ASR_MAX_WORKERS: int = int(os.getenv("ASR_MAX_WORKERS", "8"))
@@ -134,9 +141,17 @@ class Settings:
 
     # TTS Voiceover Settings: "capcut" (CapCut Cloud SAMI - Khuyên dùng) | "tiktok" (TikTok Legacy)
     TTS_ENGINE: str = os.getenv("TTS_ENGINE", "capcut")
-    TTS_MAX_WORKERS: int = int(os.getenv("TTS_MAX_WORKERS", "16"))
+    TTS_MAX_WORKERS: int = int(os.getenv("TTS_MAX_WORKERS", "128"))
     CAPCUT_COOKIE: str = os.getenv("CAPCUT_COOKIE", "")
     TIKTOK_SESSION_ID: str = os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
+    
+    # =========================================================================
+    # CỜ CẤU HÌNH GỘP CÂU TTS (TTS CHUNK MERGING FLAG):
+    # - False (MẶC ĐỊNH TEST): KHÔNG GỘP CÂU - Tôn trọng 100% từng câu LLM dịch.
+    #   Mỗi câu LLM là 1 chunk TTS riêng biệt, triệt tiêu nguy cơ CapCut nuốt chữ khi chunk quá dài.
+    # - True (KHÔI PHỤC LẠI): Bật gộp các câu thoại ngắn liên tiếp của cùng 1 nhân vật (<0.85s).
+    # =========================================================================
+    TTS_MERGE_CHUNKS: bool = os.getenv("TTS_MERGE_CHUNKS", "False").lower() in ("true", "1", "yes")
     
     # Downloader / Bilibili Cookie Settings (Không dùng proxy, hỗ trợ cookie file để tải HD 1080p 60fps)
     BILIBILI_COOKIE_FILE: str = os.getenv("BILIBILI_COOKIE_FILE", "")
@@ -195,14 +210,26 @@ class Settings:
         """Đọc lại toàn bộ cấu hình từ file .env vào runtime settings và os.environ ngay lập tức"""
         if not cls.ENV_PATH.exists():
             return
+        bool_fields = {"TTS_MERGE_CHUNKS"}
         int_fields = {"ASR_MAX_WORKERS", "STT_TIME_OFFSET_MS", "TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS"}
+        float_fields = {"TRANSLATION_TEMPERATURE"}
         with open(cls.ENV_PATH, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
                     k, v = k.strip(), v.strip()
-                    val = int(v) if k in int_fields or (isinstance(v, str) and v.isdigit()) else v
+                    if k in bool_fields:
+                        val = v.lower() in ("true", "1", "yes")
+                    elif k in float_fields:
+                        try:
+                            val = float(v)
+                        except Exception:
+                            val = 0.65
+                    elif k in int_fields or (isinstance(v, str) and v.isdigit()):
+                        val = int(v)
+                    else:
+                        val = v
                     setattr(cls, k, val)
                     if 'settings' in globals():
                         setattr(globals()['settings'], k, val)
@@ -210,7 +237,7 @@ class Settings:
 
     @classmethod
     def save_to_env(cls, updates: dict):
-        """Lưu cấu hình mới vào file .env và cập nhật biến runtime"""
+        """Lưu cấu hình mới vào file .env và cập nhật biến runtime (chế độ Web chỉ lưu tạm trong RAM phiên hiện tại)"""
         env_dict = {}
         if cls.ENV_PATH.exists():
             with open(cls.ENV_PATH, "r", encoding="utf-8") as f:
@@ -220,11 +247,32 @@ class Settings:
                         k, v = line.split("=", 1)
                         env_dict[k.strip()] = v.strip()
         
+        bool_fields = {"TTS_MERGE_CHUNKS"}
         int_fields = {"ASR_MAX_WORKERS", "TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS"}
+        float_fields = {"TRANSLATION_TEMPERATURE"}
+
+        # Nhận diện chế độ Web trong phiên làm việc hiện tại
+        is_web_session = updates.get("TRANSLATION_PROVIDER") == "gemini_web"
+
         for k, v in updates.items():
             if v is not None:
-                env_dict[k] = str(v)
-                val = int(v) if k in int_fields or (isinstance(v, str) and v.isdigit()) else v
+                # Không bao giờ lưu gemini_web cố định vào file .env, file .env luôn lưu gemini (API)
+                if k == "TRANSLATION_PROVIDER" and str(v).strip() == "gemini_web":
+                    env_dict[k] = "gemini"
+                else:
+                    env_dict[k] = str(v)
+
+                if k in bool_fields:
+                    val = str(v).lower() in ("true", "1", "yes")
+                elif k in float_fields:
+                    try:
+                        val = float(v)
+                    except Exception:
+                        val = 0.65
+                elif k in int_fields or (isinstance(v, str) and v.isdigit()):
+                    val = int(v)
+                else:
+                    val = v
                 setattr(cls, k, val)
                 if 'settings' in globals():
                     setattr(globals()['settings'], k, val)
@@ -235,5 +283,12 @@ class Settings:
                 f.write(f"{k}={v}\n")
         
         cls.reload_from_env()
+
+        # Nếu người dùng vừa chọn Web trong Cài đặt: giữ nguyên Web trong RAM cho phiên chạy hiện tại
+        if is_web_session:
+            setattr(cls, "TRANSLATION_PROVIDER", "gemini_web")
+            if 'settings' in globals():
+                setattr(globals()['settings'], "TRANSLATION_PROVIDER", "gemini_web")
+            os.environ["TRANSLATION_PROVIDER"] = "gemini_web"
 
 settings = Settings()

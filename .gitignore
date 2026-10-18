@@ -33,10 +33,7 @@ frontend/node_modules/
 temp/
 output/
 input/
-database/*.db
-database/*.db-journal
-database/*.db-wal
-database/*.db-shm
+database/
 *.db
 *.sqlite
 proxies.txt
@@ -47,6 +44,9 @@ scratch/
 scratch_*.py
 test_*.mp3
 *.log
+gemini_current_ui.png
+inspect_gemini_*.py
+export_prompt.py
 
 # Sensitive Keys (Keep template only)
 .env

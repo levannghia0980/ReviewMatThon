@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal, get_db
 from app.schemas.composer import VideoComposeRequest, VideoComposeResponse
 from app.schemas.pipeline import TaskStatusResponse
-from app.services.video.video_composer_service import VideoComposerService
+from app.services.step_05_video.video_composer_service import VideoComposerService
 from app.services.task_manager import task_manager
 
 router = APIRouter()
@@ -38,6 +38,8 @@ def _run_compose_worker(task_id: str, req: VideoComposeRequest):
             font_size=getattr(req, "font_size", None),
             box_style=getattr(req, "box_style", "white_box"),
             box_padding=getattr(req, "box_padding", 8),
+            blur_height=getattr(req, "blur_height", 13.0),
+            sub_bottom_offset=getattr(req, "sub_bottom_offset", 0.0),
             render_subtitles=getattr(req, "render_subtitles", True)
         )
     except Exception as e:

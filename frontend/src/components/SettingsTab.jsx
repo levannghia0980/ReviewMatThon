@@ -22,7 +22,8 @@ import {
   RefreshCw,
   Gauge,
   Flame,
-  Rocket
+  Rocket,
+  Globe
 } from 'lucide-react';
 
 export default function SettingsTab() {
@@ -37,8 +38,14 @@ export default function SettingsTab() {
   const [showOpenRouterKey, setShowOpenRouterKey] = useState(false);
 
   // Form State
+  const [geminiMode, setGeminiMode] = useState('web'); // 'web' hoặc 'api'
   const [geminiKey, setGeminiKey] = useState('');
   const [geminiModel, setGeminiModel] = useState('gemini-3.1-flash-lite');
+  const [geminiWebStatus, setGeminiWebStatus] = useState({ logged_in: false, message: 'Đang kiểm tra...' });
+  const [geminiWebModel, setGeminiWebModel] = useState('flash'); // 'flash' hoặc 'pro'
+  const [geminiWebThinking, setGeminiWebThinking] = useState('medium'); // 'low', 'medium', 'high'
+  const [testingGeminiWeb, setTestingGeminiWeb] = useState(false);
+  const [geminiWebTestResult, setGeminiWebTestResult] = useState(null);
   
   const [groqKey, setGroqKey] = useState('');
   const [groqModel, setGroqModel] = useState('whisper-large-v3');
@@ -49,7 +56,17 @@ export default function SettingsTab() {
   
   // Translation Batch Settings
   const [translationMaxChars, setTranslationMaxChars] = useState(50000);
-  const [translationBatchSize, setTranslationBatchSize] = useState(300);
+  const [translationBatchSize, setTranslationBatchSize] = useState(500);
+  const [translationTemperature, setTranslationTemperature] = useState(0.85);
+
+  const handleModeSwitch = (mode) => {
+    setGeminiMode(mode);
+    fetch('/api/v1/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ translation_provider: mode === 'web' ? 'gemini_web' : 'gemini' })
+    }).catch(() => {});
+  };
   
   // TTS Engine & Concurrency (CapCut vs TikTok, Up to 128 threads)
   const [ttsEngine, setTtsEngine] = useState('capcut');
@@ -90,13 +107,31 @@ export default function SettingsTab() {
         setOpenrouterKey(data.openrouter_api_key || '');
         setTranslationMaxChars(data.translation_max_chars || 50000);
         setTranslationBatchSize(data.translation_batch_size || 500);
-        setTtsThreads(data.tts_threads || 96);
+        if (data.translation_temperature !== undefined && data.translation_temperature !== null) {
+          setTranslationTemperature(data.translation_temperature);
+        }
+        setTtsThreads(data.tts_threads || 128);
         setTtsEngine(data.tts_engine || 'capcut');
         setCapcutCookie(data.capcut_cookie || '');
         setTiktokSessionId(data.tiktok_session_id || '410bfa37bdc185e1c6da82e1afb48409');
         setBilibiliCookieFile(data.bilibili_cookie_file || data.resolved_bilibili_cookie || '');
         setHasBilibiliCookie(!!data.has_bilibili_cookie);
         setResolvedBilibiliCookie(data.resolved_bilibili_cookie || '');
+        if (data.gemini_web_model) setGeminiWebModel(data.gemini_web_model);
+        if (data.gemini_web_thinking) setGeminiWebThinking(data.gemini_web_thinking);
+        const currentMode = data.translation_provider === 'gemini_web' ? 'web' : 'api';
+        setGeminiMode(currentMode);
+      }
+
+      // Kiểm tra trạng thái phiên Gemini Web
+      try {
+        const webRes = await fetch('/api/v1/translate/gemini-web/status');
+        if (webRes.ok) {
+          const webData = await webRes.json();
+          setGeminiWebStatus(webData);
+        }
+      } catch (e) {
+        console.error('Lỗi kiểm tra Gemini Web status:', e);
       }
     } catch (err) {
       console.error('Lỗi khi tải cài đặt:', err);
@@ -152,9 +187,10 @@ export default function SettingsTab() {
       if (res.ok) {
         setGeminiTestResult({
           success: true,
-          message: data.message || '🎉 Kết nối Google Gemini API thành công! API Key hợp lệ và hoạt động tốt.'
+          message: data.message || '🎉 Kết nối Google Gemini API thành công! Đã tự động lưu vĩnh viễn vào hệ thống.'
         });
         localStorage.setItem('saved_gemini_key', rawKey);
+        fetchSettings();
       } else {
         setGeminiTestResult({ success: false, message: data.detail || 'Không thể kết nối Google Gemini API.' });
       }
@@ -162,6 +198,49 @@ export default function SettingsTab() {
       setGeminiTestResult({ success: false, message: 'Lỗi mạng khi kết nối máy chủ kiểm tra API.' });
     } finally {
       setTestingGemini(false);
+    }
+  };
+
+  const handleTestGeminiWeb = async () => {
+    setTestingGeminiWeb(true);
+    setGeminiWebTestResult(null);
+    try {
+      const res = await fetch('/api/v1/translate/gemini-web/status');
+      const data = await res.json();
+      if (data.logged_in) {
+        setGeminiWebStatus(data);
+        setGeminiWebTestResult({
+          success: true,
+          message: '🎉 Phiên Google Gemini Web đang hoạt động tốt! Sẵn sàng dịch thuật.'
+        });
+      } else {
+        setGeminiWebTestResult({
+          success: false,
+          message: 'Chưa có phiên đăng nhập Google. Vui lòng bấm "Đăng Nhập / Đổi Nick" bên dưới.'
+        });
+      }
+    } catch (err) {
+      setGeminiWebTestResult({ success: false, message: 'Lỗi khi kiểm tra kết nối Gemini Web.' });
+    } finally {
+      setTestingGeminiWeb(false);
+    }
+  };
+
+  const handleTriggerLogin = async () => {
+    try {
+      alert('Đang mở cửa sổ Chromium riêng biệt... Vui lòng đăng nhập Google vào gemini.google.com rồi cửa sổ sẽ tự đóng!');
+      const res = await fetch('/api/v1/translate/gemini-web/login', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setGeminiWebTestResult({ success: true, message: data.message });
+        const webRes = await fetch('/api/v1/translate/gemini-web/status');
+        const webData = await webRes.json();
+        setGeminiWebStatus(webData);
+      } else {
+        setGeminiWebTestResult({ success: false, message: data.message });
+      }
+    } catch (e) {
+      alert('Lỗi khởi chạy trình duyệt: ' + e.message);
     }
   };
 
@@ -176,8 +255,9 @@ export default function SettingsTab() {
       });
       const data = await res.json();
       if (res.ok) {
-        setTestResult({ success: true, message: data.message || 'Kết nối Groq thành công! API Key hợp lệ.' });
+        setTestResult({ success: true, message: data.message || '🎉 Kết nối Groq thành công! Đã tự động lưu vĩnh viễn vào hệ thống.' });
         if (groqKey.trim()) localStorage.setItem('saved_groq_key', groqKey.trim());
+        fetchSettings();
       } else {
         setTestResult({ success: false, message: data.detail || 'Không thể kết nối Groq API.' });
       }
@@ -197,7 +277,7 @@ export default function SettingsTab() {
       const grK = groqKey.trim();
       const orK = openrouterKey.trim();
 
-      // Lưu ngay vào localStorage
+      // Lưu key vào localStorage
       if (gK) localStorage.setItem('saved_gemini_key', gK);
       if (grK) localStorage.setItem('saved_groq_key', grK);
       if (orK) localStorage.setItem('saved_openrouter_key', orK);
@@ -205,13 +285,17 @@ export default function SettingsTab() {
       const payload = {
         gemini_api_key: gK,
         gemini_model: geminiModel,
+        translation_provider: geminiMode === 'web' ? 'gemini_web' : 'gemini',
+        gemini_web_model: geminiWebModel,
+        gemini_web_thinking: geminiWebThinking,
         groq_api_key: grK,
         groq_model: groqModel,
         asr_engine: asrEngine,
         whisper_model_size: whisperSize,
         openrouter_api_key: orK,
         translation_max_chars: parseInt(translationMaxChars, 10) || 50000,
-        translation_batch_size: parseInt(translationBatchSize, 10) || 300,
+        translation_batch_size: parseInt(translationBatchSize, 10) || 500,
+        translation_temperature: parseFloat(translationTemperature) || 0.85,
         tts_threads: parseInt(ttsThreads, 10) || 128,
         tts_engine: ttsEngine,
         capcut_cookie: capcutCookie.trim(),
@@ -283,27 +367,61 @@ export default function SettingsTab() {
     <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '1480px', margin: '0 auto', width: '100%', boxSizing: 'border-box' }}>
       
       {/* Header Banner */}
-      <div className="glass-panel" style={{
-        background: 'linear-gradient(135deg, rgba(16,22,45,0.9) 0%, rgba(30,25,60,0.8) 100%)',
-        border: '1px solid rgba(0, 242, 254, 0.25)',
-        padding: '20px 24px',
-        borderRadius: '10px',
-        boxShadow: 'var(--shadow-neon)'
+      <div style={{
+        background: 'linear-gradient(135deg, #dc2626 0%, #991b1b 60%, #7f1d1d 100%)',
+        border: '1.5px solid #ef4444',
+        padding: '22px 26px',
+        borderRadius: '12px',
+        boxShadow: '0 8px 24px rgba(220, 38, 38, 0.25)'
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-              <span className="tag-badge cyan" style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 800 }}>
+              <span style={{
+                background: 'rgba(255, 255, 255, 0.20)',
+                color: '#ffffff',
+                border: '1px solid rgba(255, 255, 255, 0.35)',
+                padding: '4px 10px',
+                fontSize: '11px',
+                fontWeight: 800,
+                borderRadius: '5px',
+                letterSpacing: '0.4px',
+                backdropFilter: 'blur(4px)'
+              }}>
                 ⚙️ SYSTEM CONFIGURATION
               </span>
-              <span className="tag-badge emerald" style={{ padding: '4px 10px', fontSize: '11px', fontWeight: 800 }}>
+              <span style={{
+                background: '#fef08a',
+                color: '#854d0e',
+                border: '1px solid #fde047',
+                padding: '4px 10px',
+                fontSize: '11px',
+                fontWeight: 800,
+                borderRadius: '5px',
+                letterSpacing: '0.4px'
+              }}>
                 ⚡ 1-CLICK PRESETS
               </span>
             </div>
-            <h1 style={{ fontSize: '22px', fontWeight: 800, color: 'var(--text-main)', marginBottom: '6px' }}>
+            <h1 style={{
+              fontSize: '24px',
+              fontWeight: 900,
+              color: '#ffffff',
+              marginBottom: '6px',
+              textShadow: '0 2px 4px rgba(0, 0, 0, 0.35)',
+              letterSpacing: '0.3px'
+            }}>
               Cài Đặt Hệ Thống & AI Studio
             </h1>
-            <p style={{ color: 'var(--text-sub)', fontSize: '13px', maxWidth: '700px', margin: 0 }}>
+            <p style={{
+              color: '#fee2e2',
+              fontSize: '13.5px',
+              fontWeight: 500,
+              maxWidth: '750px',
+              margin: 0,
+              lineHeight: 1.5,
+              textShadow: '0 1px 2px rgba(0, 0, 0, 0.2)'
+            }}>
               Chọn nhanh các mức cấu hình bằng nút bấm 1 chạm (không cần kéo thanh trượt). Quản lý API Key, chọn mô hình Gemini và luồng song song TikTok lên tới 128 luồng.
             </p>
           </div>
@@ -312,20 +430,24 @@ export default function SettingsTab() {
             type="button"
             onClick={handleSaveSettings}
             disabled={saving}
-            className="btn btn-primary"
             style={{
-              padding: '12px 26px',
+              padding: '12px 24px',
               fontSize: '14px',
-              fontWeight: 800,
-              background: 'var(--grad-cyan)',
-              color: '#070913',
-              boxShadow: '0 0 20px rgba(0, 242, 254, 0.4)',
+              fontWeight: 900,
+              background: '#ffffff',
+              color: '#b91c1c',
+              border: '2px solid #ffffff',
+              borderRadius: '8px',
+              boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
+              cursor: saving ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
-              gap: '8px'
+              gap: '8px',
+              transition: 'all 0.2s ease'
             }}
+            title="Lưu toàn bộ cài đặt hệ thống"
           >
-            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} color="#b91c1c" />}
             LƯU TẤT CẢ CÀI ĐẶT
           </button>
         </div>
@@ -378,43 +500,266 @@ export default function SettingsTab() {
                     1. Cấu Hình Dịch Thuật Google Gemini AI
                   </h3>
                   <p style={{ fontSize: '12px', color: 'var(--text-sub)', margin: '2px 0 0 0' }}>
-                    Dịch chuẩn văn phong kiếm hiệp/tu tiên, bảo toàn xưng hô và quét sạch Hán ngữ
+                    Chọn 1 trong 2 phương thức: Dùng Gemini Web (Tài Khoản Google) hoặc Dùng Gemini API Key
                   </p>
                 </div>
               </div>
 
-              <a
-                href="https://aistudio.google.com/app/apikey"
-                target="_blank"
-                rel="noreferrer"
-                style={{
-                  fontSize: '12px',
-                  color: 'var(--cyan)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  textDecoration: 'none',
-                  fontWeight: 700,
-                  background: 'rgba(56, 189, 248, 0.1)',
-                  padding: '5px 10px',
-                  borderRadius: '6px',
-                  border: '1px solid rgba(56, 189, 248, 0.25)'
-                }}
-              >
-                Lấy Gemini API Key Miễn Phí <ExternalLink size={12} />
-              </a>
-            </div>
-
-            {/* Gemini API Key Input & Test Button */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
-                <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
-                  Google Gemini API Key (Bắt đầu bằng AIzaSy...):
-                </label>
+              {/* Mode Switcher Buttons */}
+              <div style={{ display: 'flex', gap: '8px', background: 'rgba(0,0,0,0.3)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border)' }}>
                 <button
                   type="button"
-                  onClick={handleTestGemini}
-                  disabled={testingGemini || !geminiKey.trim()}
+                  onClick={() => handleModeSwitch('web')}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: geminiMode === 'web' ? 'var(--cyan)' : 'transparent',
+                    color: geminiMode === 'web' ? '#070913' : 'var(--text-sub)',
+                    border: 'none',
+                    boxShadow: geminiMode === 'web' ? '0 0 15px rgba(0, 242, 254, 0.4)' : 'none',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <Globe size={14} /> 🌐 Gehihi (Tài Khoản Google)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeSwitch('api')}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: geminiMode === 'api' ? 'var(--cyan)' : 'transparent',
+                    color: geminiMode === 'api' ? '#070913' : 'var(--text-sub)',
+                    border: 'none',
+                    boxShadow: geminiMode === 'api' ? '0 0 15px rgba(0, 242, 254, 0.4)' : 'none',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <Zap size={14} /> ⚡ Gemini API Key (Studio)
+                </button>
+              </div>
+            </div>
+
+            {/* --- KHU VỰC 1: GEMINI WEB (TỰ ĐỘNG SÁNG KHI CHỌN WEB, TỐI MỜ KHI CHỌN API) --- */}
+            <div style={{
+              padding: '18px',
+              borderRadius: '10px',
+              border: geminiMode === 'web' ? '2px solid var(--cyan)' : '1px solid var(--border)',
+              background: geminiMode === 'web' ? 'rgba(0, 242, 254, 0.05)' : 'rgba(255, 255, 255, 0.01)',
+              opacity: geminiMode === 'web' ? 1 : 0.35,
+              pointerEvents: geminiMode === 'web' ? 'auto' : 'none',
+              boxShadow: geminiMode === 'web' ? '0 0 20px rgba(0, 242, 254, 0.15)' : 'none',
+              transition: 'all 0.3s ease',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span className={`tag-badge ${geminiWebStatus.logged_in ? 'emerald' : 'rose'}`} style={{ fontSize: '11px', fontWeight: 800 }}>
+                    {geminiWebStatus.logged_in ? '🟢 ĐÃ KẾT NỐI VỚI GOOGLE' : '🔴 CHƯA ĐĂNG NHẬP GOOGLE'}
+                  </span>
+                  <span style={{ fontSize: '12.5px', color: 'var(--text-main)', fontWeight: 600 }}>
+                    {geminiWebStatus.logged_in 
+                      ? 'Phiên đăng nhập đã lưu trong database/gemini_profile (Không tốn RAM, tự đóng ngầm sau 2s)'
+                      : 'Chưa có phiên. Vui lòng bấm "Đăng Nhập / Đổi Nick" để mở Chromium đăng nhập 1 lần.'}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={handleTestGeminiWeb}
+                    disabled={testingGeminiWeb}
+                    style={{
+                      padding: '7px 14px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      borderRadius: '6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      background: 'rgba(0, 242, 254, 0.15)',
+                      border: '1px solid var(--cyan)',
+                      color: 'var(--cyan)',
+                      cursor: testingGeminiWeb ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    {testingGeminiWeb ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}
+                    {testingGeminiWeb ? 'Đang Kiểm Tra...' : '⚡ Kiểm Tra Kết Nối Gehihi'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleTriggerLogin}
+                    style={{
+                      padding: '7px 14px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      borderRadius: '6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      border: '1px solid var(--border)',
+                      color: 'var(--text-main)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <ExternalLink size={13} /> 🔄 Đăng Nhập / Đổi Nick Google
+                  </button>
+                </div>
+              </div>
+
+              {/* BỘ CHỌN MÔ HÌNH VÀ CẤP ĐỘ SUY LUẬN CHUẨN GOOGLE GEMINI */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(280px, 1.1fr) minmax(320px, 1.4fr)',
+                gap: '16px',
+                padding: '18px',
+                borderRadius: '12px',
+                background: '#ffffff',
+                border: '1.5px solid #cbd5e1',
+                boxShadow: '0 4px 16px rgba(15, 23, 42, 0.06)'
+              }}>
+                {/* Cột Trái: Mô Hình Cố Định (Chuẩn Thao Tác Người Dùng - Tự động Gemini 3) */}
+                <div>
+                  <label style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                    🤖 Mô Hình Trình Duyệt:
+                  </label>
+                  <div style={{
+                    padding: '14px 16px',
+                    borderRadius: '8px',
+                    border: '2px solid #0284c7',
+                    background: '#f0f9ff',
+                    color: '#0f172a',
+                    boxShadow: '0 0 12px rgba(2, 132, 199, 0.2)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ fontWeight: 800, fontSize: '14px', color: '#0284c7' }}>
+                        🌐 Tự động (Các mô hình Gemini 3)
+                      </div>
+                      <span style={{
+                        padding: '3px 8px',
+                        borderRadius: '4px',
+                        fontSize: '10.5px',
+                        fontWeight: 800,
+                        background: '#0284c7',
+                        color: '#ffffff'
+                      }}>
+                        MẶC ĐỊNH
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#0369a1', marginTop: '6px', fontWeight: 500, lineHeight: '1.4' }}>
+                      Google tự động tối ưu hóa tài nguyên phần cứng & phản hồi theo thời gian thực (giống hệt thao tác tay người dùng).
+                    </div>
+                  </div>
+                </div>
+
+                {/* Cột Phải: 3 Cấp Độ Tư Duy / Suy Luận */}
+                <div>
+                  <label style={{ fontSize: '13px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                    🧠 Cấp Độ Tư Duy (Thinking Level):
+                  </label>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {[
+                      { key: 'low', label: '⚡ Thấp (Nhanh Chóng & Hiệu Quả)', sub: 'Tốc độ phản hồi cực nhanh ~5s-7s, lý tưởng cho dịch truyện', border: '#16a34a', bg: '#f0fdf4', text: '#15803d' },
+                      { key: 'medium', label: '⚖️ Trung Bình (Độ Sâu Cân Bằng)', sub: 'Cân đối thời gian ~10s-15s, ngữ cảnh trôi chảy tự nhiên', border: '#0284c7', bg: '#f0f9ff', text: '#0369a1' },
+                      { key: 'high', label: '🔬 Cao (Cực Kỳ Kỹ Lưỡng)', sub: 'Suy luận ngữ nghĩa sâu ~15s-20s, xử lý từ Hán Việt cổ trang phức tạp', border: '#d97706', bg: '#fffbeb', text: '#b45309' }
+                    ].map((item) => {
+                      const isActive = geminiWebThinking === item.key;
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => setGeminiWebThinking(item.key)}
+                          style={{
+                            padding: '10px 14px',
+                            borderRadius: '8px',
+                            border: isActive ? `2px solid ${item.border}` : '1px solid #cbd5e1',
+                            background: isActive ? item.bg : '#f8fafc',
+                            color: '#0f172a',
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            boxShadow: isActive ? `0 0 10px ${item.border}30` : 'none',
+                            transition: 'all 0.2s ease',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center'
+                          }}
+                        >
+                          <div>
+                            <div style={{ fontWeight: 800, fontSize: '13px', color: isActive ? item.text : '#0f172a' }}>
+                              {item.label}
+                            </div>
+                            <div style={{ fontSize: '11px', color: isActive ? item.text : '#64748b', marginTop: '2px', fontWeight: 500 }}>
+                              {item.sub}
+                            </div>
+                          </div>
+                          {isActive && (
+                            <span style={{ fontSize: '12px', fontWeight: 800, color: item.text }}>✓ Đang Chọn</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {geminiWebTestResult && (
+                <div style={{
+                  padding: '10px 14px',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: geminiWebTestResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                  border: `1px solid ${geminiWebTestResult.success ? 'var(--emerald)' : 'var(--rose)'}`,
+                  color: geminiWebTestResult.success ? 'var(--emerald)' : 'var(--rose)'
+                }}>
+                  {geminiWebTestResult.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                  {geminiWebTestResult.message}
+                </div>
+              )}
+            </div>
+
+            {/* --- KHU VỰC 2: GEMINI API KEY (SÁNG KHI CHỌN API, TỐI MỜ KHI CHỌN WEB) --- */}
+            <div style={{
+              padding: '18px',
+              borderRadius: '10px',
+              border: geminiMode === 'api' ? '2px solid var(--cyan)' : '1px solid var(--border)',
+              background: geminiMode === 'api' ? 'rgba(0, 242, 254, 0.05)' : 'rgba(255, 255, 255, 0.01)',
+              opacity: geminiMode === 'api' ? 1 : 0.35,
+              pointerEvents: geminiMode === 'api' ? 'auto' : 'none',
+              boxShadow: geminiMode === 'api' ? '0 0 20px rgba(0, 242, 254, 0.15)' : 'none',
+              transition: 'all 0.3s ease',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px'
+            }}>
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                  <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-main)', margin: 0 }}>
+                    Google Gemini API Key (Bắt đầu bằng AIzaSy...):
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleTestGemini}
+                    disabled={testingGemini || !geminiKey.trim()}
                   style={{
                     padding: '6px 14px',
                     fontSize: '12px',
@@ -555,6 +900,7 @@ export default function SettingsTab() {
                 })}
               </div>
             </div>
+          </div>
 
             {/* 1B. Mức Chọn Số Câu Một Lô (Batch Sentences: 150 - 500 câu chuẩn AIRead) */}
             <div>
@@ -613,6 +959,95 @@ export default function SettingsTab() {
                         {t.sub}
                       </span>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 1C. Mức Sáng Tạo & Thông Minh (Temperature: 0.1 – 1.0) */}
+            <div style={{
+              padding: '16px 18px',
+              borderRadius: '10px',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Sparkles size={16} color="var(--cyan)" />
+                  <label style={{ fontSize: '12.5px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
+                    Độ Sáng Tạo & Độ Thông Minh (Temperature):
+                  </label>
+                  <span className="tag-badge cyan" style={{ fontSize: '11px', fontWeight: 800, fontFamily: 'var(--font-mono)' }}>
+                    {translationTemperature}
+                  </span>
+                </div>
+                <span style={{ fontSize: '12px', color: 'var(--text-sub)', fontWeight: 600 }}>
+                  {translationTemperature <= 0.3
+                    ? '🎯 Rập khuôn chính xác, bám sát từng chữ'
+                    : translationTemperature <= 0.7
+                    ? '✨ Lồng tiếng tự nhiên, biểu cảm mượt mà (Khuyên Dùng)'
+                    : '🚀 Siêu sáng tạo, ngôn từ phong phú bay bổng'}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 700 }}>0.1 (Chính xác)</span>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="1.0"
+                  step="0.05"
+                  value={translationTemperature}
+                  onChange={(e) => setTranslationTemperature(parseFloat(e.target.value))}
+                  style={{
+                    flex: 1,
+                    accentColor: 'var(--cyan)',
+                    cursor: 'pointer',
+                    height: '6px'
+                  }}
+                />
+                <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 700 }}>1.0 (Bay bổng)</span>
+              </div>
+
+              {/* Nút Preset 1-chạm */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px' }}>
+                {[
+                  { val: 0.2, label: '0.2 - Chuẩn Xác', desc: 'Bám sát nghĩa đen' },
+                  { val: 0.5, label: '0.5 - Cân Bằng', desc: 'Trôi chảy, mạch lạc' },
+                  { val: 0.65, label: '0.65 - Chuẩn Lồng Tiếng', desc: 'Khuyên dùng (Văn nói mượt mà)', isRec: true },
+                  { val: 0.85, label: '0.85 - Siêu Hấp Dẫn', desc: 'Giàu cảm xúc, kịch tính' }
+                ].map((preset) => {
+                  const isSelected = Math.abs(translationTemperature - preset.val) < 0.02;
+                  return (
+                    <button
+                      key={preset.val}
+                      type="button"
+                      onClick={() => setTranslationTemperature(preset.val)}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: isSelected ? '1.5px solid var(--cyan)' : '1px solid var(--border)',
+                        background: isSelected ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255, 255, 255, 0.02)',
+                        color: isSelected ? 'var(--cyan)' : 'var(--text-main)',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '2px',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      <div style={{ fontSize: '12px', fontWeight: 800, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>{preset.label}</span>
+                        {preset.isRec && <span style={{ fontSize: '10px', color: '#f59e0b', fontWeight: 900 }}>★ KHUYÊN DÙNG</span>}
+                      </div>
+                      <div style={{ fontSize: '10.5px', color: isSelected ? 'var(--text-main)' : 'var(--text-dim)' }}>
+                        {preset.desc}
+                      </div>
+                    </button>
                   );
                 })}
               </div>

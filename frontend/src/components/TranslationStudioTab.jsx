@@ -14,6 +14,24 @@ export default function TranslationStudioTab({ initialProjectId }) {
   const [entities, setEntities] = useState(null);
   const [genre, setGenre] = useState(DEFAULT_GENRE);
   const [provider, setProvider] = useState('gemini');
+  const [modelDetails, setModelDetails] = useState('');
+
+  useEffect(() => {
+    fetch('/api/v1/settings')
+      .then(res => res.json())
+      .then(cfg => {
+        const curProv = cfg.translation_provider || 'gemini';
+        setProvider(curProv);
+        if (curProv === 'gemini_web') {
+          const tMap = { low: 'Tư duy: THẤP', medium: 'Tư duy: TRUNG BÌNH', high: 'Tư duy: CAO' };
+          const t = tMap[(cfg.gemini_web_thinking || 'medium').toLowerCase()] || 'Tư duy: TRUNG BÌNH';
+          setModelDetails(`(Gemini 3 • ${t})`);
+        } else {
+          setModelDetails(`(${cfg.gemini_model || 'Flash-Lite'})`);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Search & Filters
   const [search, setSearch] = useState('');
@@ -109,8 +127,7 @@ export default function TranslationStudioTab({ initialProjectId }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_id: selectedProjectId,
-          genre: genre,
-          provider: provider
+          genre: genre
         })
       });
 
@@ -221,7 +238,7 @@ export default function TranslationStudioTab({ initialProjectId }) {
                 color: 'var(--text-main)',
                 fontSize: '13px',
                 fontWeight: 600,
-                maxWidth: '280px'
+                maxWidth: '220px'
               }}
             >
               {AIREAD_GENRES.map((g) => (
@@ -229,6 +246,26 @@ export default function TranslationStudioTab({ initialProjectId }) {
                   {g.icon} {g.name}
                 </option>
               ))}
+            </select>
+
+            <select
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+              disabled={isTranslating}
+              style={{
+                padding: '10px 14px',
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--text-main)',
+                fontSize: '13px',
+                fontWeight: 600,
+                maxWidth: '260px'
+              }}
+            >
+              <option value="gemini">⚡ Gemini API {provider === 'gemini' ? modelDetails : ''}</option>
+              <option value="gemini_web">🌐 Gemini Web {provider === 'gemini_web' ? modelDetails : ''}</option>
+              <option value="openrouter">🪐 OpenRouter</option>
             </select>
 
             <button

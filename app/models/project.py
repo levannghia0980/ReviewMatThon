@@ -32,3 +32,6 @@ class ProjectTask(Base):
 
     # Quan hệ với bảng chi tiết câu thoại
     dialogues = relationship("DialogueSegmentModel", back_populates="project", cascade="all, delete-orphan", order_by="DialogueSegmentModel.index")
+    tts_dialogues = relationship("TTSDialogueSegmentModel", back_populates="project", cascade="all, delete-orphan", order_by="TTSDialogueSegmentModel.tts_index")
+    subtitles = relationship("SubtitleSegmentModel", back_populates="project", cascade="all, delete-orphan", order_by="SubtitleSegmentModel.sub_index")
+

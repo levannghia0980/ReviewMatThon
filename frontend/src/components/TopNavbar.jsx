@@ -19,7 +19,7 @@ export default function TopNavbar({ activeTab, setActiveTab, totalVideos, totalD
         </div>
         <div>
           <div className="brand-title">
-            REVIEW MẮT THẦN
+            MẶT THỘN REVIEW
           </div>
           <div className="brand-subtitle">
             AI Video Dubbing Studio 4.0

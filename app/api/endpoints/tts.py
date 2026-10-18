@@ -12,8 +12,8 @@ from app.schemas.tts import (
     TTSProjectResponse
 )
 from app.schemas.pipeline import TaskStatusResponse
-from app.services.tts.capcut_tts_service import CapCutTTSService
-from app.services.tts.tiktok_tts_service import TikTokTTSService
+from app.services.step_04_tts.capcut_tts_service import CapCutTTSService
+from app.services.step_04_tts.tiktok_tts_service import TikTokTTSService
 from app.services.task_manager import task_manager
 from app.config import settings
 
@@ -24,34 +24,21 @@ def _run_tts_worker(task_id: str, req: TTSProjectRequest):
     db = SessionLocal()
     try:
         task_manager.update_task(task_id, status="running", step=1, progress=5)
-        engine = getattr(settings, "TTS_ENGINE", "capcut").lower()
-
-        if engine in ("capcut", "capcut_cloud"):
-            task_manager.add_log(task_id, f"🚀 Kích hoạt CapCut Cloud SAMI TTS Engine ({settings.TTS_MAX_WORKERS or 96} Workers Concurrent)...", "cyan")
-            CapCutTTSService.produce_project_voiceover(
-                task_id=task_id,
-                project_id=req.project_id,
-                db=db,
-                voice_code=req.voice_code,
-                session_id=req.session_id,
-                apply_mastering=req.apply_mastering,
-                playback_speed=req.playback_speed,
-                auto_fit_timeline=req.auto_fit_timeline,
-                max_workers=settings.TTS_MAX_WORKERS or 96
-            )
-        else:
-            task_manager.add_log(task_id, f"🚀 Kích hoạt TikTok TTS Engine ({settings.TTS_MAX_WORKERS or 96} Workers Concurrent)...", "cyan")
-            TikTokTTSService.produce_project_voiceover(
-                task_id=task_id,
-                project_id=req.project_id,
-                db=db,
-                voice_code=req.voice_code,
-                session_id=req.session_id,
-                apply_mastering=req.apply_mastering,
-                playback_speed=req.playback_speed,
-                auto_fit_timeline=req.auto_fit_timeline,
-                max_workers=settings.TTS_MAX_WORKERS or 96
-            )
+        from app.services.step_04_tts.tts_factory import TTSFactory
+        tts_service = TTSFactory.get_service()
+        tts_engine_name = getattr(settings, "TTS_ENGINE", "capcut").upper()
+        task_manager.add_log(task_id, f"🚀 Kích hoạt {tts_engine_name} TTS Engine ({getattr(settings, 'TTS_MAX_WORKERS', 128)} Workers Concurrent)...", "cyan")
+        tts_service.produce_project_voiceover(
+            task_id=task_id,
+            project_id=req.project_id,
+            db=db,
+            voice_code=req.voice_code,
+            session_id=req.session_id,
+            apply_mastering=req.apply_mastering,
+            playback_speed=req.playback_speed,
+            auto_fit_timeline=req.auto_fit_timeline,
+            max_workers=getattr(settings, "TTS_MAX_WORKERS", 128)
+        )
     except Exception as e:
         db.rollback()
         err_msg = str(e)
@@ -77,8 +64,8 @@ def get_voices():
 @router.post("/single", response_model=TTSSingleResponse, summary="Thử nghiệm tạo giọng đọc TTS cho 1 câu đơn lẻ")
 async def synthesize_single_preview(req: TTSSingleRequest):
     try:
-        from app.services.tts.async_tts_engine import AsyncTTSEngine
-        from app.services.tts.tiktok_tts_service import _load_audio_from_bytes, TikTokTTSService
+        from app.services.step_04_tts.async_tts_engine import AsyncTTSEngine
+        from app.services.step_04_tts.tiktok_tts_service import _load_audio_from_bytes, TikTokTTSService
         import aiohttp
 
         async def _fetch_audio():

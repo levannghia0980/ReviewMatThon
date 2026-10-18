@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Zap, Play, Pause, Download, Sparkles, Volume2, VolumeX, Film, CheckCircle2, 
-  RefreshCw, RotateCcw, Terminal, Eye, Sliders, Music, Clock, FileText, ArrowRight, Plus, Minus, Trash2,
-  Maximize2, ArrowUp, ArrowDown, MoveVertical, Search, Headphones, Clipboard, Link as LinkIcon
+  RefreshCw, RotateCcw, RotateCw, Terminal, Eye, Sliders, Music, Clock, FileText, ArrowRight, Plus, Minus, Trash2,
+  Maximize2, ArrowUp, ArrowDown, MoveVertical, Search, Headphones, Clipboard, Link as LinkIcon, ExternalLink
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
 import { ALL_VOICES } from '../constants/voices';
@@ -14,6 +14,7 @@ export default function MainStudioView({ onNavigateTab }) {
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   const [videoSearch, setVideoSearch] = useState('');
+  const [videoTimestamp, setVideoTimestamp] = useState(Date.now());
 
   const handlePasteFromClipboard = async () => {
     try {
@@ -112,31 +113,68 @@ export default function MainStudioView({ onNavigateTab }) {
     }
   };
 
-  const handleResetProject = async (e, pId, pTitle) => {
+  const handleResetTranslation = async (e, pId, pTitle) => {
     if (e) e.stopPropagation();
     const targetId = pId || selectedProject?.id;
     const targetTitle = pTitle || selectedProject?.title || targetId;
     if (!targetId) return;
 
-    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VIDEO NÀY VỀ TÌNH TRẠNG ĐÃ DỊCH?\n\n"${targetTitle}" (ID: #${targetId})\n\nThao tác này sẽ:\n✓ GIỮ NGUYÊN 100% FILE VIDEO GỐC ĐÃ TẢI\n✓ GIỮ NGUYÊN TOÀN BỘ CÂU THOẠI VÀ BẢN DỊCH TIẾNG VIỆT\n✗ Chỉ dọn dẹp các file âm thanh TTS & video render hoàn chỉnh\n\nVideo sẽ trở về trạng thái ĐÃ DỊCH để bạn sẵn sàng chạy lại TTS / Lồng tiếng / Ghép video mà không cần tải hay dịch lại!`)) {
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET BẢN DỊCH?\n\n"${targetTitle}" (ID: #${targetId})\n\nThao tác này sẽ:\n✓ GIỮ NGUYÊN video gốc & toàn bộ câu thoại gốc tiếng Trung ASR (không phải gửi CapCut STT lại)\n✗ XÓA SẠCH 100% bản dịch tiếng Việt, phụ đề và kịch bản cũ\n✗ XÓA SẠCH 100% audio thuyết minh TTS và video render thành phẩm\n\nDự án sẽ sẵn sàng để Dịch lại từ đầu bằng AI LLM!`)) {
       return;
     }
 
     try {
-      const res = await fetch(`/api/v1/projects/${targetId}/reset-to-translated`, { method: 'POST' });
+      const res = await fetch(`/api/v1/projects/${targetId}/reset-translation`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
+        setVideoTimestamp(Date.now());
         await loadProjects();
         if (selectedProject?.id === targetId) {
           setSelectedProject(prev => prev ? {
             ...prev,
-            status: data.status_code || 'TRANSLATED',
+            status: data.status_code || 'TRANSCRIBED',
             has_final: false,
-            final_video_path: null
+            final_video_path: null,
+            translated_dialogues: 0
           } : null);
           setVideoViewMode('raw');
         }
-        alert(data.message || `Đã reset video #${targetId} về tình trạng đã dịch thành công!`);
+        alert(data.message || `Đã reset bản dịch video #${targetId} thành công!`);
+      } else {
+        alert(`Lỗi khi reset: ${data.detail || 'Không thể reset bản dịch'}`);
+      }
+    } catch (err) {
+      alert(`Lỗi mạng: ${err.message}`);
+    }
+  };
+
+  const handleResetDownloaded = async (e, pId, pTitle) => {
+    if (e) e.stopPropagation();
+    const targetId = pId || selectedProject?.id;
+    const targetTitle = pTitle || selectedProject?.title || targetId;
+    if (!targetId) return;
+
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET VỀ LÚC MỚI TẢI XONG?\n\n"${targetTitle}" (ID: #${targetId})\n\nThao tác này sẽ:\n✓ GIỮ NGUYÊN DUY NHẤT file video gốc đã tải về\n✗ XÓA SẠCH 100% câu thoại tiếng Trung & bản dịch tiếng Việt\n✗ XÓA SẠCH 100% audio thuyết minh TTS và video render thành phẩm\n\nVideo sẽ trở về trạng thái như vừa tải xong để làm lại từ bước STT!`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/v1/projects/${targetId}/reset`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setVideoTimestamp(Date.now());
+        await loadProjects();
+        if (selectedProject?.id === targetId) {
+          setSelectedProject(prev => prev ? {
+            ...prev,
+            status: data.status_code || 'DOWNLOADED',
+            has_final: false,
+            final_video_path: null,
+            translated_dialogues: 0
+          } : null);
+          setVideoViewMode('raw');
+        }
+        alert(data.message || `Đã reset video #${targetId} về lúc mới tải xong thành công!`);
       } else {
         alert(`Lỗi khi reset: ${data.detail || 'Không thể reset video'}`);
       }
@@ -170,6 +208,11 @@ export default function MainStudioView({ onNavigateTab }) {
             }
           } else if (packet.event === 'task_update') {
             const task = packet.data || {};
+            // CHỈ cập nhật vào Xưởng Video nếu task thuộc về quy trình của Xưởng Video (task_auto_, task_compose_, task_dl_)
+            // Bỏ qua task dịch thuật độc lập (task_trans_) từ Thư Viện Thoại để 2 màn hình hoạt động độc lập
+            const isStudioTask = task.id && !task.id.startsWith('task_trans_') && !task.id.startsWith('task_stt_');
+            if (!isStudioTask && task.id !== taskId) return;
+
             if (task.project_id) {
               setActiveTasksMap(prev => ({
                 ...prev,
@@ -177,10 +220,10 @@ export default function MainStudioView({ onNavigateTab }) {
               }));
             }
             // Nếu là task của project đang xem
-            if (task.id === taskId || (task.project_id && selectedProject?.id === task.project_id)) {
+            if (task.id === taskId || (isStudioTask && task.project_id && selectedProject?.id === task.project_id)) {
               setProgress(task.progress || 0);
               setCurrentStep(task.step || 1);
-              if (task.status === 'completed' || task.status === 'error' || task.status === 'cancelled') {
+              if (['completed', 'DONE', 'success', 'SUCCESS', 'error', 'failed', 'cancelled'].includes(task.status)) {
                 setIsRunning(false);
                 loadProjects();
               } else if (task.status === 'running') {
@@ -217,11 +260,15 @@ export default function MainStudioView({ onNavigateTab }) {
         const data = await resTasks.json();
         const map = {};
         (data.tasks || []).forEach(t => {
-          if (t.project_id) map[t.project_id] = t;
+          // CHỈ lọc các task thuộc quy trình tự động hóa / render video của Studio (task_auto_, task_compose_, task_dl_)
+          // Bỏ qua hoàn toàn task dịch lẻ (task_trans_) và bóc tách (task_stt_) của Thư Viện Thoại
+          if (t.project_id && t.id && !t.id.startsWith('task_trans_') && !t.id.startsWith('task_stt_')) {
+            map[t.project_id] = t;
+          }
         });
         setActiveTasksMap(map);
 
-        // Nếu project đang chọn có task đang chạy, tự động kết nối
+        // Nếu project đang chọn có task của Xưởng Video đang chạy, tự động kết nối
         if (selectedProject && map[selectedProject.id]) {
           const curT = map[selectedProject.id];
           setTaskId(curT.id);
@@ -236,12 +283,14 @@ export default function MainStudioView({ onNavigateTab }) {
       if (res.ok) {
         const data = await res.json();
         if (data && data.id && (data.status === 'running' || data.status === 'pending')) {
-          if (!selectedProject || (data.meta?.project_id && selectedProject.id === data.meta.project_id)) {
-            setTaskId(data.id);
-            setIsRunning(true);
-            setProgress(data.progress || 0);
-            setCurrentStep(data.step || 1);
-            if (data.logs && data.logs.length > 0) setLogs(data.logs);
+          if (!data.id.startsWith('task_trans_') && !data.id.startsWith('task_stt_')) {
+            if (!selectedProject || (data.meta?.project_id && selectedProject.id === data.meta.project_id)) {
+              setTaskId(data.id);
+              setIsRunning(true);
+              setProgress(data.progress || 0);
+              setCurrentStep(data.step || 1);
+              if (data.logs && data.logs.length > 0) setLogs(data.logs);
+            }
           }
         }
       }
@@ -315,7 +364,7 @@ export default function MainStudioView({ onNavigateTab }) {
         setCurrentStep(data.step || 1);
         if (data.logs) setLogs(data.logs);
 
-        if (data.status === 'completed') {
+        if (['completed', 'DONE', 'success', 'SUCCESS'].includes(data.status)) {
           setIsRunning(false);
           setResult(data.result);
           if (data.result?.final_video_path) {
@@ -326,9 +375,11 @@ export default function MainStudioView({ onNavigateTab }) {
           loadProjects(data.result?.project_id);
           window.dispatchEvent(new CustomEvent('video-projects-updated'));
           return false;
-        } else if (data.status === 'failed') {
+        } else if (['failed', 'FAILED', 'cancelled', 'CANCELLED', 'error'].includes(data.status)) {
           setIsRunning(false);
-          alert(`Lỗi: ${data.error}`);
+          if (data.status === 'failed' || data.status === 'FAILED') {
+            alert(`Lỗi: ${data.error}`);
+          }
           return false;
         }
         return true;
@@ -339,23 +390,43 @@ export default function MainStudioView({ onNavigateTab }) {
   }, [isRunning, taskId]);
 
   // Keyboard navigation for Subtitle Up/Down & Play/Pause
+  const handleSkip = (seconds) => {
+    if (!videoRef.current) return;
+    const cur = videoRef.current.currentTime || 0;
+    const maxDur = duration || videoRef.current.duration || 100;
+    const newTime = Math.max(0, Math.min(maxDur, cur + seconds));
+    videoRef.current.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  // Keyboard navigation for Subtitle Up/Down, Play/Pause & Seek (-10s / +10s)
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
       if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setSubBottomOffset(prev => Math.min(85, prev + 1));
+        if (videoViewMode === 'raw') {
+          e.preventDefault();
+          setSubBottomOffset(prev => Math.min(85, prev + 1));
+        }
       } else if (e.key === 'ArrowDown') {
+        if (videoViewMode === 'raw') {
+          e.preventDefault();
+          setSubBottomOffset(prev => Math.max(1, prev - 1));
+        }
+      } else if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'j') {
         e.preventDefault();
-        setSubBottomOffset(prev => Math.max(1, prev - 1));
-      } else if (e.key === ' ') {
+        handleSkip(-10);
+      } else if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        handleSkip(10);
+      } else if (e.key === ' ' || e.key.toLowerCase() === 'k') {
         e.preventDefault();
         togglePlayPause();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying]);
+  }, [isPlaying, videoViewMode, duration]);
 
   // Video Time Update Listeners
   const handleTimeUpdate = () => {
@@ -541,7 +612,6 @@ export default function MainStudioView({ onNavigateTab }) {
         quality: downloadQuality,
         source_language: 'zh',
         genre: genre,
-        provider: 'gemini',
         voice_code: voiceCode,
         margin_v: Math.max(2, Math.round(subBottomOffset + (calcBlurH * 0.22))), // Căn chính giữa khối chữ vào dải mờ
         backdrop_opacity_hex: backdropOpacity,
@@ -567,10 +637,15 @@ export default function MainStudioView({ onNavigateTab }) {
         render_subtitles: !noSub
       };
 
-      if (selectedProject) {
+      const trimmedUrl = url.trim();
+      if (trimmedUrl) {
+        payload.url = trimmedUrl;
+      } else if (selectedProject) {
         payload.project_id = selectedProject.id;
       } else {
-        payload.url = url.trim();
+        alert("Vui lòng nhập URL video hoặc chọn một dự án từ danh sách!");
+        setIsRunning(false);
+        return;
       }
 
       const res = await fetch('/api/v1/pipeline/full-auto', {
@@ -637,12 +712,63 @@ export default function MainStudioView({ onNavigateTab }) {
 
   const getStatusBadge = (p) => {
     if (p.has_final || p.status === 'COMPLETED') {
-      return <span className="tag-badge emerald" style={{ fontSize: '10px' }}>✓ XONG</span>;
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '3px',
+          fontSize: '10px',
+          fontWeight: 700,
+          color: '#059669',
+          background: '#ecfdf5',
+          border: '1px solid #a7f3d0',
+          padding: '1px 6px',
+          borderRadius: '10px',
+          lineHeight: 1.2
+        }}>
+          <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#10b981' }} />
+          Đã Xong
+        </span>
+      );
     }
     if (p.translated_dialogues > 0 || p.status === 'TRANSLATED') {
-      return <span className="tag-badge purple" style={{ fontSize: '10px' }}>ĐÃ DỊCH</span>;
+      return (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: '3px',
+          fontSize: '10px',
+          fontWeight: 700,
+          color: '#7c3aed',
+          background: '#f5f3ff',
+          border: '1px solid #ddd6fe',
+          padding: '1px 6px',
+          borderRadius: '10px',
+          lineHeight: 1.2
+        }}>
+          <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#8b5cf6' }} />
+          Đã Dịch
+        </span>
+      );
     }
-    return <span className="tag-badge amber" style={{ fontSize: '10px' }}>MỚI TẢI</span>;
+    return (
+      <span style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '3px',
+        fontSize: '10px',
+        fontWeight: 700,
+        color: '#d97706',
+        background: '#fffbeb',
+        border: '1px solid #fde68a',
+        padding: '1px 6px',
+        borderRadius: '10px',
+        lineHeight: 1.2
+      }}>
+        <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#f59e0b' }} />
+        Mới Tải
+      </span>
+    );
   };
 
   const formatDuration = (sec) => {
@@ -730,46 +856,6 @@ export default function MainStudioView({ onNavigateTab }) {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <div style={{ fontSize: '13.5px', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px', color: '#0f172a' }}>
                 <Film size={16} color="#2563eb" /> Khung Video & Phụ Đề
-                
-                {/* Mode Toggles when final video is available */}
-                {(selectedProject?.has_final || selectedProject?.status === 'COMPLETED') && (
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', marginLeft: '6px' }}>
-                    <button
-                      type="button"
-                      onClick={() => setVideoViewMode('final')}
-                      style={{
-                        padding: '3px 8px',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        background: videoViewMode === 'final' ? '#2563eb' : '#f1f5f9',
-                        color: videoViewMode === 'final' ? '#ffffff' : '#475569',
-                        border: '1px solid ' + (videoViewMode === 'final' ? '#2563eb' : '#cbd5e1')
-                      }}
-                      title="Xem video đã thuyết minh tiếng Việt và sub karaoke"
-                    >
-                      🎬 Thuyết Minh
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVideoViewMode('raw')}
-                      style={{
-                        padding: '3px 8px',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        background: videoViewMode === 'raw' ? '#475569' : '#f1f5f9',
-                        color: videoViewMode === 'raw' ? '#ffffff' : '#475569',
-                        border: '1px solid ' + (videoViewMode === 'raw' ? '#475569' : '#cbd5e1')
-                      }}
-                      title="Xem video tiếng Trung gốc"
-                    >
-                      📹 Gốc
-                    </button>
-                  </div>
-                )}
               </div>
 
               {/* Action Buttons: Open Folder, Reset, Delete */}
@@ -800,7 +886,7 @@ export default function MainStudioView({ onNavigateTab }) {
 
                   <button
                     type="button"
-                    onClick={(e) => handleResetProject(e, selectedProject.id, selectedProject.title)}
+                    onClick={(e) => handleResetTranslation(e, selectedProject.id, selectedProject.title)}
                     style={{
                       padding: '3px 8px',
                       fontSize: '11px',
@@ -814,9 +900,30 @@ export default function MainStudioView({ onNavigateTab }) {
                       alignItems: 'center',
                       gap: '3px'
                     }}
-                    title="Reset về tình trạng Đã Dịch (giữ video gốc & toàn bộ kịch bản/bản dịch, xóa file TTS và video render để làm lại)"
+                    title="Reset Bản Dịch: Xóa sạch bản dịch tiếng Việt, audio và video render để dịch lại mới tinh; giữ nguyên câu thoại gốc tiếng Trung ASR để không phải gửi CapCut STT lại"
                   >
-                    <RotateCcw size={11} /> Reset (Về Đã Dịch)
+                    <RotateCcw size={11} /> Reset Bản Dịch
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => handleResetDownloaded(e, selectedProject.id, selectedProject.title)}
+                    style={{
+                      padding: '3px 8px',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      background: '#fef2f2',
+                      color: '#b91c1c',
+                      border: '1.5px solid #ef4444',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '3px'
+                    }}
+                    title="Reset Về Mới Tải: Xóa sạch toàn bộ câu thoại, bản dịch, audio và video; chỉ giữ nguyên video thô vừa tải về"
+                  >
+                    <RefreshCw size={11} /> Reset Về Mới Tải
                   </button>
 
                   <button
@@ -843,330 +950,433 @@ export default function MainStudioView({ onNavigateTab }) {
               )}
             </div>
 
-            {/* Row 2: Subtitle Elevation & Cắt Sub 9:16 Controls */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap', background: '#f8fafc', padding: '6px 10px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
-              {/* CHỌN CHẾ ĐỘ: CÓ SUB HOẶC KHÔNG SUB (CỰC KỲ RÕ RÀNG, DỄ THẤY) */}
-              <div style={{ display: 'inline-flex', borderRadius: '5px', overflow: 'hidden', border: '1.5px solid #2563eb', boxShadow: '0 1px 4px rgba(37,99,235,0.15)' }}>
+            {/* Row 2: Bộ Điều Khiển Phụ Đề & Khung Hình (Grid 4 Cột Dàn Đều 100%, Nút Tĩnh Kích Thước) */}
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px',
+              background: '#f8fafc',
+              padding: '10px 14px',
+              borderRadius: '8px',
+              border: '1px solid #e2e8f0',
+              width: '100%',
+              boxSizing: 'border-box'
+            }}>
+              {/* HÀNG 1: CẤU HÌNH PHỤ ĐỀ (DÀN ĐỀU 4 CỘT) */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: '10px',
+                width: '100%',
+                alignItems: 'center'
+              }}>
+                {/* Cột 1: Cao Độ Sub */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: '#ffffff',
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #cbd5e1',
+                  height: '34px',
+                  boxSizing: 'border-box',
+                  opacity: noSub ? 0.4 : 1,
+                  pointerEvents: noSub ? 'none' : 'auto',
+                  transition: 'opacity 0.15s'
+                }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#334155', whiteSpace: 'nowrap' }}>Cao Độ Sub:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSubBottomOffset(prev => Math.max(0, prev - 1))}
+                    title="Hạ phụ đề xuống (Phím ↓)"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#f1f5f9',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#2563eb'
+                    }}
+                  >
+                    <ArrowDown size={13} />
+                  </button>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
+                    <input
+                      type="number"
+                      min="0"
+                      max="85"
+                      value={subBottomOffset}
+                      onChange={(e) => setSubBottomOffset(Math.max(0, Math.min(85, parseInt(e.target.value, 10) || 0)))}
+                      style={{
+                        width: '36px',
+                        height: '22px',
+                        border: '1.5px solid #2563eb',
+                        borderRadius: '4px',
+                        fontSize: '12px',
+                        fontWeight: 800,
+                        textAlign: 'center',
+                        color: '#0f172a'
+                      }}
+                      title="Nhập trực tiếp % khoảng cách từ đáy (0% - 85%)"
+                    />
+                    <span style={{ fontSize: '12px', fontWeight: 800, color: '#0f172a' }}>%</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSubBottomOffset(prev => Math.min(85, prev + 1))}
+                    title="Nâng phụ đề lên (Phím ↑)"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#f1f5f9',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#2563eb'
+                    }}
+                  >
+                    <ArrowUp size={13} />
+                  </button>
+                </div>
+
+                {/* Cột 2: Cỡ Chữ */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: '#ffffff',
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #cbd5e1',
+                  height: '34px',
+                  boxSizing: 'border-box',
+                  opacity: noSub ? 0.4 : 1,
+                  pointerEvents: noSub ? 'none' : 'auto',
+                  transition: 'opacity 0.15s'
+                }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#334155', whiteSpace: 'nowrap' }}>Cỡ Chữ:</span>
+                  <button
+                    type="button"
+                    onClick={() => setSubFontSize(prev => Math.max(9, prev - 1))}
+                    title="Giảm cỡ chữ"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#f1f5f9',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#2563eb'
+                    }}
+                  >
+                    <Minus size={13} />
+                  </button>
+                  <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0f172a', minWidth: '34px', textAlign: 'center' }}>
+                    {subFontSize}px
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSubFontSize(prev => Math.min(24, prev + 1))}
+                    title="Tăng cỡ chữ"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#f1f5f9',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#2563eb'
+                    }}
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
+
+                {/* Cột 3: Cao Nền */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: '#eff6ff',
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  border: '1.5px solid #2563eb',
+                  height: '34px',
+                  boxSizing: 'border-box',
+                  opacity: noSub ? 0.4 : 1,
+                  pointerEvents: noSub ? 'none' : 'auto',
+                  transition: 'opacity 0.15s'
+                }}>
+                  <span style={{ fontSize: '12px', fontWeight: 800, color: '#1e40af', whiteSpace: 'nowrap' }}>Cao Nền:</span>
+                  <button
+                    type="button"
+                    onClick={() => setBlurHeight(prev => Math.max(8, prev - 1))}
+                    title="Giảm chiều cao dải mờ che chữ"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#ffffff',
+                      border: '1px solid #93c5fd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#1d4ed8'
+                    }}
+                  >
+                    <Minus size={13} />
+                  </button>
+                  <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#1d4ed8', minWidth: '34px', textAlign: 'center' }}>
+                    {blurHeight}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setBlurHeight(prev => Math.min(30, prev + 1))}
+                    title="Tăng chiều cao dải mờ che chữ"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#ffffff',
+                      border: '1px solid #93c5fd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#1d4ed8'
+                    }}
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
+
+                {/* Cột 4 (BÊN PHẢI CÙNG): Nút Toggle Có Sub ⇄ Không Sub (Kích Thước Tĩnh 100%, Căn Giữa) */}
                 <button
                   type="button"
-                  onClick={() => setNoSub(false)}
+                  onClick={() => setNoSub(prev => !prev)}
                   style={{
-                    padding: '4px 10px',
-                    fontSize: '11px',
+                    width: '100%',
+                    height: '34px',
+                    fontSize: '12.5px',
                     fontWeight: 800,
+                    borderRadius: '6px',
                     cursor: 'pointer',
-                    border: 'none',
-                    background: !noSub ? '#2563eb' : '#ffffff',
-                    color: !noSub ? '#ffffff' : '#475569',
+                    border: !noSub ? '1.5px solid #2563eb' : '1.5px solid #d97706',
+                    background: !noSub ? '#2563eb' : '#fffbeb',
+                    color: !noSub ? '#ffffff' : '#b45309',
+                    boxShadow: !noSub ? '0 1px 4px rgba(37,99,235,0.25)' : 'none',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '4px',
-                    transition: 'all 0.15s'
+                    justifyContent: 'center',
+                    gap: '6px',
+                    transition: 'all 0.15s ease',
+                    boxSizing: 'border-box'
                   }}
-                  title="Bật phụ đề Karaoke & dải nền mờ che chữ tiếng Trung"
+                  title={!noSub ? "Đang BẬT phụ đề (Nhấn để chuyển sang Không Sub)" : "Đang TẮT phụ đề (Nhấn để Bật phụ đề)"}
                 >
-                  <span>💬</span>
-                  <span>Có Sub</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setNoSub(true)}
-                  style={{
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    border: 'none',
-                    borderLeft: '1px solid #2563eb',
-                    background: noSub ? '#d97706' : '#ffffff',
-                    color: noSub ? '#ffffff' : '#b45309',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    transition: 'all 0.15s'
-                  }}
-                  title="Chế độ Không Sub: Bỏ qua phụ đề & dải mờ, chỉ Crop video & lồng tiếng (tiết kiệm thời gian render)"
-                >
-                  <span>⚡</span>
-                  <span>Không Sub</span>
+                  <span>{!noSub ? '💬 Có Sub' : '⚡ Không Sub'}</span>
                 </button>
               </div>
 
-              {/* Subtitle Elevation & Font Controls (Chỉ hiện khi Có Sub) */}
-              {!noSub && (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cao Độ Sub:</span>
-                    <button
-                      type="button"
-                      onClick={() => setSubBottomOffset(prev => Math.min(85, prev + 1))}
-                      title="Nâng phụ đề lên (Phím ↑)"
-                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                    >
-                      <ArrowUp size={11} color="#2563eb" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSubBottomOffset(prev => Math.max(0, prev - 1))}
-                      title="Hạ phụ đề xuống (Phím ↓)"
-                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                    >
-                      <ArrowDown size={11} color="#2563eb" />
-                    </button>
-                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px' }}>
-                      <input
-                        type="number"
-                        min="0"
-                        max="85"
-                        value={subBottomOffset}
-                        onChange={(e) => setSubBottomOffset(Math.max(0, Math.min(85, parseInt(e.target.value, 10) || 0)))}
-                        style={{ width: '40px', padding: '1px 3px', border: '1.5px solid #2563eb', borderRadius: '4px', fontSize: '11px', fontWeight: 800, textAlign: 'center', color: '#0f172a' }}
-                        title="Nhập trực tiếp % khoảng cách từ đáy (0% - 85%)"
-                      />
-                      <span style={{ fontSize: '11px', fontWeight: 800, color: '#0f172a' }}>%</span>
-                    </div>
-
-                    {/* Quick Presets */}
-                    <div style={{ display: 'inline-flex', gap: '2px', marginLeft: '2px' }}>
-                      {[5, 8, 12, 16, 20].map(p => (
-                        <button
-                          key={p}
-                          type="button"
-                          onClick={() => setSubBottomOffset(p)}
-                          style={{
-                            fontSize: '9.5px',
-                            fontWeight: 700,
-                            padding: '1px 4px',
-                            borderRadius: '3px',
-                            border: '1px solid',
-                            borderColor: subBottomOffset === p ? '#2563eb' : '#cbd5e1',
-                            background: subBottomOffset === p ? '#2563eb' : '#ffffff',
-                            color: subBottomOffset === p ? '#ffffff' : '#475569',
-                            cursor: 'pointer'
-                          }}
-                          title={`Đặt nhanh cao độ ${p}%`}
-                        >
-                          {p}%
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Cỡ Chữ Phụ Đề */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#334155' }}>Cỡ Chữ:</span>
-                    <button
-                      type="button"
-                      onClick={() => setSubFontSize(prev => Math.max(9, prev - 1))}
-                      title="Giảm cỡ chữ"
-                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                    >
-                      <Minus size={11} color="#2563eb" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSubFontSize(prev => Math.min(24, prev + 1))}
-                      title="Tăng cỡ chữ"
-                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                    >
-                      <Plus size={11} color="#2563eb" />
-                    </button>
-                    <span style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 800, color: '#0f172a', minWidth: '30px', textAlign: 'center' }}>
-                      {subFontSize}px
-                    </span>
-                  </div>
-
-                  {/* Chiều Cao Vùng Mờ Sub (Cao Nền) */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '2px 8px', borderRadius: '5px', border: '1.5px solid #2563eb' }}>
-                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af' }}>Cao Nền:</span>
-                    <button
-                      type="button"
-                      onClick={() => setBlurHeight(prev => Math.max(8, prev - 1))}
-                      title="Giảm chiều cao dải mờ che chữ"
-                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                    >
-                      <Minus size={11} color="#2563eb" />
-                    </button>
-                    <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#1d4ed8', minWidth: '32px', textAlign: 'center' }}>
-                      {blurHeight}%
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setBlurHeight(prev => Math.min(30, prev + 1))}
-                      title="Tăng chiều cao dải mờ che chữ"
-                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 5px', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                    >
-                      <Plus size={11} color="#2563eb" />
-                    </button>
-                  </div>
-                </>
-              )}
-
-              {/* Cắt Sub & Chuẩn Tỷ Lệ YouTube Controls */}
-              {hasMask ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                  {/* Selector Tỷ lệ Chuẩn */}
-                  <div style={{ display: 'inline-flex', borderRadius: '4px', overflow: 'hidden', border: '1.5px solid #2563eb' }}>
-                    <button
-                      type="button"
-                      onClick={() => setCropRatio('16:9')}
-                      style={{
-                        padding: '3px 8px',
-                        fontSize: '11px',
-                        fontWeight: 800,
-                        border: 'none',
-                        cursor: 'pointer',
-                        background: cropRatio === '16:9' ? '#2563eb' : '#ffffff',
-                        color: cropRatio === '16:9' ? '#ffffff' : '#2563eb'
-                      }}
-                      title="Tỷ lệ 16:9 YouTube Chuẩn"
-                    >
-                      🎬 16:9 YouTube Chuẩn
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCropRatio('9:16')}
-                      style={{
-                        padding: '3px 8px',
-                        fontSize: '11px',
-                        fontWeight: 800,
-                        border: 'none',
-                        borderLeft: '1px solid #2563eb',
-                        cursor: 'pointer',
-                        background: cropRatio === '9:16' ? '#2563eb' : '#ffffff',
-                        color: cropRatio === '9:16' ? '#ffffff' : '#2563eb'
-                      }}
-                      title="Tỷ lệ 9:16 Dọc dành cho YouTube Shorts / TikTok"
-                    >
-                      📱 9:16 Shorts
-                    </button>
-                  </div>
-
-                  {/* Độ cao cắt mép trên */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '3px 8px', borderRadius: '5px', border: '1px solid #93c5fd' }}>
-                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                      ✂ Cắt Trên:
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setTopCutPercent(prev => Math.max(0, prev - 1))}
-                      title="Giảm độ cao cắt trên"
-                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
-                    >
-                      -
-                    </button>
-                    <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#2563eb', minWidth: '28px', textAlign: 'center' }}>
-                      {topCutPercent}%
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setTopCutPercent(prev => Math.min(30, prev + 1))}
-                      title="Tăng độ cao cắt trên"
-                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
-                    >
-                      +
-                    </button>
-
-                    <input
-                      type="range"
-                      min={0}
-                      max={30}
-                      value={topCutPercent}
-                      onChange={(e) => setTopCutPercent(parseInt(e.target.value, 10) || 0)}
-                      title="Kéo chọn % chiều cao cắt trên đỉnh"
-                      style={{ width: '55px', height: '4px', accentColor: '#2563eb', cursor: 'pointer' }}
-                    />
-                  </div>
-
-                  {/* Độ cao cắt sub đáy */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#eff6ff', padding: '3px 8px', borderRadius: '5px', border: '1px solid #93c5fd' }}>
-                    <span style={{ fontSize: '11px', fontWeight: 800, color: '#1e40af', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                      ✂ Cắt Đáy:
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setMaskHeight(prev => Math.max(1, prev - 1))}
-                      title="Giảm độ cao cắt sub"
-                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
-                    >
-                      -
-                    </button>
-                    <span style={{ fontSize: '11.5px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#2563eb', minWidth: '28px', textAlign: 'center' }}>
-                      {maskHeight}%
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setMaskHeight(prev => Math.min(35, prev + 1))}
-                      title="Tăng độ cao cắt sub"
-                      style={{ background: '#ffffff', border: '1px solid #93c5fd', borderRadius: '3px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px', fontWeight: 800, color: '#1e40af' }}
-                    >
-                      +
-                    </button>
-
-                    <input
-                      type="range"
-                      min={1}
-                      max={30}
-                      value={maskHeight}
-                      onChange={(e) => setMaskHeight(parseInt(e.target.value, 10))}
-                      title="Kéo chọn % chiều cao cắt sub đáy"
-                      style={{ width: '55px', height: '4px', accentColor: '#2563eb', cursor: 'pointer' }}
-                    />
-                  </div>
-
-                  {/* Preset Buttons */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
-                    {[
-                      { label: '5%', val: 5 },
-                      { label: '8% (Nhẹ)', val: 8 },
-                      { label: '12% (Chuẩn)', val: 12 },
-                      { label: '16%', val: 16 }
-                    ].map(p => (
-                      <button
-                        key={p.val}
-                        type="button"
-                        onClick={() => setMaskHeight(p.val)}
-                        style={{
-                          fontSize: '10px',
-                          fontWeight: 700,
-                          padding: '2px 5px',
-                          borderRadius: '3px',
-                          border: '1px solid',
-                          borderColor: maskHeight === p.val ? '#0284c7' : '#cbd5e1',
-                          background: maskHeight === p.val ? '#0284c7' : '#ffffff',
-                          color: maskHeight === p.val ? '#ffffff' : '#475569',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-
+              {/* HÀNG 2: CẮT KHUNG HÌNH, TỶ LỆ & XEM/LÀM (DÀN ĐỀU 4 CỘT) */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: '10px',
+                width: '100%',
+                alignItems: 'center',
+                paddingTop: '6px',
+                borderTop: '1px dashed #cbd5e1'
+              }}>
+                {/* Cột 1: Cắt Mép Trên */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: '#eff6ff',
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #93c5fd',
+                  height: '34px',
+                  boxSizing: 'border-box'
+                }}>
+                  <span style={{ fontSize: '12px', fontWeight: 800, color: '#1e40af', whiteSpace: 'nowrap' }}>✂ Cắt Trên:</span>
                   <button
                     type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => setHasMask(false)}
-                    title="Tắt cắt sub & dải mờ"
-                    style={{ fontSize: '10.5px', padding: '2px 6px', color: '#64748b' }}
+                    onClick={() => setTopCutPercent(prev => Math.max(0, prev - 1))}
+                    title="Giảm độ cao cắt trên (về 0% là không cắt)"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#ffffff',
+                      border: '1px solid #93c5fd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#1e40af',
+                      fontWeight: 800
+                    }}
                   >
-                    Tắt Cắt
+                    <Minus size={13} />
+                  </button>
+                  <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#2563eb', minWidth: '32px', textAlign: 'center' }}>
+                    {topCutPercent}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setTopCutPercent(prev => Math.min(30, prev + 1))}
+                    title="Tăng độ cao cắt trên"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#ffffff',
+                      border: '1px solid #93c5fd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#1e40af',
+                      fontWeight: 800
+                    }}
+                  >
+                    <Plus size={13} />
                   </button>
                 </div>
-              ) : (
+
+                {/* Cột 2: Cắt Mép Đáy */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  background: '#eff6ff',
+                  padding: '4px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid #93c5fd',
+                  height: '34px',
+                  boxSizing: 'border-box'
+                }}>
+                  <span style={{ fontSize: '12px', fontWeight: 800, color: '#1e40af', whiteSpace: 'nowrap' }}>✂ Cắt Đáy:</span>
+                  <button
+                    type="button"
+                    onClick={() => setMaskHeight(prev => Math.max(0, prev - 1))}
+                    title="Giảm độ cao cắt sub đáy (về 0% là không cắt)"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#ffffff',
+                      border: '1px solid #93c5fd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#1e40af',
+                      fontWeight: 800
+                    }}
+                  >
+                    <Minus size={13} />
+                  </button>
+                  <span style={{ fontSize: '12px', fontFamily: 'var(--font-mono)', fontWeight: 900, color: '#2563eb', minWidth: '32px', textAlign: 'center' }}>
+                    {maskHeight}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setMaskHeight(prev => Math.min(35, prev + 1))}
+                    title="Tăng độ cao cắt sub đáy"
+                    style={{
+                      width: '24px',
+                      height: '24px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: '#ffffff',
+                      border: '1px solid #93c5fd',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      color: '#1e40af',
+                      fontWeight: 800
+                    }}
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
+
+                {/* Cột 3: Nút Toggle Tỷ Lệ 16:9 ⇄ 9:16 (Kích Thước Tĩnh 100%, Căn Giữa) */}
                 <button
                   type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => {
-                    setHasMask(true);
-                    setMaskHeight(8);
-                    setCropRatio('16:9');
+                  onClick={() => setCropRatio(prev => prev === '16:9' ? '9:16' : '16:9')}
+                  style={{
+                    width: '100%',
+                    height: '34px',
+                    fontSize: '12.5px',
+                    fontWeight: 800,
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    border: cropRatio === '16:9' ? '1.5px solid #0284c7' : '1.5px solid #7c3aed',
+                    background: cropRatio === '16:9' ? '#f0f9ff' : '#f5f3ff',
+                    color: cropRatio === '16:9' ? '#0369a1' : '#6d28d9',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    transition: 'all 0.15s ease',
+                    boxSizing: 'border-box'
                   }}
-                  style={{ fontSize: '11px', padding: '3px 10px', background: '#0284c7', color: '#ffffff', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
+                  title={cropRatio === '16:9' ? "Tỷ lệ 16:9 Ngang YouTube (Nhấn để đổi sang 9:16 Dọc Shorts/TikTok)" : "Tỷ lệ 9:16 Dọc Shorts/TikTok (Nhấn để đổi sang 16:9 Ngang)"}
                 >
-                  <Plus size={11} /> + Bật Cắt Sub 16:9 YouTube
+                  <span>{cropRatio === '16:9' ? '📺 16:9 YouTube' : '📱 9:16 Shorts'}</span>
                 </button>
-              )}
+
+                {/* Cột 4 (BÊN PHẢI CÙNG): Nút Toggle Xem Phim ⇄ Làm Video (Kích Thước Tĩnh 100%, Căn Giữa) */}
+                <button
+                  type="button"
+                  onClick={() => setVideoViewMode(prev => prev === 'final' ? 'raw' : 'final')}
+                  style={{
+                    width: '100%',
+                    height: '34px',
+                    fontSize: '12.5px',
+                    fontWeight: 800,
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    border: videoViewMode === 'final' ? '1.5px solid #10b981' : '1.5px solid #64748b',
+                    background: videoViewMode === 'final' ? '#10b981' : '#f1f5f9',
+                    color: videoViewMode === 'final' ? '#ffffff' : '#334155',
+                    boxShadow: videoViewMode === 'final' ? '0 1px 4px rgba(16,185,129,0.3)' : 'none',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    transition: 'all 0.15s ease',
+                    boxSizing: 'border-box'
+                  }}
+                  title={videoViewMode === 'final' ? "Đang ở chế độ Xem Thuyết Minh hoàn thiện (Nhấn để chuyển sang Căn Chỉnh Làm Video)" : "Đang ở chế độ Căn Chỉnh Làm Video (Nhấn để chuyển sang Xem Thuyết Minh)"}
+                >
+                  <span>{videoViewMode === 'final' ? '🎬 Xem Thuyết Minh' : '🛠️ Làm Video (Căn Chỉnh)'}</span>
+                </button>
+              </div>
             </div>
 
             {/* VIDEO CANVAS (CHUẨN TỈ LỆ VIDEO - FULL WIDTH KHÔNG VIỀN ĐEN, KHÔNG LỆCH TỌA ĐỘ) */}
@@ -1187,14 +1397,14 @@ export default function MainStudioView({ onNavigateTab }) {
                 alignItems: 'center',
                 justifyContent: 'center',
                 userSelect: 'none',
-                cursor: interactionMode === 'crop-bottom' ? 'ns-resize' : 'default',
+                cursor: videoViewMode === 'raw' && interactionMode === 'crop-bottom' ? 'ns-resize' : 'default',
                 boxShadow: '0 2px 10px rgba(0, 0, 0, 0.25)'
               }}
             >
               {selectedProject ? (
                 <video
                   ref={videoRef}
-                  key={`${selectedProject.id}_${videoViewMode}`}
+                  key={`${selectedProject.id}_${videoViewMode}_${videoTimestamp}`}
                   preload="metadata"
                   playsInline
                   onTimeUpdate={handleTimeUpdate}
@@ -1202,7 +1412,7 @@ export default function MainStudioView({ onNavigateTab }) {
                   onEnded={() => setIsPlaying(false)}
                   onClick={togglePlayPause}
                   style={{ width: '100%', height: '100%', objectFit: 'fill', display: 'block', cursor: 'pointer' }}
-                  src={`/api/v1/projects/${selectedProject.id}/video?type=${videoViewMode}`}
+                  src={`/api/v1/projects/${selectedProject.id}/video?type=${videoViewMode}&_t=${videoTimestamp}`}
                 />
               ) : (
                 <div style={{ color: 'var(--text-dim)', textAlign: 'center', pointerEvents: 'none' }}>
@@ -1211,8 +1421,8 @@ export default function MainStudioView({ onNavigateTab }) {
                 </div>
               )}
 
-              {/* CẮT SUB & TỰ ĐỘNG CÂN TỶ LỆ CHUẨN YOUTUBE PREVIEW OVERLAYS */}
-              {hasMask && (
+              {/* CẮT SUB & TỰ ĐỘNG CÂN TỶ LỆ CHUẨN YOUTUBE PREVIEW OVERLAYS (Chỉ hiện khi căn chỉnh video gốc) */}
+              {(videoViewMode === 'raw') && (
                 <>
                   {/* 1. LỚP PHỦ CẮT DỌC MÉP TRÁI */}
                   {targetLeft > 0.4 && (
@@ -1264,97 +1474,103 @@ export default function MainStudioView({ onNavigateTab }) {
 
                   {/* 2.5 VÙNG CẮT MÉP TRÊN (ĐỎ CẢNH BÁO) */}
                   {topCutPercent > 0 && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        height: `${topCutPercent}%`,
-                        left: 0,
-                        right: 0,
-                        background: 'rgba(239, 68, 68, 0.32)',
-                        borderBottom: '2px dashed #ef4444',
-                        pointerEvents: 'none',
-                        zIndex: 20,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center'
-                      }}
-                    >
-                      <span style={{
-                        fontSize: '11px',
-                        fontWeight: 800,
-                        color: '#ffffff',
-                        background: 'rgba(185, 28, 28, 0.88)',
-                        padding: '2px 8px',
-                        borderRadius: '4px',
-                        boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
-                        letterSpacing: '0.3px'
-                      }}>
-                        ✂ VÙNG CẮT MÉP TRÊN (-{topCutPercent}%)
-                      </span>
-                    </div>
+                    <>
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          height: `${topCutPercent}%`,
+                          left: 0,
+                          right: 0,
+                          background: 'rgba(239, 68, 68, 0.32)',
+                          borderBottom: '2px dashed #ef4444',
+                          pointerEvents: 'none',
+                          zIndex: 20,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          color: '#ffffff',
+                          background: 'rgba(185, 28, 28, 0.88)',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+                          letterSpacing: '0.3px'
+                        }}>
+                          ✂ VÙNG CẮT MÉP TRÊN (-{topCutPercent}%)
+                        </span>
+                      </div>
+
+                      {/* THANH KÉO ĐỘ CAO CẮT MÉP TRÊN */}
+                      <div
+                        onMouseDown={(e) => handleMouseDown(e, 'crop-top')}
+                        style={{
+                          position: 'absolute',
+                          top: `calc(${topCutPercent}% - 8px)`,
+                          left: 0,
+                          right: 0,
+                          height: '16px',
+                          cursor: 'ns-resize',
+                          zIndex: 35
+                        }}
+                        title="Kéo mép này lên/xuống để chọn độ cao cắt mép trên"
+                      />
+                    </>
                   )}
 
-                  {/* THANH KÉO ĐỘ CAO CẮT MÉP TRÊN */}
-                  <div
-                    onMouseDown={(e) => handleMouseDown(e, 'crop-top')}
-                    style={{
-                      position: 'absolute',
-                      top: `calc(${topCutPercent}% - 8px)`,
-                      left: 0,
-                      right: 0,
-                      height: '16px',
-                      cursor: 'ns-resize',
-                      zIndex: 35
-                    }}
-                    title="Kéo mép này lên/xuống để chọn độ cao cắt mép trên"
-                  />
-
                   {/* 3. VÙNG CẮT SUB Ở MÉP ĐÁY (ĐỎ CẢNH BÁO) */}
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: `calc(100% - ${maskHeight}%)`,
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      background: 'rgba(239, 68, 68, 0.32)',
-                      borderTop: '2px dashed #ef4444',
-                      pointerEvents: 'none',
-                      zIndex: 20,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center'
-                    }}
-                  >
-                    <span style={{
-                      fontSize: '11px',
-                      fontWeight: 800,
-                      color: '#ffffff',
-                      background: 'rgba(185, 28, 28, 0.88)',
-                      padding: '2px 8px',
-                      borderRadius: '4px',
-                      boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
-                      letterSpacing: '0.3px'
-                    }}>
-                      ✂ VÙNG CẮT BỎ SUB TRUNG GỐC (-{maskHeight}%)
-                    </span>
-                  </div>
+                  {maskHeight > 0 && (
+                    <>
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: `calc(100% - ${maskHeight}%)`,
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          background: 'rgba(239, 68, 68, 0.32)',
+                          borderTop: '2px dashed #ef4444',
+                          pointerEvents: 'none',
+                          zIndex: 20,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                      >
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          color: '#ffffff',
+                          background: 'rgba(185, 28, 28, 0.88)',
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+                          letterSpacing: '0.3px'
+                        }}>
+                          ✂ VÙNG CẮT BỎ SUB TRUNG GỐC (-{maskHeight}%)
+                        </span>
+                      </div>
 
-                  {/* 4. THANH KÉO ĐỘ CAO CẮT SUB ĐÁY */}
-                  <div
-                    onMouseDown={(e) => handleMouseDown(e, 'crop-bottom')}
-                    style={{
-                      position: 'absolute',
-                      top: `calc(100% - ${maskHeight}% - 8px)`,
-                      left: 0,
-                      right: 0,
-                      height: '16px',
-                      cursor: 'ns-resize',
-                      zIndex: 35
-                    }}
-                    title="Kéo mép này lên/xuống để chọn độ cao cắt sub đáy"
-                  />
+                      {/* 4. THANH KÉO ĐỘ CAO CẮT SUB ĐÁY */}
+                      <div
+                        onMouseDown={(e) => handleMouseDown(e, 'crop-bottom')}
+                        style={{
+                          position: 'absolute',
+                          top: `calc(100% - ${maskHeight}% - 8px)`,
+                          left: 0,
+                          right: 0,
+                          height: '16px',
+                          cursor: 'ns-resize',
+                          zIndex: 35
+                        }}
+                        title="Kéo mép này lên/xuống để chọn độ cao cắt sub đáy"
+                      />
+                    </>
+                  )}
 
                   {/* 5. KHUNG THÀNH PHẨM YOUTUBE / SHORTS */}
                   <div
@@ -1392,8 +1608,8 @@ export default function MainStudioView({ onNavigateTab }) {
                 </>
               )}
 
-              {/* DYNAMIC SUBTITLE PREVIEW (CHỈ HIỆN KHI CÓ SUB, ẨN KHI BẬT KHÔNG SUB) */}
-              {!noSub && (
+              {/* DYNAMIC SUBTITLE PREVIEW (Chỉ hiện khi ở tab Video Gốc để căn chỉnh phụ đề) */}
+              {(!noSub && videoViewMode === 'raw') && (
                 hasMask ? (
                   /* 1. Nền mờ ôm vừa đủ độ rộng sub — CSS max-content, canh giữa */
                   <div
@@ -1483,13 +1699,39 @@ export default function MainStudioView({ onNavigateTab }) {
               padding: '5px 10px',
               display: 'flex',
               alignItems: 'center',
-              gap: '10px'
+              gap: '8px'
             }}>
+              {/* Nút Tua Lùi 10s */}
               <button
-                onClick={togglePlayPause}
+                type="button"
+                onClick={() => handleSkip(-10)}
+                title="Tua lùi 10 giây (Phím ← hoặc J)"
                 style={{
                   width: '26px',
                   height: '26px',
+                  borderRadius: '50%',
+                  background: '#ffffff',
+                  border: '1px solid #cbd5e1',
+                  color: '#334155',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  transition: 'all 0.15s'
+                }}
+              >
+                <RotateCcw size={12} />
+              </button>
+
+              {/* Nút Play / Pause */}
+              <button
+                type="button"
+                onClick={togglePlayPause}
+                title="Phát / Tạm dừng (Phím Space hoặc K)"
+                style={{
+                  width: '28px',
+                  height: '28px',
                   borderRadius: '50%',
                   background: '#2563eb',
                   border: 'none',
@@ -1501,7 +1743,30 @@ export default function MainStudioView({ onNavigateTab }) {
                   flexShrink: 0
                 }}
               >
-                {isPlaying ? <Pause size={12} /> : <Play size={12} style={{ marginLeft: '1px' }} />}
+                {isPlaying ? <Pause size={13} /> : <Play size={13} style={{ marginLeft: '1px' }} />}
+              </button>
+
+              {/* Nút Tua Tới 10s */}
+              <button
+                type="button"
+                onClick={() => handleSkip(10)}
+                title="Tua tới 10 giây (Phím → hoặc L)"
+                style={{
+                  width: '26px',
+                  height: '26px',
+                  borderRadius: '50%',
+                  background: '#ffffff',
+                  border: '1px solid #cbd5e1',
+                  color: '#334155',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  transition: 'all 0.15s'
+                }}
+              >
+                <RotateCw size={12} />
               </button>
 
               <div style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 700, color: '#334155', whiteSpace: 'nowrap' }}>
@@ -1680,26 +1945,51 @@ export default function MainStudioView({ onNavigateTab }) {
                 <label style={{ fontSize: '12.5px', color: '#0369a1', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: '5px' }}>
                   <LinkIcon size={14} /> Dán Link Video Mới (Bilibili / YouTube / Douyin):
                 </label>
-                <button
-                  type="button"
-                  onClick={handlePasteFromClipboard}
-                  title="Dán nhanh từ Clipboard"
-                  style={{
-                    padding: '2px 8px',
-                    background: '#e0f2fe',
-                    border: '1px solid #7dd3fc',
-                    borderRadius: '4px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    color: '#0369a1',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px'
-                  }}
-                >
-                  <Clipboard size={11} /> Dán Link
-                </button>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  {selectedProject?.source_url && (
+                    <a
+                      href={selectedProject.source_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={`Mở link gốc của Video #${selectedProject.id}: ${selectedProject.source_url}`}
+                      style={{
+                        padding: '2px 8px',
+                        background: '#eff6ff',
+                        border: '1px solid #bfdbfe',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        color: '#1d4ed8',
+                        textDecoration: 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <ExternalLink size={11} /> Link gốc #{selectedProject.id}
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handlePasteFromClipboard}
+                    title="Dán nhanh từ Clipboard"
+                    style={{
+                      padding: '2px 8px',
+                      background: '#e0f2fe',
+                      border: '1px solid #7dd3fc',
+                      borderRadius: '4px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      color: '#0369a1',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px'
+                    }}
+                  >
+                    <Clipboard size={11} /> Dán Link
+                  </button>
+                </div>
               </div>
 
               {/* Ô nhập link full width rộng rãi */}
@@ -1952,98 +2242,197 @@ export default function MainStudioView({ onNavigateTab }) {
                         }
                       }}
                       style={{
-                        padding: '8px 12px',
+                        padding: '8px 10px',
                         background: isSelected ? '#eff6ff' : '#f8fafc',
                         border: isSelected ? '1.5px solid #2563eb' : (activeT ? '1.5px solid #10b981' : '1px solid #e2e8f0'),
                         borderRadius: '8px',
                         cursor: 'pointer',
                         display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: '8px',
+                        flexDirection: 'column',
+                        gap: '6px',
                         transition: 'all 0.15s ease'
                       }}
                       onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#edf2f7'; }}
                       onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = '#f8fafc'; }}
                     >
-                      <div style={{ flex: 1, minWidth: 0 }}>
+                      {/* Hàng 1: Tiêu đề video + Cụm Action Icon vuông mini */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
                         <div style={{
+                          flex: 1,
+                          minWidth: 0,
                           fontSize: '12px',
                           fontWeight: isSelected ? 800 : 700,
-                          color: isSelected ? '#2563eb' : '#0f172a',
+                          color: isSelected ? '#1d4ed8' : '#0f172a',
                           whiteSpace: 'nowrap',
                           overflow: 'hidden',
                           textOverflow: 'ellipsis'
-                        }}>
+                        }} title={`#${p.id} - ${p.title}`}>
                           #{p.id} - {p.title}
                         </div>
-                        <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
-                          <span>⏱ {formatDuration(p.duration)}</span>
-                          <span>💬 {p.total_dialogues} câu</span>
+
+                        {/* Cụm Action Icon vuông mini (22x22px) */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                          {/* Nút Link gốc */}
+                          {p.source_url && (
+                            <a
+                              href={p.source_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                width: '22px',
+                                height: '22px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                justifySelf: 'center',
+                                justifyContent: 'center',
+                                borderRadius: '4px',
+                                background: '#e0f2fe',
+                                color: '#0284c7',
+                                border: '1px solid #bae6fd',
+                                textDecoration: 'none',
+                                transition: 'all 0.15s ease'
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = '#bae6fd'; e.currentTarget.style.color = '#0369a1'; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = '#e0f2fe'; e.currentTarget.style.color = '#0284c7'; }}
+                              title={`🔗 Mở link gốc trong tab mới: ${p.source_url}`}
+                            >
+                              <ExternalLink size={11} />
+                            </a>
+                          )}
+
+                          {/* Nút Reset Dịch */}
+                          <button
+                            type="button"
+                            onClick={(e) => handleResetTranslation(e, p.id, p.title)}
+                            style={{
+                              width: '22px',
+                              height: '22px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              background: '#fffbeb',
+                              border: '1px solid #fcd34d',
+                              color: '#d97706',
+                              cursor: 'pointer',
+                              padding: 0,
+                              transition: 'all 0.15s ease'
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = '#fef3c7'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = '#fffbeb'; }}
+                            title="Reset Bản Dịch (giữ video gốc & câu thoại Trung ASR, xóa bản dịch/audio/video render để làm lại)"
+                          >
+                            <RotateCcw size={11} />
+                          </button>
+
+                          {/* Nút Reset Mới Tải */}
+                          <button
+                            type="button"
+                            onClick={(e) => handleResetDownloaded(e, p.id, p.title)}
+                            style={{
+                              width: '22px',
+                              height: '22px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              background: '#fef2f2',
+                              border: '1px solid #fca5a5',
+                              color: '#b91c1c',
+                              cursor: 'pointer',
+                              padding: 0,
+                              transition: 'all 0.15s ease'
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = '#fee2e2'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = '#fef2f2'; }}
+                            title="Reset Về Mới Tải (xóa sạch toàn bộ câu thoại/bản dịch/audio/video render, chỉ giữ video gốc)"
+                          >
+                            <RefreshCw size={11} />
+                          </button>
+
+                          {/* Nút Xóa */}
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteProject(e, p.id, p.title)}
+                            style={{
+                              width: '22px',
+                              height: '22px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: '4px',
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#94a3b8',
+                              cursor: 'pointer',
+                              padding: 0,
+                              transition: 'all 0.15s ease'
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.background = '#fee2e2'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.background = 'transparent'; }}
+                            title="Xóa vĩnh viễn video này và toàn bộ dữ liệu/file liên quan"
+                          >
+                            <Trash2 size={12} />
+                          </button>
                         </div>
                       </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-                        {activeT ? (
-                          <span style={{
-                            background: '#dcfce7',
-                            color: '#15803d',
-                            border: '1px solid #86efac',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            fontSize: '10.5px',
-                            fontWeight: 800,
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '3px',
-                            animation: 'pulse 1.5s infinite'
-                          }} title={`Đang chạy: ${activeT.last_log || 'Đang xử lý...'}`}>
-                            ⚡ {activeT.progress || 0}%
+                      {/* Hàng 2: Metadata + Badge trạng thái mini + Trường Link gốc */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', fontSize: '11px', color: '#64748b' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap', overflow: 'hidden' }}>
+                          {activeT ? (
+                            <span style={{
+                              background: '#dcfce7',
+                              color: '#15803d',
+                              border: '1px solid #86efac',
+                              padding: '1px 6px',
+                              borderRadius: '10px',
+                              fontSize: '10px',
+                              fontWeight: 800,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                              animation: 'pulse 1.5s infinite'
+                            }} title={`Đang chạy: ${activeT.last_log || 'Đang xử lý...'}`}>
+                              ⚡ {activeT.progress || 0}%
+                            </span>
+                          ) : getStatusBadge(p)}
+                          <span>⏱ {formatDuration(p.duration)}</span>
+                          <span>💬 {p.total_dialogues} câu</span>
+                        </div>
+
+                        {/* Trường hiển thị Link gốc rút gọn */}
+                        {p.source_url ? (
+                          <a
+                            href={p.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              fontSize: '10.5px',
+                              color: '#0284c7',
+                              textDecoration: 'none',
+                              maxWidth: '130px',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '2px',
+                              flexShrink: 0
+                            }}
+                            title={`Link gốc: ${p.source_url} (Bấm để mở trang)`}
+                            onMouseEnter={(e) => { e.currentTarget.style.textDecoration = 'underline'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.textDecoration = 'none'; }}
+                          >
+                            🔗 {p.source_url.replace(/^https?:\/\/(www\.)?/, '').split('?')[0]}
+                          </a>
+                        ) : (
+                          <span style={{ fontSize: '10px', color: '#94a3b8', fontStyle: 'italic' }}>
+                            (File cục bộ)
                           </span>
-                        ) : getStatusBadge(p)}
-                        <button
-                          type="button"
-                          onClick={(e) => handleResetProject(e, p.id, p.title)}
-                          style={{
-                            background: '#fffbeb',
-                            border: '1px solid #fcd34d',
-                            padding: '3px 6px',
-                            cursor: 'pointer',
-                            color: '#d97706',
-                            borderRadius: '4px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '3px',
-                            fontSize: '10.5px',
-                            fontWeight: 700,
-                            transition: 'all 0.15s ease'
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = '#fef3c7'; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = '#fffbeb'; }}
-                          title="Reset về tình trạng Đã Dịch (giữ video gốc & toàn bộ kịch bản/bản dịch, xóa file TTS và video render để làm lại)"
-                        >
-                          <RotateCcw size={11} /> Reset
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleDeleteProject(e, p.id, p.title)}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            padding: '4px',
-                            cursor: 'pointer',
-                            color: '#94a3b8',
-                            borderRadius: '4px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            transition: 'all 0.15s ease'
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.background = '#fee2e2'; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.background = 'none'; }}
-                          title="Xóa vĩnh viễn video này và toàn bộ dữ liệu/file liên quan"
-                        >
-                          <Trash2 size={13} />
-                        </button>
+                        )}
                       </div>
                     </div>
                   );

@@ -1,5 +1,4 @@
-import React, { useState, useEffect } from 'react';
-import { Search, FileText, Trash2, RotateCcw, ChevronLeft, ChevronRight, Clock, Hash } from 'lucide-react';
+import { Search, FileText, Trash2, RotateCcw, RefreshCw, ChevronLeft, ChevronRight, Clock, Hash, ExternalLink } from 'lucide-react';
 
 export default function ProjectsTab({ onOpenModal, onSelectForStudio }) {
 
@@ -44,6 +43,20 @@ export default function ProjectsTab({ onOpenModal, onSelectForStudio }) {
       console.error(err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleResetTranslation = async (id, title) => {
+    if (!window.confirm(`⚠️ BẠN CÓ CHẮC MUỐN RESET BẢN DỊCH CHO DỰ ÁN #${id}?\n\n"${title || id}"\n\nThao tác này sẽ:\n✓ GIỮ NGUYÊN video gốc & toàn bộ câu thoại gốc tiếng Trung ASR (không phải gửi CapCut STT lại)\n✗ XÓA SẠCH 100% bản dịch tiếng Việt, audio thuyết minh TTS và video render\n\nDự án sẽ sẵn sàng để Dịch lại từ đầu bằng AI LLM!`)) return;
+
+    try {
+      const res = await fetch(`/api/v1/projects/${id}/reset-translation`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Reset bản dịch thất bại');
+      alert(data.message || `Đã reset bản dịch dự án #${id} thành công!`);
+      loadProjects();
+    } catch (err) {
+      alert(`Lỗi: ${err.message}`);
     }
   };
 
@@ -154,7 +167,20 @@ export default function ProjectsTab({ onOpenModal, onSelectForStudio }) {
                   <td>
                     <div className="project-title-box">
                       <strong>{p.title}</strong>
-                      <small>ID: {p.video_id}</small>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <small>ID: {p.video_id}</small>
+                        {p.source_url && (
+                          <a
+                            href={p.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ fontSize: '11px', color: '#0284c7', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                            title={`Mở link gốc: ${p.source_url}`}
+                          >
+                            <ExternalLink size={10} /> Link gốc
+                          </a>
+                        )}
+                      </div>
                     </div>
                   </td>
                   <td>
@@ -193,11 +219,19 @@ export default function ProjectsTab({ onOpenModal, onSelectForStudio }) {
                       </button>
                       <button
                         className="btn btn-secondary btn-sm"
-                        onClick={() => handleReset(p.id, p.title)}
-                        title="Reset về lúc mới tải xong (giữ lại video gốc, xóa câu thoại/audio/video render để làm lại)"
-                        style={{ color: 'var(--amber)', borderColor: 'rgba(245, 158, 11, 0.4)' }}
+                        onClick={() => handleResetTranslation(p.id, p.title)}
+                        title="Reset Bản Dịch (giữ video gốc & thoại Trung ASR, xóa sạch bản dịch/audio/video render để làm lại)"
+                        style={{ color: '#d97706', borderColor: 'rgba(245, 158, 11, 0.4)' }}
                       >
                         <RotateCcw size={13} />
+                      </button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => handleReset(p.id, p.title)}
+                        title="Reset về lúc mới tải xong (giữ lại video gốc, xóa câu thoại/audio/video render để làm lại)"
+                        style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+                      >
+                        <RefreshCw size={13} />
                       </button>
                       <button
                         className="btn btn-danger btn-sm"
