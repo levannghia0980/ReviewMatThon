@@ -231,7 +231,7 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
 """
     prompt = re.sub(r'\n{2,}', '\n', prompt.strip())
 
-    text_response = await execute_llm_call(prompt, response_mime_type="application/json", thinking_budget=2048)
+    text_response = await execute_llm_call(prompt, response_mime_type="application/json")
 
     try:
         parsed = safe_json_loads(text_response)

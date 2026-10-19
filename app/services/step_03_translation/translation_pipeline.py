@@ -161,7 +161,9 @@ class TranslationPipelineService:
             model_info_str = f"🌐 Gemini Web (Tự động Gemini 3 • Tư duy: {t_str})"
         else:
             api_model = (getattr(settings, "GEMINI_MODEL", "") or "").strip()
-            model_info_str = f"⚡ Gemini API ({api_model} • Thinking 24576)"
+            tb = getattr(settings, "GEMINI_THINKING_BUDGET", -1)
+            tb_str = "MAX (Dynamic)" if tb == -1 else f"Thinking {tb}"
+            model_info_str = f"⚡ Gemini API ({api_model} • {tb_str})"
 
         # Tôn trọng 100% thể loại người dùng đã chọn từ giao diện.
         # CHỈ tự động nhận diện nếu genre hoàn toàn rỗng hoặc không được truyền vào.

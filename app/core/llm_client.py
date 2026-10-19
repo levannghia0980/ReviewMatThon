@@ -301,7 +301,7 @@ async def execute_llm_call(
     model: Optional[str] = None,
     temperature: float = 0.2,
     response_mime_type: Optional[str] = None,
-    thinking_budget: Optional[int] = 24576,
+    thinking_budget: Optional[int] = None,
     prompt_file_path: Optional[str] = None,
     timeout: float = 300.0,
     system_instruction: Optional[str] = None
@@ -320,6 +320,9 @@ async def execute_llm_call(
     4. 'grok_local': Grok Web Automation Server (cổng 8020).
     """
     from app.config import settings
+
+    if thinking_budget is None:
+        thinking_budget = getattr(settings, "GEMINI_THINKING_BUDGET", -1)
 
     prov = (provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")).lower().strip()
 
@@ -397,7 +400,7 @@ async def execute_llm_call(
         payload["systemInstruction"] = {
             "parts": [{"text": system_instruction}]
         }
-    if thinking_budget is not None and thinking_budget > 0:
+    if thinking_budget is not None and (thinking_budget > 0 or thinking_budget == -1):
         payload["generationConfig"]["thinkingConfig"] = {
             "thinkingBudget": thinking_budget
         }

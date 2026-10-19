@@ -120,6 +120,7 @@ class Settings:
     # Gemini API Settings
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    GEMINI_THINKING_BUDGET: int = int(os.getenv("GEMINI_THINKING_BUDGET", "-1"))
     
     # OpenRouter API Settings
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
