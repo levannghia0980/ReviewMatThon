@@ -16,46 +16,33 @@ class BatchManager:
         Bảo tồn 100% nội dung chữ Hán nguyên bản và thời gian xuất hiện.
         """
         items = []
-        batch_base_s = 0.0
-        if segments:
-            first_s = getattr(segments[0], 'start', 0.0) or getattr(segments[0], 'start_time', 0.0) or 0.0
-            batch_base_s = float(first_s)
-
         for idx, s in enumerate(segments):
             text = (s.clean_text or s.text or "").strip()
             text = re.sub(r'[\r\n\t]+', ' ', text).strip()
-            
-            # Tính mốc thời gian tương đối chuẩn hóa về 0.0s của lô (dễ nhìn, dễ tính khoảng cách)
-            raw_start = float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0)
-            raw_end = float(getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0)
-            rel_start = max(0.0, round(raw_start - batch_base_s, 2))
-            rel_end = max(rel_start, round(raw_end - batch_base_s, 2))
 
-            gap_prev = 0.0
+            # Kiểm tra khoảng cách với câu trước: nếu gap >= 1.0s thì câu trước đó bắt buộc ngắt, cấm gộp
             if idx > 0:
+                raw_start = float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0)
                 prev_end = float(getattr(segments[idx - 1], 'end', 0.0) or getattr(segments[idx - 1], 'end_time', 0.0) or 0.0)
                 gap_prev = max(0.0, raw_start - prev_end)
+                if gap_prev >= 1.0 and items:
+                    items[-1]["no_merge"] = True
 
             item_dict = {
                 "i": idx + 1,
-                "s": rel_start,
-                "e": rel_end,
                 "zh": text
             }
-            # Mốc cứng 0.85s: Nếu khoảng cách nghỉ trước câu >= 0.85s, đánh dấu điểm ngắt cứng
-            if gap_prev >= 0.85:
-                item_dict["hard_break"] = True
             items.append(item_dict)
         return items
 
     @classmethod
     def pack_dialogues_to_tagged_text(cls, segments: List[DialogueSegment]) -> str:
         """
-        Đóng gói danh sách câu thoại thành chuỗi JSON nạp thẳng vào LLM.
+        Đóng gói danh sách câu thoại thành chuỗi JSON nạp thẳng vào LLM (tinh gọn, không s, e).
         """
         import json
         items = cls.pack_dialogues_to_json_items(segments)
-        return json.dumps(items, ensure_ascii=False, indent=None)
+        return json.dumps(items, ensure_ascii=False, separators=(',', ':'))
 
     @staticmethod
     def pack_dialogues_to_clean_text(segments: List[DialogueSegment]) -> str:

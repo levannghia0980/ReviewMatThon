@@ -136,8 +136,8 @@ class Settings:
     
     # STT ASR Settings (Nhận diện giọng nói đa luồng song song: 6 - 8 luồng tối ưu tốc độ)
     ASR_MAX_WORKERS: int = int(os.getenv("ASR_MAX_WORKERS", "8"))
-    # Độ trễ thời gian STT (mili-giây) trừ về trước để khớp giọng đọc với thoại gốc (Mặc định 20ms)
-    STT_TIME_OFFSET_MS: int = int(os.getenv("STT_TIME_OFFSET_MS", "20"))
+    # Độ trễ thời gian STT (mili-giây) trừ về trước để khớp giọng đọc với thoại gốc (Mặc định 80ms)
+    STT_TIME_OFFSET_MS: int = int(os.getenv("STT_TIME_OFFSET_MS", "80"))
 
     # TTS Voiceover Settings: "capcut" (CapCut Cloud SAMI - Khuyên dùng) | "tiktok" (TikTok Legacy)
     TTS_ENGINE: str = os.getenv("TTS_ENGINE", "capcut")

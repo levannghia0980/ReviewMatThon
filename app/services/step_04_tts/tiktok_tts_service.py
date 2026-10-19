@@ -316,7 +316,8 @@ class TikTokTTSService:
         playback_speed: float = 1.0,
         auto_fit_timeline: bool = True,
         max_workers: int = None,
-        force_regenerate: bool = True
+        force_regenerate: bool = True,
+        use_exact_timeline_fit: bool = True  # [NOTE TEST PHƯƠNG ÁN 1]: Khớp 100% timecode gốc, tắt cân bằng & cắt xén
     ) -> Dict[str, Any]:
         """
         Quy trình sản xuất âm thanh TikTok TTS ĐỒNG TỐC VỚI HÀNG ĐỢI ƯU TIÊN ĐỘNG:
@@ -478,6 +479,11 @@ class TikTokTTSService:
             still_missing = [d.index for d in dialogues if d.id not in raw_results_map]
             raise RuntimeError(f"Chưa hoàn thành đủ 100% số câu! Còn thiếu {len(still_missing)} câu: {still_missing[:10]}... Dừng đóng gói để bảo toàn chất lượng phim!")
 
+        # =========================================================================
+        # 0. GỘP CÁC FILE ÂM THANH CÙNG MỘT NGƯỜI NÓI (Continuous Audio Chunk Merger)
+        # TTS xong mới gộp thành câu to cả text nội dung và âm thanh để cùng 1 nhân vật
+        # có thể đồng bộ tốc độ nói, vừa in vào start và end khi đã gộp xong.
+        # =========================================================================
         from app.services.step_04_tts.capcut_tts_service import CapCutTTSService
         dialogues, raw_results_map, chunk_sub_offsets = CapCutTTSService.merge_continuous_audio_dialogues(
             dialogues=dialogues,
@@ -501,16 +507,21 @@ class TikTokTTSService:
 
         # =========================================================================
         # 1. ĐIỀU PHỐI VAY MƯỢN THỜI GIAN TIMELINE (Timeline Borrower)
-        # Toàn bộ dữ liệu timecode và độ dài câu văn đã được làm sạch 100% từ bước Dịch thuật!
         # =========================================================================
-        borrow_transactions, borrow_map = TimelineBorrower.rebalance_timeline(
-            dialogues=dialogues,
-            raw_results_map=raw_results_map,
-            target_ratio=1.3
-        )
-        if borrow_transactions:
-            task_manager.add_log(task_id, f"🤝 [Timeline Borrower] Đã điều phối cho vay {len(borrow_transactions)} câu thiếu hụt thành công (ngưỡng 1.3x)!", "emerald")
-            print(f"🤝 [Timeline Borrower] Đã điều phối cho vay {len(borrow_transactions)} câu thiếu hụt thành công (ngưỡng 1.3x)!", flush=True)
+        if use_exact_timeline_fit:
+            # [CHẾ ĐỘ KHỚP GỐC & VAY NGHỈ SAU]: Tắt vay mượn giữa các câu thoại (không cướp thời gian câu khác)
+            borrow_transactions = []
+            borrow_map = {}
+        else:
+            # [CODE LOGIC GỐC ĐƯỢC BẢO TỒN NGUYÊN VẸN 100% - KHÔI PHỤC KHI CẦN]
+            borrow_transactions, borrow_map = TimelineBorrower.rebalance_timeline(
+                dialogues=dialogues,
+                raw_results_map=raw_results_map,
+                target_ratio=1.3
+            )
+            if borrow_transactions:
+                task_manager.add_log(task_id, f"🤝 [Timeline Borrower] Đã điều phối cho vay {len(borrow_transactions)} câu thiếu hụt thành công (ngưỡng 1.3x)!", "emerald")
+                print(f"🤝 [Timeline Borrower] Đã điều phối cho vay {len(borrow_transactions)} câu thiếu hụt thành công (ngưỡng 1.3x)!", flush=True)
 
         for idx_d, d in enumerate(dialogues):
             raw_seg = raw_results_map.get(d.id)
@@ -519,83 +530,143 @@ class TikTokTTSService:
 
             raw_dur_sec = len(raw_seg) / 1000.0
 
-            # 1. Sử dụng mốc sau vay mượn từ borrow_map nếu có, nếu không lấy start_time ASR gốc
-            if d.id in borrow_map:
-                b_start, b_end = borrow_map[d.id]
-                ideal_start_sec = b_start
-                orig_end_sec = b_end
-                d.borrowed_start_time = b_start
-                d.borrowed_end_time = b_end
-                d.borrowed_duration = round(b_end - b_start, 2)
+            if use_exact_timeline_fit:
+                # =========================================================================
+                # [CHẾ ĐỘ MỚI: BẢO TOÀN START, CẮT ĐẦU ĐUÔI, VAY NGHỈ SAU TIẾN VỀ 1.2X, ĐỒNG BỘ CÂU TO]
+                # =========================================================================
+                # 1. Bảo toàn 100% mốc bắt đầu của câu thoại gốc (không vay nghỉ ở trước)
+                start_sec = float(d.start_time)
+                orig_end_sec = float(d.end_time) if (d.end_time and d.end_time > start_sec) else (start_sec + raw_dur_sec)
+                base_dur = max(0.1, orig_end_sec - start_sec)
+
+                # 2. Cắt âm đầu 140ms, cắt đuôi 140ms để dọn sạch khoảng lặng thừa, bảo vệ an toàn âm tiết
+                seg_to_stretch, trim_meta = AdaptiveSilenceTrimmer.trim_audio_segment(
+                    raw_seg,
+                    target_dur_sec=base_dur,
+                    target_ratio=1.0,
+                    max_head_ms=140,
+                    max_tail_ms=140
+                )
+                if trim_meta.get("trimmed"):
+                    trimmed_sentences_count += 1
+                    AdaptiveSilenceTrimmer.log_trim_to_terminal(d.index, raw_dur_sec, base_dur, trim_meta)
+
+                trimmed_dur_sec = len(seg_to_stretch) / 1000.0
+
+                # 3. Tính khoảng nghỉ phía sau (gap_after)
+                if idx_d < len(dialogues) - 1:
+                    next_d = dialogues[idx_d + 1]
+                    next_start = float(next_d.start_time)
+                    gap_after = max(0.0, next_start - orig_end_sec)
+                else:
+                    total_v_sec = total_video_ms / 1000.0
+                    gap_after = max(0.0, total_v_sec - orig_end_sec)
+
+                # 4. Tràn tự nhiên / vay ở khoảng nghỉ phía sau nếu câu dài hơn gốc và gap_after > 0.25s (1 nhịp dấu chấm)
+                target_dur = base_dur
+                if trimmed_dur_sec > base_dur and gap_after > 0.25:
+                    deficit = trimmed_dur_sec - base_dur
+                    available_gap = max(0.0, gap_after - 0.20)  # Giữ lại 0.20s im lặng an toàn trước câu kế
+                    borrow_after = min(deficit, available_gap)
+                    if borrow_after > 0:
+                        target_dur = base_dur + borrow_after
+                        d.borrowed_end_time = round(start_sec + target_dur, 2)
+                        d.borrowed_duration = round(target_dur, 2)
+
+                # 5. Co giãn 2 chiều bắt buộc: làm nhanh hoặc chậm để bắt đầu đúng start và vừa in đúng lúc end
+                speed_factor = trimmed_dur_sec / target_dur
+                if abs(speed_factor - 1.0) < 0.01:
+                    fitted_seg = seg_to_stretch
+                    actual_speed = 1.0
+                else:
+                    safe_speed = max(0.35, min(3.5, speed_factor))
+                    fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, safe_speed)
+                    actual_speed = safe_speed
+
+                seg_dur_sec = len(fitted_seg) / 1000.0
+
+                # Cập nhật thông số timeline chuẩn xác vừa in vào start và end
+                d.start_time = round(start_sec, 3)
+                d.end_time = round(start_sec + seg_dur_sec, 3)
+                d.duration = round(seg_dur_sec, 3)
+                d.voice_duration = round(seg_dur_sec, 3)
+                d.speed_ratio = round(actual_speed, 2)
+                d.status = "DUBBED"
             else:
-                ideal_start_sec = float(d.start_time)
-                orig_end_sec = float(d.end_time) if (d.end_time and d.end_time > ideal_start_sec) else (ideal_start_sec + raw_dur_sec)
+                # =========================================================================
+                # [CODE LOGIC GỐC ĐƯỢC BẢO TỒN NGUYÊN VẸN 100% - KHÔI PHỤC KHI CẦN]
+                # =========================================================================
+                # 1. Sử dụng mốc sau vay mượn từ borrow_map nếu có, nếu không lấy start_time ASR gốc
+                if d.id in borrow_map:
+                    b_start, b_end = borrow_map[d.id]
+                    ideal_start_sec = b_start
+                    orig_end_sec = b_end
+                    d.borrowed_start_time = b_start
+                    d.borrowed_end_time = b_end
+                    d.borrowed_duration = round(b_end - b_start, 2)
+                else:
+                    ideal_start_sec = float(d.start_time)
+                    orig_end_sec = float(d.end_time) if (d.end_time and d.end_time > ideal_start_sec) else (ideal_start_sec + raw_dur_sec)
 
-            start_sec = ideal_start_sec
+                start_sec = ideal_start_sec
+                target_dur = max(0.1, orig_end_sec - ideal_start_sec)
 
-            # Khung thời lượng mục tiêu: Vừa khít trọn vẹn từ start đến end sau vay mượn
-            target_dur = max(0.1, orig_end_sec - ideal_start_sec)
+                # 2. ÁP DỤNG THUẬT TOÁN GỌT THÍCH ỨNG TỶ LỆ 1:2 (Adaptive 1:2 Silence Trimmer)
+                seg_to_stretch, trim_meta = AdaptiveSilenceTrimmer.trim_audio_segment(
+                    raw_seg,
+                    target_dur_sec=target_dur,
+                    target_ratio=1.2,
+                    max_head_ms=100,
+                    max_tail_ms=200
+                )
+                if trim_meta.get("trimmed"):
+                    trimmed_sentences_count += 1
+                    # Báo trực tiếp ra Terminal để người dùng theo dõi
+                    AdaptiveSilenceTrimmer.log_trim_to_terminal(d.index, raw_dur_sec, target_dur, trim_meta)
 
-            # 2. ÁP DỤNG THUẬT TOÁN GỌT THÍCH ỨNG TỶ LỆ 1:2 (Adaptive 1:2 Silence Trimmer)
-            # Đầu gánh 1/3 (max 100ms), Đuôi gánh 2/3 (max 200ms) để kéo tỷ lệ về 1.25x
-            seg_to_stretch, trim_meta = AdaptiveSilenceTrimmer.trim_audio_segment(
-                raw_seg,
-                target_dur_sec=target_dur,
-                target_ratio=1.2,
-                max_head_ms=100,
-                max_tail_ms=200
-            )
-            if trim_meta.get("trimmed"):
-                trimmed_sentences_count += 1
-                # Báo trực tiếp ra Terminal để người dùng theo dõi
-                AdaptiveSilenceTrimmer.log_trim_to_terminal(d.index, raw_dur_sec, target_dur, trim_meta)
+                trimmed_dur_sec = len(seg_to_stretch) / 1000.0
+                cur_ratio = trimmed_dur_sec / target_dur
 
-            trimmed_dur_sec = len(seg_to_stretch) / 1000.0
-            cur_ratio = trimmed_dur_sec / target_dur
+                # Kiểm tra ngưỡng bất thường > 2.0x để kích hoạt cảnh báo Vá Lô (Batch Reheal)
+                if cur_ratio > 2.0:
+                    high_speed_anomalies.append({
+                        "dialogue_id": d.id,
+                        "index": d.index,
+                        "target_dur": target_dur,
+                        "trimmed_dur": trimmed_dur_sec,
+                        "ratio": cur_ratio
+                    })
+                    # Báo cảnh báo câu co giãn âm thanh trực tiếp ra Terminal
+                    print(f"⚠️ [Timeline TTS] Câu #{d.index}: Co giãn {cur_ratio:.2f}x (Gốc {target_dur:.2f}s, Audio {trimmed_dur_sec:.2f}s)", flush=True)
 
-            # Kiểm tra ngưỡng bất thường > 2.0x để kích hoạt cảnh báo Vá Lô (Batch Reheal)
-            if cur_ratio > 2.0:
-                high_speed_anomalies.append({
-                    "dialogue_id": d.id,
-                    "index": d.index,
-                    "target_dur": target_dur,
-                    "trimmed_dur": trimmed_dur_sec,
-                    "ratio": cur_ratio
-                })
-                # Báo cảnh báo câu co giãn âm thanh trực tiếp ra Terminal
-                print(f"⚠️ [Timeline TTS] Câu #{d.index}: Co giãn {cur_ratio:.2f}x (Gốc {target_dur:.2f}s, Audio {trimmed_dur_sec:.2f}s)", flush=True)
+                raw_speed_factor = trimmed_dur_sec / target_dur
+                if auto_fit_timeline and raw_speed_factor > 1.00:
+                    speed_factor = raw_speed_factor
+                    fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, speed_factor)
+                    actual_speed = speed_factor
+                else:
+                    # Giữ nguyên bản âm thanh tự nhiên 1.0x
+                    fitted_seg = seg_to_stretch
+                    actual_speed = 1.0
 
-            # Co giãn thích ứng (Adaptive Time Stretch) - KHỚP ĐẦU KHỚP CUỐI CHUẨN XÁC:
-            # 1. Nếu âm thanh dài hơn khung gốc (trimmed_dur_sec > target_dur): Co giãn theo speed_factor thực tế để vừa khít
-            # 2. Nếu âm thanh dài hơn khung gốc (raw_speed_factor > 1.00): Co giãn vừa khít 100% vào target_dur
-            raw_speed_factor = trimmed_dur_sec / target_dur
-            if auto_fit_timeline and raw_speed_factor > 1.00:
-                speed_factor = raw_speed_factor
-                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, speed_factor)
-                actual_speed = speed_factor
-            else:
-                # Giữ nguyên bản âm thanh tự nhiên 1.0x
-                fitted_seg = seg_to_stretch
-                actual_speed = 1.0
+                seg_dur_sec = len(fitted_seg) / 1000.0
 
-            seg_dur_sec = len(fitted_seg) / 1000.0
+                # Mốc bắt đầu ghép theo mốc đã tính toán điều phối (Borrow Map hoặc ASR)
+                start_sec = ideal_start_sec
+                if start_sec < current_timeline_sec - 0.05:
+                    # Đảm bảo không đè micro-gap nếu câu trước kéo dài hơn
+                    start_sec = current_timeline_sec
 
-            # Mốc bắt đầu ghép theo mốc đã tính toán điều phối (Borrow Map hoặc ASR)
-            start_sec = ideal_start_sec
-            if start_sec < current_timeline_sec - 0.05:
-                # Đảm bảo không đè micro-gap nếu câu trước kéo dài hơn
-                start_sec = current_timeline_sec
+                # Cập nhật mốc timeline khớp theo âm thanh thực tế
+                current_timeline_sec = start_sec + seg_dur_sec
 
-            # Cập nhật mốc timeline khớp theo âm thanh thực tế
-            current_timeline_sec = start_sec + seg_dur_sec
-
-            # Cập nhật mốc thời gian thực tế đã cân bằng vào CSDL bảng câu gộp TTS
-            d.start_time = round(start_sec, 3)
-            d.end_time = round(current_timeline_sec, 3)
-            d.duration = round(seg_dur_sec, 3)
-            d.voice_duration = round(seg_dur_sec, 3)
-            d.speed_ratio = round(actual_speed, 2)
-            d.status = "DUBBED"
+                # Cập nhật mốc thời gian thực tế đã cân bằng vào CSDL bảng câu gộp TTS
+                d.start_time = round(start_sec, 3)
+                d.end_time = round(current_timeline_sec, 3)
+                d.duration = round(seg_dur_sec, 3)
+                d.voice_duration = round(seg_dur_sec, 3)
+                d.speed_ratio = round(actual_speed, 2)
+                d.status = "DUBBED"
 
             # Dán trực tiếp vào NumPy Master Buffer (chuẩn Mono 24kHz int16)
             try:
@@ -604,11 +675,16 @@ class TikTokTTSService:
 
                 start_idx = int(start_sec * fs)
                 seg_len = len(seg_samples)
-                end_idx = min(start_idx + seg_len, total_samples)
+                if use_exact_timeline_fit:
+                    # Giới hạn không cho âm thanh lấn sang khung của câu kế tiếp
+                    max_allowed_len = int(target_dur * fs)
+                    fit_len = min(seg_len, max_allowed_len)
+                else:
+                    fit_len = seg_len
+                end_idx = min(start_idx + fit_len, total_samples)
 
-                fit_len = end_idx - start_idx
-                if fit_len > 0:
-                    master_buffer[start_idx:end_idx] = seg_samples[:fit_len]
+                if end_idx > start_idx:
+                    master_buffer[start_idx:end_idx] = seg_samples[:end_idx - start_idx]
             except Exception as e:
                 logger.error(f"Lỗi ghép câu #{d.index} vào timeline: {e}")
 

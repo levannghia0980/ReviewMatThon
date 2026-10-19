@@ -578,6 +578,13 @@ class AsyncTTSEngine:
             queue_join_task = asyncio.create_task(task_queue.join())
             while not queue_join_task.done():
                 if is_cancelled_callback and is_cancelled_callback():
+                    # Xả sạch hàng đợi ngay lập tức để không câu nào được lấy ra xử lý thêm
+                    while not task_queue.empty():
+                        try:
+                            task_queue.get_nowait()
+                            task_queue.task_done()
+                        except Exception:
+                            break
                     queue_join_task.cancel()
                     break
                 await asyncio.sleep(0.1)
@@ -585,6 +592,12 @@ class AsyncTTSEngine:
             for w in workers:
                 w.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
+
+        if is_cancelled_callback and is_cancelled_callback():
+            logger.info("🛑 [AsyncTTSEngine] Đã dừng toàn bộ luồng TTS theo cờ hủy của người dùng.")
+            if return_utterances:
+                return {}, {}
+            return {}
 
         if return_utterances:
             return results_map, utterances_map

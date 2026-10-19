@@ -490,7 +490,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=latest_segs or segments,
                     bgm_volume_when_speaking=0.036,  # 0.036 (3.6%) khi đang có thuyết minh tiếng Việt
-                    bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM
+                    bgm_volume_normal=0.18,  # 0.18 (18%) khi không nói để giữ rõ âm thanh môi trường và BGM êm ái
                     voiceover_volume=1.05
                 )
                 audio_res_container["audio_path"] = str(mixed_path)
@@ -592,16 +592,33 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         )
         task_manager.add_log(task_id, f"🎉 TỰ ĐỘNG HÓA HOÀN TẤT 100%! File xuất: output/final_videos/{output_final_path.name}", "emerald")
 
-    except Exception as e:
+    except asyncio.CancelledError:
         db.rollback()
-        err_msg = str(e)
-        task_manager.add_log(task_id, f"❌ LỖI FULL-AUTO PIPELINE: {err_msg}", "rose")
+        task_manager.add_log(task_id, "🛑 Đã dừng tiến trình tự động hóa an toàn theo yêu cầu của người dùng.", "amber")
         task_manager.update_task(
             task_id,
-            status="failed",
-            error=err_msg,
-            message=f"Lỗi quy trình tự động: {err_msg}"
+            status="cancelled",
+            message="Đã hủy theo yêu cầu của người dùng"
         )
+    except Exception as e:
+        if task_manager.is_cancelled(task_id):
+            db.rollback()
+            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình tự động hóa an toàn theo yêu cầu của người dùng.", "amber")
+            task_manager.update_task(
+                task_id,
+                status="cancelled",
+                message="Đã hủy theo yêu cầu của người dùng"
+            )
+        else:
+            db.rollback()
+            err_msg = str(e)
+            task_manager.add_log(task_id, f"❌ LỖI FULL-AUTO PIPELINE: {err_msg}", "rose")
+            task_manager.update_task(
+                task_id,
+                status="failed",
+                error=err_msg,
+                message=f"Lỗi quy trình tự động: {err_msg}"
+            )
     finally:
         db.close()
 

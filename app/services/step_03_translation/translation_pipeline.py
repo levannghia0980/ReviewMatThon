@@ -487,9 +487,17 @@ class TranslationPipelineService:
                 source_items = healed_items if healed_items else (parsed_json if isinstance(parsed_json, list) else [])
                 for it in source_items:
                     if isinstance(it, dict):
+                        # Ưu tiên local_src (1..N trong lô) để file lưu luôn chuẩn hóa 1..500
+                        use_src = it.get("local_src") or it.get("src", [])
+                        clean_out_src = []
+                        for x in use_src:
+                            if isinstance(x, int):
+                                clean_out_src.append(x)
+                            elif isinstance(x, str) and x.strip().isdigit():
+                                clean_out_src.append(int(x.strip()))
                         clean_output_items.append({
                             "role": it.get("role") or it.get("speaker") or "NARRATOR",
-                            "src": it.get("src", []),
+                            "src": clean_out_src,
                             "vi": it.get("vi", "")
                         })
                 with open(batch_raw_file, "w", encoding="utf-8") as f:
@@ -770,21 +778,36 @@ class TranslationPipelineService:
         task_manager.update_task(task_id, progress=95)
         task_manager.add_log(task_id, "💾 Đang xuất bản 2 nhánh độc lập: Giọng đọc TTS & Phụ đề Karaoke...", "cyan")
 
-        # 1. NHÁNH TTS VOICEOVER (Dùng all_llm_items đã làm sạch & kiểm toán timeline 100%)
-        import copy
-        tts_items = copy.deepcopy(all_llm_items)
+        # 1. NHÁNH TTS VOICEOVER: Nạp trực tiếp từ bảng TTSDialogueSegmentModel trong SQLite
+        # Bảng này đã được tính toán khóa cứng 100% timecode ASR gốc cho từng lô
+        tts_db_rows = db.query(TTSDialogueSegmentModel).filter(
+            TTSDialogueSegmentModel.task_id == project.id
+        ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
 
-        # Kiểm toán toàn diện mốc thời gian qua SmartTimelineHealer trước khi đóng gói TTS
-        from app.services.step_03_translation.smart_timeline_healer import SmartTimelineHealer
-        all_db_segs = db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).order_by(DialogueSegmentModel.index.asc()).all()
-        all_orig_dicts = [
-            {"index": s.index, "start": float(s.start_time or 0.0), "end": float(s.end_time or 0.0), "zh": s.clean_text or s.original_text or ""}
-            for s in all_db_segs
-        ]
-        if all_orig_dicts and tts_items:
-            tts_items, fixes_cnt, _ = SmartTimelineHealer.audit_and_heal(all_orig_dicts, tts_items)
-            if fixes_cnt > 0:
-                task_manager.add_log(task_id, f"   🛡️ [Smart Timeline Healer] Đã tự động khôi phục và đồng bộ chuẩn xác {fixes_cnt} mốc thời gian TTS theo ASR gốc!", "emerald")
+        tts_items = []
+        if tts_db_rows:
+            for row in tts_db_rows:
+                s_list = []
+                if row.src_indices:
+                    for x in str(row.src_indices).split(","):
+                        if x.strip().isdigit():
+                            s_list.append(int(x.strip()))
+                tts_items.append({
+                    "tts_index": row.tts_index,
+                    "role": row.speaker or "NARRATOR",
+                    "speaker": row.speaker or "NARRATOR",
+                    "s": float(row.start_time or 0.0),
+                    "e": float(row.end_time or 0.0),
+                    "start": float(row.start_time or 0.0),
+                    "end": float(row.end_time or 0.0),
+                    "vi": row.translated_text or "",
+                    "zh": row.original_text or "",
+                    "src": s_list or [row.src_start_index or 1],
+                    "batch_index": row.batch_index or 1
+                })
+        else:
+            import copy
+            tts_items = copy.deepcopy(all_llm_items)
 
         from app.services.step_04_tts.tts_script_service import TTSScriptService
         tts_result = TTSScriptService.build_and_save(
