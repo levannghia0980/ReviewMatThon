@@ -99,15 +99,19 @@ class AudioMixerService:
                     f"[ducked_bgm][voice_mix]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95:attack=5:release=50[a_out]"
                 )
 
+        out_ext = out_audio.suffix.lower()
+        if out_ext in (".m4a", ".aac"):
+            codec_args = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-threads", "0"]
+        else:
+            codec_args = ["-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100", "-threads", "0"]
+
         cmd = [
             *ffmpeg_cmd, "-y",
             "-i", str(src_orig),
             "-i", str(src_voice),
             "-filter_complex", mix_filter,
             "-map", "[a_out]",
-            "-c:a", "libmp3lame",
-            "-b:a", "192k",
-            "-ar", "44100",
+            *codec_args,
             str(out_audio)
         ]
 
@@ -123,9 +127,7 @@ class AudioMixerService:
                     "-i", str(src_voice),
                     "-filter_complex", f"[0:a]volume={fb_bgm_vol}[a0];[1:a]volume={voiceover_volume}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95:attack=5:release=50[a_out]",
                     "-map", "[a_out]",
-                    "-c:a", "libmp3lame",
-                    "-b:a", "192k",
-                    "-ar", "44100",
+                    *codec_args,
                     str(out_audio)
                 ]
                 res = subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")

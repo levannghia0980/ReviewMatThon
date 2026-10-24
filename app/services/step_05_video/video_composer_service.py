@@ -781,9 +781,11 @@ class VideoComposerService:
             env_workers = os.getenv("VIDEO_RENDER_WORKERS")
             if env_workers and env_workers.isdigit() and int(env_workers) > 0:
                 workers = int(env_workers)
-            elif vcodec in ("h264_nvenc", "h264_qsv", "h264_amf"):
-                # GPU phần cứng (Intel QuickSync / Nvidia NVENC / AMD AMF): 
-                # Chạy 3 - 4 luồng đồng thời khai thác tối đa đa kênh phần cứng ASIC
+            elif vcodec == "h264_nvenc":
+                # Card rời NVIDIA (NVENC): Hỗ trợ tối đa tới 8 phiên mã hóa phần cứng song song
+                workers = max(3, min(8, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
+            elif vcodec in ("h264_qsv", "h264_amf"):
+                # GPU phần cứng (Intel QuickSync / AMD AMF): Chạy 3 - 4 luồng đồng thời tối ưu nhất
                 workers = max(2, min(4, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
             else:
                 # Máy không có GPU (chạy CPU libx264 Ultrafast): Dùng đa nhân CPU, chừa 1 core cho hệ thống
@@ -1486,6 +1488,13 @@ class VideoComposerService:
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         total_duration = cls.get_video_duration(visual_video_path)
+        # Kiểm tra nếu audio_source_path đã là AAC/M4A -> Stream Copy 100% không re-encode
+        src_audio_ext = Path(audio_source_path).suffix.lower()
+        if src_audio_ext in (".m4a", ".aac"):
+            audio_codec_args = ["-c:a", "copy"]
+        else:
+            audio_codec_args = ["-c:a", "aac", "-b:a", "192k"]
+
         cmd = [
             *ffmpeg_cmd, "-y",
             "-i", str(visual_video_path),
@@ -1493,8 +1502,7 @@ class VideoComposerService:
             "-map", "0:v:0",
             "-map", "1:a?",
             "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
+            *audio_codec_args,
             "-shortest"
         ]
         if total_duration <= 1800.0:

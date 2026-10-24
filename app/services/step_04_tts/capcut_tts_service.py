@@ -684,11 +684,22 @@ class CapCutTTSService:
             w_count = len(txt.split()) if txt else 0
             dialogue_word_counts[d.id] = w_count
 
-        # Giải mã In-Memory Buffer sang AudioSegment nguyên bản (việc gọt khoảng lặng sẽ do Adaptive 2:3 Trimmer xử lý)
-        for d_id, audio_bytes in raw_audio_bytes_map.items():
-            if audio_bytes and len(audio_bytes) > 100:
-                seg = _load_audio_from_bytes(audio_bytes, format="mp3")
-                raw_results_map[d_id] = seg
+        # Giải mã In-Memory Buffer sang AudioSegment nguyên bản đa luồng siêu tốc
+        decode_workers = min(16, max(4, (os.cpu_count() or 4)))
+        with ThreadPoolExecutor(max_workers=decode_workers) as decode_pool:
+            future_to_id = {
+                decode_pool.submit(_load_audio_from_bytes, a_bytes, "mp3"): d_id
+                for d_id, a_bytes in raw_audio_bytes_map.items()
+                if a_bytes and len(a_bytes) > 100
+            }
+            for fut in as_completed(future_to_id):
+                d_id = future_to_id[fut]
+                try:
+                    seg = fut.result()
+                    if seg:
+                        raw_results_map[d_id] = seg
+                except Exception as e:
+                    logger.warning(f"Lỗi giải mã audio cho dialogue #{d_id}: {e}")
 
         # Bổ sung đệm im lặng cho các câu chỉ có dấu chấm / khoảng lặng
         for s_id in silent_dialogue_ids:
