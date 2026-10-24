@@ -162,8 +162,8 @@ class TranslationPipelineService:
         else:
             api_model = (getattr(settings, "GEMINI_MODEL", "") or "").strip()
             tb = getattr(settings, "GEMINI_THINKING_BUDGET", -1)
-            tb_str = "MAX (Dynamic)" if tb == -1 else f"Thinking {tb}"
-            model_info_str = f"⚡ Gemini API ({api_model} • {tb_str})"
+            tb_str = "Tự Động" if tb == -1 else ("Tắt" if tb == 0 else f"{tb} token")
+            model_info_str = f"⚡ Gemini API ({api_model} • Tư duy: {tb_str})"
 
         # Tôn trọng 100% thể loại người dùng đã chọn từ giao diện.
         # CHỈ tự động nhận diện nếu genre hoàn toàn rỗng hoặc không được truyền vào.
@@ -251,6 +251,7 @@ class TranslationPipelineService:
                 duration=d.duration,
                 text=orig,
                 clean_text=orig,
+                reference_text=d.reference_text or "",
                 confidence=d.confidence
             )
             segments.append(seg)
@@ -310,12 +311,42 @@ class TranslationPipelineService:
         task_manager.add_log(task_id, batch_log_msg, "cyan")
         print(f"\n🌐 [TIẾN TRÌNH DỊCH] Tổng cộng {len(batches)} lô (~{batch_size} câu/lô) | Dự án #{project.id}: {project.title}", flush=True)
 
+        entities_file = proj_entities_dir / "all_entities.json"
         accumulated_entities: Dict[str, Dict[str, Any]] = {}
+
+        # NẠP 100% TỪ ĐIỂN ĐÃ CÓ CỦA BỘ PHIM/TRUYỆN TỪ FILE all_entities.json (CHUẨN AIREAD)
+        if entities_file.exists():
+            try:
+                with open(entities_file, "r", encoding="utf-8") as f_ent:
+                    saved_data = json.load(f_ent)
+                    ent_list = []
+                    if isinstance(saved_data, dict):
+                        ent_list = saved_data.get("entities", [])
+                    elif isinstance(saved_data, list):
+                        ent_list = saved_data
+                    
+                    for item in ent_list:
+                        raw = (item.get("chinese_name") or item.get("raw") or "").strip()
+                        viet = (item.get("vietnamese_name") or item.get("viet") or "").strip()
+                        etype = (item.get("entity_type") or item.get("type") or "NAME").strip()
+                        role = (item.get("role") or item.get("desc") or "").strip()
+                        if raw and viet:
+                            accumulated_entities[raw] = {
+                                "raw": raw,
+                                "viet": viet,
+                                "type": etype,
+                                "desc": role,
+                                "is_user_locked": True  # Khóa cứng không cho LLM ghi đè
+                            }
+                if accumulated_entities:
+                    print(f"📚 [TỪ ĐIỂN AIREAD] Đã nạp và khóa cứng {len(accumulated_entities)} thực thể từ trước cho Project #{project.id}!", flush=True)
+                    task_manager.add_log(task_id, f"📚 Đã nạp và khóa cứng {len(accumulated_entities)} thực thể từ điển có sẵn của bộ phim", "emerald")
+            except Exception as e_load:
+                logger.warning(f"Lỗi nạp từ điển all_entities.json cũ: {e_load}")
+
         all_raw_llm_outputs = []
         translated_segments: List[DialogueSegment] = []
         prev_batch: List[DialogueSegment] = []
-
-        entities_file = proj_entities_dir / "all_entities.json"
 
         for b_idx, batch in enumerate(batches):
             # CHỐT AN TOÀN HỦY TIẾN TRÌNH (Cancel Check): Nếu người dùng nhấn dừng thì dọn sạch những gì lô này đang làm
@@ -347,7 +378,8 @@ class TranslationPipelineService:
             raw_entities = await extract_batch_entities_direct_llm(
                 combined_raw_text=clean_batch_text,
                 existing_entities=accumulated_entities,
-                genre_key=genre
+                genre_key=genre,
+                provider=provider
             )
             # Chuẩn hóa format sang dict {raw, viet, type}
             new_entities = []
@@ -356,6 +388,9 @@ class TranslationPipelineService:
                 vn = ent.get("vietnamese_name", "").strip()
                 et = ent.get("entity_type", "NAME").strip()
                 if ch and vn:
+                    # Nếu thực thể đã có trong từ điển tích lũy: BẢO VỆ 100% BẢN DỊCH CŨ
+                    if ch in accumulated_entities:
+                        vn = accumulated_entities[ch]["viet"]
                     new_entities.append({"raw": ch, "viet": vn, "type": et})
 
             # LƯU THỰC THỂ RIÊNG CỦA LÔ NÀY VÀO FOLDER entities/
@@ -374,15 +409,30 @@ class TranslationPipelineService:
                     accumulated_entities[raw] = ent
                     new_found_count += 1
                 elif raw and raw in accumulated_entities:
+                    # Tuyệt đối không để LLM ghi đè bản dịch cũ
                     pass
 
-            # Lưu entities tích lũy của toàn truyện ra all_entities.json
+            # Lưu entities tích lũy ra file all_entities.json (Đồng bộ format với Web UI)
+            entities_export = [
+                {
+                    "chinese_name": e.get("raw", ""),
+                    "vietnamese_name": e.get("viet", ""),
+                    "entity_type": e.get("type", "NAME"),
+                    "role": e.get("desc", "-"),
+                    "evaluation": "TÊN CỐ ĐỊNH"
+                }
+                for e in accumulated_entities.values()
+            ]
             with open(entities_file, "w", encoding="utf-8") as f:
-                json.dump(list(accumulated_entities.values()), f, ensure_ascii=False, indent=2)
+                json.dump({"summary": "", "entities": entities_export}, f, ensure_ascii=False, indent=2)
 
             if new_found_count > 0:
                 sample_new = [f"{e.get('raw','')}->{e.get('viet','')}" for e in new_entities[:4]]
                 task_manager.add_log(task_id, f"      ✔ LLM 1 phát hiện thêm {new_found_count} thực thể mới: {', '.join(sample_new)}", "emerald")
+            elif not new_entities:
+                task_manager.add_log(task_id, f"      ℹ [Lô #{b_num}] LLM 1: 0 thực thể mới (giữ {len(accumulated_entities)} thực thể tích lũy)", "gray")
+            else:
+                task_manager.add_log(task_id, f"      ✔ LLM 1 xác nhận {len(new_entities)} thực thể trùng khớp với bảng tích lũy hiện có", "emerald")
 
             # Tạo bảng thực thể cho LLM 2
             entity_lines = []
@@ -418,19 +468,22 @@ class TranslationPipelineService:
             if task_manager.is_cancelled(task_id):
                 raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
 
+            # LƯU NGUYÊN VĂN BẢN THÔ 100% TỪ LLM (ĐỐI SOÁT MINH BẠCH INPUT - OUTPUT)
+            batch_raw_resp_file = proj_llm_io_dir / f"batch_{b_num:02d}_raw_response.txt"
+            try:
+                with open(batch_raw_resp_file, "w", encoding="utf-8") as f_raw:
+                    f_raw.write(raw_llm_batch_output or "")
+            except Exception as e_raw:
+                logger.warning(f"Lỗi lưu file thô LLM {batch_raw_resp_file}: {e_raw}")
+
             # 1. PARSE VÀ LÀM SẠCH NGAY 100% QUA SmartTimelineHealer (CHỐNG SỐ ẢO GIÁC & MARKDOWN)
-            from app.core.llm_client import safe_json_loads
+            from app.services.step_03_translation.script_parser import parse_ai_script_output
             from app.services.step_03_translation.smart_timeline_healer import SmartTimelineHealer
 
             print(f"\n🔍 [Lô #{b_num}/{len(batches)}] LLM trả về -> Đang làm sạch & thẩm định 3 Bất Biến (SmartTimelineHealer)...", flush=True)
             task_manager.add_log(task_id, f"🔍 [Lô #{b_num}] Đang làm sạch & thẩm định 3 Bất Biến qua SmartTimelineHealer...", "cyan")
 
-            parsed_json = safe_json_loads(raw_llm_batch_output)
-            if isinstance(parsed_json, dict):
-                for v in parsed_json.values():
-                    if isinstance(v, list):
-                        parsed_json = v
-                        break
+            parsed_json = parse_ai_script_output(raw_llm_batch_output)
 
             orig_starts = [round(float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0), 2) for s in batch]
             orig_ends = [round(float(getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0), 2) for s in batch]
@@ -440,7 +493,8 @@ class TranslationPipelineService:
                     "global_id": getattr(s, 'id', getattr(s, 'index', i + 1)),
                     "start": orig_starts[i],
                     "end": orig_ends[i],
-                    "zh": s.clean_text or s.text or ""
+                    "zh": s.clean_text or s.text or "",
+                    "vi": getattr(s, 'reference_text', '') or getattr(s, 'vi', '') or ""
                 }
                 for i, s in enumerate(batch)
             ]
@@ -448,12 +502,57 @@ class TranslationPipelineService:
             healed_items = []
             inv_check = {"passed": True}
             if isinstance(parsed_json, list) and len(parsed_json) > 0:
-                healed_items, heal_cnt, _ = SmartTimelineHealer.audit_and_heal(batch_orig_dicts, parsed_json)
+                healed_items, heal_cnt, _ = SmartTimelineHealer.audit_and_heal(batch_orig_dicts, parsed_json, entity_table_text)
                 inv_check = SmartTimelineHealer.verify_3_invariants(healed_items, batch_orig_dicts)
                 if not inv_check.get("passed"):
-                    logger.warning(f"⚠️ [Lô #{b_num}] Cảnh báo 3 bất biến timeline: {inv_check.get('errors')}")
+                    logger.warning(f"[Lo #{b_num}] Canh bao timeline: {inv_check.get('errors')}")
 
-            # KHÓA CỨNG 100% TIMECODE TUẦN TỰ THEO 2 MẢNG ASR GỐC (DỰA VÀO SỐ CÂU CON, TUYỆT ĐỐI KHÔNG ĐÈ NHAU)
+            # FlowHealer v2: RETRY toi da MAX_RETRIES lan neu lo co qua nhieu loi hoac bo sot cau
+            _max_retries = 2
+            _retry_count = 0
+            while healed_items and _retry_count < _max_retries:
+                _retry_needed = (not inv_check.get("passed")) or any(item.get("_retry_needed", False) for item in healed_items)
+                if not _retry_needed:
+                    break
+                _retry_count += 1
+                missing_info = f" (bị bỏ sót {len(batch_orig_dicts) - inv_check.get('covered_orig', len(batch_orig_dicts))} câu ASR)" if not inv_check.get("passed") else ""
+                retry_msg = f"⚠️ [Lô #{b_num}] DỊCH LẠI lần {_retry_count}/{_max_retries}{missing_info} (FlowHealer phát hiện lỗi)..."
+                print(f"\n{retry_msg}", flush=True)
+                task_manager.add_log(task_id, retry_msg, "orange")
+                try:
+                    raw_retry = await translate_batch_pass2_llm(
+                        tagged_text=tagged_batch_text,
+                        genre=genre,
+                        project_title=project.title,
+                        context_text=context_text,
+                        entity_table_text=entity_table_text,
+                        provider=provider,
+                        prompt_save_path=None
+                    )
+                    batch_retry_resp_file = proj_llm_io_dir / f"batch_{b_num:02d}_retry_{_retry_count:02d}_raw_response.txt"
+                    try:
+                        with open(batch_retry_resp_file, "w", encoding="utf-8") as f_retry:
+                            f_retry.write(raw_retry or "")
+                    except Exception as e_retry_save:
+                        logger.warning(f"Lỗi lưu file thô retry {batch_retry_resp_file}: {e_retry_save}")
+
+                    _parsed_retry = parse_ai_script_output(raw_retry)
+                    if isinstance(_parsed_retry, list) and len(_parsed_retry) > 0:
+                        healed_items, _, _ = SmartTimelineHealer.audit_and_heal(
+                            batch_orig_dicts, _parsed_retry, entity_table_text
+                        )
+                        inv_check = SmartTimelineHealer.verify_3_invariants(healed_items, batch_orig_dicts)
+                        # Đồng bộ cập nhật file thô chính thức khớp 100% với lần retry thành công
+                        try:
+                            with open(batch_raw_resp_file, "w", encoding="utf-8") as f_raw_upd:
+                                f_raw_upd.write(raw_retry or "")
+                        except Exception as e_upd:
+                            logger.warning(f"Lỗi cập nhật file thô cuối cùng {batch_raw_resp_file}: {e_upd}")
+                except Exception as e_retry:
+                    logger.warning(f"[Lo #{b_num}] Dich lai that bai: {e_retry}")
+                    break
+
+            # Rebuild timecode chinh xac tu src (enforce_sequential_asr_locking da vo hieu hoa chia deu cung)
             if healed_items:
                 healed_items = SmartTimelineHealer.enforce_sequential_asr_locking(
                     healed_items=healed_items,
@@ -463,14 +562,17 @@ class TranslationPipelineService:
                 )
 
             cov_str = f"{inv_check.get('covered_orig', len(batch))}/{len(batch)}"
-            heal_summary = f"✔ [Lô #{b_num}/{len(batches)}] SmartTimelineHealer: Đã làm sạch & chuẩn hóa {len(healed_items)} câu kịch bản (Bao phủ {cov_str} câu ASR gốc):"
+            _final_retry_needed = any(item.get("_retry_needed", False) for item in healed_items) if healed_items else False
+            heal_summary = f"{'WARN' if _final_retry_needed else 'OK'} [Lo #{b_num}/{len(batches)}] FlowHealer v2: {len(healed_items)} cau kich ban (Bao phu {cov_str} cau ASR goc)"
             print(f"\n{heal_summary}", flush=True)
-            task_manager.add_log(task_id, heal_summary, "emerald")
+            task_manager.add_log(task_id, heal_summary, "orange" if _final_retry_needed else "emerald")
 
             # In chi tiết từng câu kịch bản đã làm sạch ra Terminal (Gọn gàng, dễ nhìn, không tốn diện tích)
             sample_count = min(5, len(healed_items))
             for idx_h, item in enumerate(healed_items[:sample_count], start=1):
-                role = item.get("role") or item.get("speaker") or "NARRATOR"
+                role = item.get("role") or item.get("speaker") or "DẪN CHUYỆN"
+                if str(role).upper() in ["NARRATOR", "DẪN CHUYỆN", "DAN CHUYEN", "DẪN", "KỂ", "KỂ CHUYỆN", "NGƯỜI KỂ", "THUYẾT MINH"]:
+                    role = "DẪN CHUYỆN"
                 s_time = float(item.get("s", item.get("start", 0.0)))
                 e_time = float(item.get("e", item.get("end", 0.0)))
                 src = item.get("src", [])
@@ -497,8 +599,11 @@ class TranslationPipelineService:
                                 clean_out_src.append(x)
                             elif isinstance(x, str) and x.strip().isdigit():
                                 clean_out_src.append(int(x.strip()))
+                        r_out = it.get("role") or it.get("speaker") or "DẪN CHUYỆN"
+                        if str(r_out).upper() in ["NARRATOR", "DẪN CHUYỆN", "DAN CHUYEN", "DẪN", "KỂ", "KỂ CHUYỆN", "NGƯỜI KỂ", "THUYẾT MINH"]:
+                            r_out = "DẪN CHUYỆN"
                         clean_output_items.append({
-                            "role": it.get("role") or it.get("speaker") or "NARRATOR",
+                            "role": r_out,
                             "src": clean_out_src,
                             "vi": it.get("vi", "")
                         })
@@ -605,7 +710,9 @@ class TranslationPipelineService:
                         zh_combined = getattr(lead_seg, 'clean_text', '') or getattr(lead_seg, 'text', '') if lead_seg else ''
 
                     tts_dur = max(0.1, round(e_time - s_time, 2))
-                    role_str = item.get("role") or item.get("speaker") or "NARRATOR"
+                    role_str = item.get("role") or item.get("speaker") or "DẪN CHUYỆN"
+                    if str(role_str).upper() in ["NARRATOR", "DẪN CHUYỆN", "DAN CHUYEN", "DẪN", "KỂ", "KỂ CHUYỆN", "NGƯỜI KỂ", "THUYẾT MINH"]:
+                        role_str = "DẪN CHUYỆN"
 
                     tts_entry = TTSDialogueSegmentModel(
                         task_id=project.id,

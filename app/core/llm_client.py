@@ -139,15 +139,6 @@ async def post_gemini_with_retry(
                 pass
             _safe_add_log(log_503, "warning")
 
-            # Fallback tự động thông minh: Nếu model 3.1 bị quá tải 503 từ lần 3 trở đi, tự động đổi URL sang gemini-2.5-flash
-            if attempt >= 3 and "3.1" in url:
-                fallback_url = re.sub(r"gemini-[^:]+", "gemini-2.5-flash", url)
-                if fallback_url != url:
-                    url = fallback_url
-                    log_fb = "🔄 [LLM Fallback] gemini-3.1-flash-lite quá tải liên tục ➔ Tự động chuyển sang gemini-2.5-flash ổn định để hoàn thành lô!"
-                    print(log_fb, flush=True)
-                    _safe_add_log(log_fb, "emerald")
-
             if attempt < max_retries:
                 await asyncio.sleep(wait_s)
             else:
@@ -322,7 +313,13 @@ async def execute_llm_call(
     from app.config import settings
 
     if thinking_budget is None:
-        thinking_budget = getattr(settings, "GEMINI_THINKING_BUDGET", -1)
+        tb_raw = getattr(settings, "GEMINI_THINKING_BUDGET", -1)
+    else:
+        tb_raw = thinking_budget
+    try:
+        thinking_budget = int(tb_raw)
+    except (ValueError, TypeError):
+        thinking_budget = -1
 
     prov = (provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")).lower().strip()
 
@@ -400,10 +397,20 @@ async def execute_llm_call(
         payload["systemInstruction"] = {
             "parts": [{"text": system_instruction}]
         }
-    if thinking_budget is not None and (thinking_budget > 0 or thinking_budget == -1):
-        payload["generationConfig"]["thinkingConfig"] = {
-            "thinkingBudget": thinking_budget
-        }
+    if thinking_budget is not None:
+        if thinking_budget == -1:
+            # Chế độ Dynamic Thinking (Tự Động): Google Gemini API tự căn chỉnh mức tư duy theo độ phức tạp của prompt
+            payload["generationConfig"]["thinkingConfig"] = {
+                "thinkingBudget": -1
+            }
+        elif thinking_budget > 0:
+            payload["generationConfig"]["thinkingConfig"] = {
+                "thinkingBudget": min(8192, thinking_budget)
+            }
+        elif thinking_budget == 0:
+            payload["generationConfig"]["thinkingConfig"] = {
+                "thinkingBudget": 0
+            }
     if response_mime_type:
         payload["generationConfig"]["responseMimeType"] = response_mime_type
 

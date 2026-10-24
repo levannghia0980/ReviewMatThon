@@ -16,21 +16,37 @@ export default function TranslationStudioTab({ initialProjectId }) {
   const [provider, setProvider] = useState('gemini');
   const [modelDetails, setModelDetails] = useState('');
 
+  const applyConfig = (cfg) => {
+    if (!cfg) return;
+    const curProv = cfg.translation_provider || 'gemini';
+    setProvider(curProv);
+    if (curProv === 'gemini_web') {
+      const tMap = { low: 'Tư duy: THẤP', medium: 'Tư duy: TRUNG BÌNH', high: 'Tư duy: CAO' };
+      const t = tMap[(cfg.gemini_web_thinking || 'medium').toLowerCase()] || 'Tư duy: TRUNG BÌNH';
+      setModelDetails(`(Gemini 3 • ${t})`);
+    } else {
+      setModelDetails(`(${cfg.gemini_model || 'Flash-Lite'})`);
+    }
+  };
+
   useEffect(() => {
     fetch('/api/v1/settings')
       .then(res => res.json())
-      .then(cfg => {
-        const curProv = cfg.translation_provider || 'gemini';
-        setProvider(curProv);
-        if (curProv === 'gemini_web') {
-          const tMap = { low: 'Tư duy: THẤP', medium: 'Tư duy: TRUNG BÌNH', high: 'Tư duy: CAO' };
-          const t = tMap[(cfg.gemini_web_thinking || 'medium').toLowerCase()] || 'Tư duy: TRUNG BÌNH';
-          setModelDetails(`(Gemini 3 • ${t})`);
-        } else {
-          setModelDetails(`(${cfg.gemini_model || 'Flash-Lite'})`);
-        }
-      })
+      .then(cfg => applyConfig(cfg))
       .catch(() => {});
+
+    const handleSettingsUpdated = (e) => {
+      if (e?.detail) {
+        applyConfig(e.detail);
+      } else {
+        fetch('/api/v1/settings')
+          .then(res => res.json())
+          .then(cfg => applyConfig(cfg))
+          .catch(() => {});
+      }
+    };
+    window.addEventListener('settings-updated', handleSettingsUpdated);
+    return () => window.removeEventListener('settings-updated', handleSettingsUpdated);
   }, []);
 
   // Search & Filters
@@ -127,7 +143,8 @@ export default function TranslationStudioTab({ initialProjectId }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_id: selectedProjectId,
-          genre: genre
+          genre: genre,
+          provider: provider
         })
       });
 
@@ -250,7 +267,22 @@ export default function TranslationStudioTab({ initialProjectId }) {
 
             <select
               value={provider}
-              onChange={(e) => setProvider(e.target.value)}
+              onChange={(e) => {
+                const newProv = e.target.value;
+                setProvider(newProv);
+                fetch('/api/v1/settings', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ translation_provider: newProv })
+                })
+                  .then(r => r.json())
+                  .then(data => {
+                    if (data.settings) {
+                      window.dispatchEvent(new CustomEvent('settings-updated', { detail: data.settings }));
+                    }
+                  })
+                  .catch(() => {});
+              }}
               disabled={isTranslating}
               style={{
                 padding: '10px 14px',

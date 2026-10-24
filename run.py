@@ -72,13 +72,16 @@ def check_environment():
         os.system(f'cd /d "{BASE_DIR / "frontend"}" && npm run build')
     print("[OK] React Studio UI (Production Build): San sang")
 
-    # 3. Thông tin chế độ dịch thuật (Mặc định khởi động luôn là API Key)
+    # 3. Thông tin chế độ dịch thuật (Tôn trọng 100% cấu hình người dùng từ .env)
     try:
         from app.config import settings
-        settings.TRANSLATION_PROVIDER = "gemini"
-        os.environ["TRANSLATION_PROVIDER"] = "gemini"
-        api_model = getattr(settings, "GEMINI_MODEL", "gemini-3.1-flash-lite")
-        print(f"[OK] Che do dich: Google Gemini API Key ({api_model}) - Khong can trinh duyet Chromium")
+        current_provider = getattr(settings, "TRANSLATION_PROVIDER", "gemini")
+        if current_provider == "gemini_web":
+            web_thinking = getattr(settings, "GEMINI_WEB_THINKING", "medium")
+            print(f"[OK] Che do dich: Google Gemini Web (Chromium On-Demand • Tu duy: {web_thinking.upper()})")
+        else:
+            api_model = getattr(settings, "GEMINI_MODEL", "gemini-3.1-flash-lite")
+            print(f"[OK] Che do dich: Google Gemini API Key ({api_model})")
     except Exception:
         pass
 
@@ -111,8 +114,8 @@ def main():
     # 2. Đăng ký dọn rác khi tiến trình thoát
     def _on_exit():
         try:
-            from app.services.translation.gemini_web_service import GeminiWebService
-            if getattr(GeminiWebService, "_warm_page", None) is not None or getattr(GeminiWebService, "_browser", None) is not None:
+            from app.services.step_03_translation.gemini_web_service import GeminiWebService
+            if getattr(GeminiWebService, "_warm_page", None) is not None or getattr(GeminiWebService, "_context", None) is not None:
                 import asyncio
                 asyncio.run(GeminiWebService.shutdown_worker())
         except Exception:

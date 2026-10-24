@@ -47,6 +47,15 @@ export default function DialogueLibraryView() {
         if (d.translation_batch_size) setBatchSize(d.translation_batch_size);
       })
       .catch(() => {});
+
+    const handleSettingsUpdated = (e) => {
+      const d = e?.detail;
+      if (d && d.translation_batch_size) {
+        setBatchSize(d.translation_batch_size);
+      }
+    };
+    window.addEventListener('settings-updated', handleSettingsUpdated);
+    return () => window.removeEventListener('settings-updated', handleSettingsUpdated);
   }, []);
 
   const loadProjects = async () => {
@@ -103,8 +112,8 @@ export default function DialogueLibraryView() {
             text: t.original_text,
             clean_text: t.original_text,
             translated_text: t.translated_text,
-            role: t.speaker || 'NARRATOR',
-            speaker: t.speaker || 'NARRATOR'
+            role: t.speaker || 'DẪN CHUYỆN',
+            speaker: t.speaker || 'DẪN CHUYỆN'
           }));
           setDialogues(normalized);
           setIsDiagLoading(false);
@@ -854,14 +863,14 @@ export default function DialogueLibraryView() {
                         Chương {chIndex} • #{d.index}
                       </span>
 
-                      {/* Huy hiệu phân vai minh bạch: HỆ THỐNG / NARRATOR / NHÂN VẬT */}
+                      {/* Huy hiệu phân vai minh bạch: HỆ THỐNG / DẪN CHUYỆN / NHÂN VẬT */}
                       {(d.speaker === 'HỆ THỐNG' || d.role === 'HỆ THỐNG' || d.speaker === 'SYSTEM' || d.role === 'SYSTEM') ? (
                         <span style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 800, background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
                           🔔 HỆ THỐNG
                         </span>
-                      ) : (d.speaker === 'NARRATOR' || d.role === 'NARRATOR' || !d.speaker) ? (
+                      ) : (d.speaker === 'DẪN CHUYỆN' || d.role === 'DẪN CHUYỆN' || d.speaker === 'NARRATOR' || d.role === 'NARRATOR' || !d.speaker) ? (
                         <span style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 800, background: '#fee2e2', color: '#000000', border: '1.5px solid #dc2626', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
-                          🎙️ NARRATOR
+                          🎙️ DẪN CHUYỆN
                         </span>
                       ) : (
                         <span className="tag-badge purple" style={{ fontSize: '11px', padding: '2px 8px', fontWeight: 700 }}>

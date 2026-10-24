@@ -52,9 +52,36 @@ class WaveformSubSyncer:
 
             if n_subs == 1:
                 sub = sub_dialogues[0]
-                sub.start_time = round(start_sec, 2)
-                sub.end_time = round(start_sec + seg_dur_sec, 2)
-                sub.duration = round(seg_dur_sec, 2)
+                # BẢO TỒN NGUYÊN VẸN RAW_ASR: Không ghi đè start_time, end_time, duration gốc!
+                sub.actual_duration = round(seg_dur_sec, 2)
+
+                # Lưu / cập nhật vào BẢNG 3: SubtitleSegmentModel cho câu đơn
+                s_start = round(start_sec, 2)
+                s_end = round(start_sec + seg_dur_sec, 2)
+                sub_model = db.query(SubtitleSegmentModel).filter(
+                    SubtitleSegmentModel.task_id == project_id,
+                    SubtitleSegmentModel.sub_index == sub.index
+                ).first()
+                if not sub_model:
+                    sub_model = SubtitleSegmentModel(
+                        task_id=project_id,
+                        sub_index=sub.index,
+                        tts_index=tts_index,
+                        batch_index=getattr(sub, 'batch_index', 1) or 1,
+                        start_time=s_start,
+                        end_time=s_end,
+                        duration=round(max(0.1, s_end - s_start), 2),
+                        text_vi=sub.translated_text or "",
+                        text_zh=sub.clean_text or sub.original_text or "",
+                        speaker=sub.speaker or "NARRATOR"
+                    )
+                    db.add(sub_model)
+                else:
+                    sub_model.tts_index = tts_index
+                    sub_model.start_time = s_start
+                    sub_model.end_time = s_end
+                    sub_model.duration = round(max(0.1, s_end - s_start), 2)
+                    sub_model.text_vi = sub.translated_text or ""
             elif sub_timings and len(sub_timings) == n_subs:
                 # Khớp 100% theo sóng âm thanh thực tế của từng câu con
                 speed = max(0.1, actual_speed)
@@ -85,9 +112,8 @@ class WaveformSubSyncer:
                         s_end = min(round(s_end + 0.12, 2), round(start_sec + seg_dur_sec, 2))
 
                     s_end = max(round(s_start + 0.3, 2), s_end)
-                    sub.start_time = s_start
-                    sub.end_time = s_end
-                    sub.duration = round(max(0.1, s_end - s_start), 2)
+                    # BẢO TỒN NGUYÊN VẸN RAW_ASR: Lưu thời lượng đọc giọng vào actual_duration
+                    sub.actual_duration = round(max(0.1, s_end - s_start), 2)
 
                     # Lưu / cập nhật vào BẢNG 3: SubtitleSegmentModel
                     sub_model = db.query(SubtitleSegmentModel).filter(
@@ -123,9 +149,8 @@ class WaveformSubSyncer:
                     dur_i = seg_dur_sec * (w_cnt / tot_words)
                     s_start = round(curr_s, 2)
                     s_end = round(start_sec + seg_dur_sec if s_idx == n_subs - 1 else curr_s + dur_i, 2)
-                    sub.start_time = s_start
-                    sub.end_time = s_end
-                    sub.duration = round(max(0.1, s_end - s_start), 2)
+                    # BẢO TỒN NGUYÊN VẸN RAW_ASR: Lưu thời lượng đọc vào actual_duration
+                    sub.actual_duration = round(max(0.1, s_end - s_start), 2)
                     curr_s = s_end
 
                     # Lưu / cập nhật vào BẢNG 3: SubtitleSegmentModel

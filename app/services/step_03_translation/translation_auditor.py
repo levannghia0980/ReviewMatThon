@@ -82,31 +82,20 @@ class TranslationAuditor:
                         "orig": cur_orig
                     })
 
-            # 3. KIỂM TRA TỐC ĐỘ ĐỌC TỐI ĐA (CHỐNG VƯỢT QUÁ KHẢ NĂNG NÓI CỦA DURATION)
-            # Tốc độ đọc review phim tự nhiên kết hợp TTS co giãn là 5.5 - 7.5 từ/giây. Chỉ báo lỗi khi câu quá dài vượt ngưỡng thực tế.
-            # - Câu dài gộp (cur_dur >= 8.0s): Ngưỡng 9.0 từ/giây (vì câu 298 từ / 38.7s = 7.7 từ/giây đọc hoàn toàn vừa vặn trong 38s).
-            # - Câu có chữ số / ngày tháng / đo lường: Ngưỡng 10.5 từ/giây.
-            # 3. KIỂM TRA TỐC ĐỘ ĐỌC TỐI ĐA (CHỐNG VƯỢT QUÁ KHẢ NĂNG NÓI CỦA DURATION)
-            # Kịch bản gộp thoại phục vụ TTS: Mẩu thoại ngắn (< 1.8s) bỏ qua kiểm tra này vì câu ngắn tỷ lệ cao là bình thường
-            if cur_dur >= 1.8 and cur_words > 0:
+            # 3. KIỂM TRA TỐC ĐỘ ĐỌC TỐI ĐA (CHỐNG VƯỢT QUÁ KHẢ NĂNG NÓI CỦA DURATION - GIỮ TỐC ĐỘ DƯỚI 1.3x)
+            # Tốc độ đọc chuẩn tự nhiên ~3.0 - 3.2 từ/giây. Để tốc độ co giãn âm thanh luôn dưới 1.3x,
+            # tốc độ đọc an toàn không được vượt quá 4.0 - 4.5 từ/giây.
+            if cur_dur >= 1.5 and cur_words > 0:
                 has_numbers = any(c.isdigit() for c in (cur_orig + cur_viet)) or any(k in cur_orig for k in ['百', '千', '万', '年', '月', '日', '点', '分', '秒'])
-                if has_numbers:
-                    rate_threshold = 10.5
-                    multiplier = 2.0
-                elif cur_dur >= 8.0:
-                    rate_threshold = 9.0
-                    multiplier = 1.3
-                else:
-                    rate_threshold = 8.5
-                    multiplier = 1.0
+                rate_threshold = 4.5 if has_numbers else 4.0
+                max_allowed_words = max(6, int(round(cur_dur * rate_threshold)))
 
-                max_allowed_words = int(max(20, int(cur_dur * rate_threshold) + 8) * multiplier)
                 speech_rate = cur_words / cur_dur
                 if cur_words > max_allowed_words and speech_rate > rate_threshold:
                     errors.append({
                         "id": cur_id,
                         "type": "OVER_SPEED_BLOWUP",
-                        "reason": f"Câu quá dài so với thời lượng ({cur_words} từ / {cur_dur:.1f}s, tốc độ {speech_rate:.1f} từ/giây vượt ngưỡng {rate_threshold:.1f})",
+                        "reason": f"Câu quá dài so với thời lượng ({cur_words} từ / {cur_dur:.1f}s, tốc độ {speech_rate:.1f} từ/giây vượt ngưỡng an toàn {rate_threshold:.1f})",
                         "orig": cur_orig
                     })
 

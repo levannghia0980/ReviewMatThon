@@ -37,6 +37,19 @@ export default function EntitiesDictionaryView() {
   const [modalType, setModalType] = useState('NAME');
   const [modalRole, setModalRole] = useState('');
 
+  // AIRead Smart Sub-Term Replacement States
+  const [fromTerm, setFromTerm] = useState('');
+  const [toTerm, setToTerm] = useState('');
+  const [fullTerm, setFullTerm] = useState('');
+  const [notice, setNotice] = useState(null);
+
+  useEffect(() => {
+    if (notice) {
+      const timer = setTimeout(() => setNotice(null), 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [notice]);
+
   useEffect(() => {
     loadProjects();
   }, []);
@@ -92,6 +105,9 @@ export default function EntitiesDictionaryView() {
     setEditingIndex(null);
     setModalChName('');
     setModalViName('');
+    setFullTerm('');
+    setFromTerm('');
+    setToTerm('');
     setModalType('NAME');
     setModalRole('');
     setIsModalOpen(true);
@@ -103,22 +119,45 @@ export default function EntitiesDictionaryView() {
     setEditingIndex(globalIdx !== -1 ? globalIdx : index);
     setModalChName(item.chinese_name || '');
     setModalViName(item.vietnamese_name || '');
+    setFullTerm(item.vietnamese_name || '');
+    setFromTerm(item.vietnamese_name || '');
+    setToTerm('');
     setModalType(item.entity_type || 'NAME');
     setModalRole(item.role || '');
     setIsModalOpen(true);
   };
 
+  // Helper sync fromTerm & toTerm to fullTerm
+  const handleFromOrToChange = (newFrom, newTo, origName) => {
+    const orig = origName !== undefined ? origName : (editingIndex !== null ? entities[editingIndex]?.vietnamese_name : '') || '';
+    if (newFrom.trim() && newTo.trim()) {
+      try {
+        const regex = new RegExp(newFrom.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        if (regex.test(orig)) {
+          setFullTerm(orig.replace(regex, newTo.trim()));
+          return;
+        }
+      } catch (e) {}
+    }
+    if (newTo.trim() && !newFrom.trim()) {
+      setFullTerm(newTo.trim());
+    }
+  };
+
   // Save Modal (Add or Edit)
   const handleSaveModal = async () => {
-    if (!modalChName.trim() || !modalViName.trim()) {
+    const chName = modalChName.trim();
+    const finalViName = (editingIndex !== null ? (fullTerm.trim() || modalViName.trim()) : modalViName.trim());
+
+    if (!chName || !finalViName) {
       alert('Vui lòng nhập đầy đủ Ký tự Hán và Bản dịch Tiếng Việt!');
       return;
     }
 
     let updatedList = [...entities];
     const newItem = {
-      chinese_name: modalChName.trim(),
-      vietnamese_name: modalViName.trim(),
+      chinese_name: chName,
+      vietnamese_name: finalViName,
       entity_type: modalType,
       role: modalRole.trim() || '-'
     };
@@ -146,8 +185,37 @@ export default function EntitiesDictionaryView() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
+
+        // Tự động quét và áp dụng đổi cụm từ con (fromTerm -> toTerm) vào toàn bộ kịch bản
+        const fTerm = fromTerm.trim();
+        const tTerm = toTerm.trim();
+        if (editingIndex !== null && fTerm && tTerm && fTerm.toLowerCase() !== tTerm.toLowerCase()) {
+          const applyRes = await fetch(`/api/v1/projects/${selectedProjectId}/entities/apply`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              from_term: fTerm,
+              to_term: tTerm
+            })
+          });
+          if (applyRes.ok) {
+            const data = await applyRes.json();
+            setNotice({
+              type: 'success',
+              message: `Đã thay thế "${fTerm}" ➔ "${tTerm}": ${data.message}`
+            });
+            await loadEntities(selectedProjectId);
+            return;
+          }
+        }
+
+        setNotice({
+          type: 'success',
+          message: editingIndex !== null ? 'Đã cập nhật thực thể thành công!' : 'Đã thêm thực thể mới thành công!'
+        });
       } catch (e) {
         console.error("Lỗi tự động lưu:", e);
+        setNotice({ type: 'error', message: `Lỗi lưu thực thể: ${e.message}` });
       }
     }
   };
@@ -271,6 +339,43 @@ export default function EntitiesDictionaryView() {
       boxSizing: 'border-box'
     }}>
       
+      {/* REAL-TIME NOTICE BANNER */}
+      {notice && (
+        <div style={{
+          padding: '12px 18px',
+          background: notice.type === 'error' ? '#fef2f2' : '#ecfdf5',
+          border: notice.type === 'error' ? '1.5px solid #fecaca' : '1.5px solid #a7f3d0',
+          borderRadius: '8px',
+          color: notice.type === 'error' ? '#991b1b' : '#065f46',
+          marginBottom: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: '13.5px',
+          fontWeight: 600,
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>{notice.type === 'error' ? '⚠️' : '✅'}</span>
+            <span>{notice.message}</span>
+          </div>
+          <button
+            onClick={() => setNotice(null)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'inherit',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '2px'
+            }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       {/* 1. AIREAD GLOSSARY HEADER CARD (CLEAN WHITE THEME) */}
       <div style={{
         background: '#ffffff',
@@ -600,7 +705,7 @@ export default function EntitiesDictionaryView() {
         </div>
       )}
 
-      {/* 5. MODAL: THÊM / SỬA THỰC THỂ (LIGHT CLEAN THEME) */}
+      {/* 5. MODAL: THÊM / SỬA THỰC THỂ (AIREAD SMART MODAL STYLE) */}
       {isModalOpen && (
         <div style={{
           position: 'fixed',
@@ -616,7 +721,7 @@ export default function EntitiesDictionaryView() {
           zIndex: 1000
         }}>
           <div style={{
-            width: '460px',
+            width: editingIndex !== null ? '540px' : '460px',
             background: '#ffffff',
             border: '1.5px solid #cbd5e1',
             borderRadius: '10px',
@@ -629,7 +734,7 @@ export default function EntitiesDictionaryView() {
             {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border)', paddingBottom: '12px' }}>
               <h3 style={{ fontSize: '16px', fontWeight: 800, color: '#0f172a' }}>
-                {editingIndex !== null ? '✏️ Chỉnh Sửa Thực Thể' : '➕ Thêm Thực Thể Mới'}
+                {editingIndex !== null ? '✏️ Chỉnh Sửa Thực Thể & Thay Cụm Từ' : '➕ Thêm Thực Thể Mới'}
               </h3>
               <button
                 onClick={() => setIsModalOpen(false)}
@@ -640,103 +745,291 @@ export default function EntitiesDictionaryView() {
             </div>
 
             {/* Modal Form */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div>
-                <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                  Ký Tự Hán Gốc:
-                </label>
-                <input
-                  type="text"
-                  placeholder="VD: 陆沉 / 青云宗 / 降龙掌"
-                  value={modalChName}
-                  onChange={(e) => setModalChName(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    background: '#fef3c7',
-                    border: '1px solid #fde68a',
-                    borderRadius: '6px',
-                    color: '#b45309',
-                    fontWeight: 700,
-                    fontSize: '14px',
-                    outline: 'none'
-                  }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                  Bản Dịch Tiếng Việt:
-                </label>
-                <input
-                  type="text"
-                  placeholder="VD: Lục Trầm / Thanh Vân Tông / Hàng Long Chưởng"
-                  value={modalViName}
-                  onChange={(e) => setModalViName(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
+            {editingIndex !== null ? (
+              /* SMART MODAL EDIT MODE (AIREAD 3-FIELD STYLE) */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {/* 1. Ký tự Hán gốc Badge */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '10px 14px',
+                  background: '#fef3c7',
+                  border: '1px solid #fde68a',
+                  borderRadius: '8px'
+                }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#92400e' }}>Ký Tự Hán Gốc:</span>
+                  <span style={{ fontSize: '16px', fontWeight: 800, color: '#b45309' }}>{modalChName}</span>
+                  <span style={{
+                    marginLeft: 'auto',
+                    fontSize: '11px',
+                    color: '#475569',
                     background: '#ffffff',
                     border: '1px solid #cbd5e1',
-                    borderRadius: '6px',
-                    color: '#0f172a',
-                    fontWeight: 700,
-                    fontSize: '14px',
-                    outline: 'none'
-                  }}
-                />
-              </div>
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    fontWeight: 700
+                  }}>
+                    {CATEGORY_MAP[modalType] || modalType}
+                  </span>
+                </div>
 
-              <div>
-                <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                  Phân Loại Thực Thể:
-                </label>
-                <select
-                  value={modalType}
-                  onChange={(e) => setModalType(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    background: '#ffffff',
-                    border: '1px solid #cbd5e1',
-                    borderRadius: '6px',
-                    color: '#0f172a',
-                    fontSize: '13px',
-                    outline: 'none'
-                  }}
-                >
-                  <option value="NAME">👤 Nhân Vật (NAME)</option>
-                  <option value="SECT">🏰 Môn Phái & Thế Lực (SECT)</option>
-                  <option value="PLACE">🗺️ Địa Danh & Không Gian (PLACE)</option>
-                  <option value="ITEM">⚔️ Pháp Bảo & Đan Dược (ITEM)</option>
-                  <option value="SKILL">📜 Công Pháp & Võ Học (SKILL)</option>
-                  <option value="CREATURE">🐉 Linh Thú & Thần Thú (CREATURE)</option>
-                  <option value="OTHER">⚡ Cảnh Giới & Thuật Ngữ (OTHER)</option>
-                </select>
-              </div>
+                {/* 2. AIRead Smart Sub-term Box (Từ con đổi ➔ Đổi thành) */}
+                <div style={{
+                  background: '#f8fafc',
+                  border: '1.5px dashed #cbd5e1',
+                  borderRadius: '8px',
+                  padding: '12px 14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px'
+                }}>
+                  <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>🎯</span>
+                    <span>Sửa Cụm Từ Con (Tự động quét & đổi trong kịch bản)</span>
+                  </div>
 
-              <div>
-                <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                  Vai Trò / Ghi Chú:
-                </label>
-                <input
-                  type="text"
-                  placeholder="VD: Nhân vật chính, đệ tử tông môn..."
-                  value={modalRole}
-                  onChange={(e) => setModalRole(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    background: '#ffffff',
-                    border: '1px solid #cbd5e1',
-                    borderRadius: '6px',
-                    color: '#0f172a',
-                    fontSize: '13px',
-                    outline: 'none'
-                  }}
-                />
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '10px', alignItems: 'center' }}>
+                    <div>
+                      <label style={{ fontSize: '11px', color: '#64748b', fontWeight: 700, display: 'block', marginBottom: '3px' }}>
+                        Từ con cần đổi:
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="VD: bưu đầu"
+                        value={fromTerm}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setFromTerm(val);
+                          handleFromOrToChange(val, toTerm);
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '8px 10px',
+                          background: '#ffffff',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '6px',
+                          fontSize: '13px',
+                          fontWeight: 700,
+                          color: '#dc2626',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ paddingTop: '16px', color: '#94a3b8', display: 'flex', justifyContent: 'center' }}>
+                      <ArrowRight size={18} />
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: '11px', color: '#64748b', fontWeight: 700, display: 'block', marginBottom: '3px' }}>
+                        Đổi thành:
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="VD: tiêu đầu"
+                        value={toTerm}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setToTerm(val);
+                          handleFromOrToChange(fromTerm, val);
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '8px 10px',
+                          background: '#ffffff',
+                          border: '1px solid #cbd5e1',
+                          borderRadius: '6px',
+                          fontSize: '13px',
+                          fontWeight: 700,
+                          color: '#16a34a',
+                          outline: 'none'
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <p style={{ fontSize: '11px', color: '#64748b', margin: 0, lineHeight: 1.4 }}>
+                    💡 Khi gõ cụm từ sai (ví dụ <i>bưu đầu</i>) sang đúng (<i>tiêu đầu</i>), hệ thống sẽ cập nhật tên thực thể bên dưới và quét đổi toàn bộ câu thoại trong phim!
+                  </p>
+                </div>
+
+                {/* 3. Tên thực thể đầy đủ */}
+                <div>
+                  <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Tên Thực Thể Đầy Đủ (Lưu CSDL & Từ Điển):
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="VD: Trần Tiêu Đầu"
+                    value={fullTerm}
+                    onChange={(e) => setFullTerm(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px',
+                      background: '#ffffff',
+                      border: '1.5px solid #2563eb',
+                      borderRadius: '6px',
+                      color: '#0f172a',
+                      fontWeight: 700,
+                      fontSize: '14px',
+                      outline: 'none'
+                    }}
+                  />
+                </div>
+
+                {/* 4. Phân loại & Ghi chú */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                      Phân Loại:
+                    </label>
+                    <select
+                      value={modalType}
+                      onChange={(e) => setModalType(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        background: '#ffffff',
+                        border: '1px solid #cbd5e1',
+                        borderRadius: '6px',
+                        color: '#0f172a',
+                        fontSize: '12.5px',
+                        outline: 'none'
+                      }}
+                    >
+                      <option value="NAME">👤 Nhân Vật (NAME)</option>
+                      <option value="SECT">🏰 Môn Phái (SECT)</option>
+                      <option value="PLACE">🗺️ Địa Danh (PLACE)</option>
+                      <option value="ITEM">⚔️ Pháp Bảo (ITEM)</option>
+                      <option value="SKILL">📜 Võ Học (SKILL)</option>
+                      <option value="CREATURE">🐉 Linh Thú (CREATURE)</option>
+                      <option value="OTHER">⚡ Khác (OTHER)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                      Vai Trò / Ghi Chú:
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="VD: Tiêu đầu..."
+                      value={modalRole}
+                      onChange={(e) => setModalRole(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        background: '#ffffff',
+                        border: '1px solid #cbd5e1',
+                        borderRadius: '6px',
+                        color: '#0f172a',
+                        fontSize: '12.5px',
+                        outline: 'none'
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
-            </div>
+            ) : (
+              /* ADD NEW ENTITY FORM */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Ký Tự Hán Gốc:
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="VD: 陆沉 / 青云宗 / 降龙掌"
+                    value={modalChName}
+                    onChange={(e) => setModalChName(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      background: '#fef3c7',
+                      border: '1px solid #fde68a',
+                      borderRadius: '6px',
+                      color: '#b45309',
+                      fontWeight: 700,
+                      fontSize: '14px',
+                      outline: 'none'
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Bản Dịch Tiếng Việt:
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="VD: Lục Trầm / Thanh Vân Tông / Hàng Long Chưởng"
+                    value={modalViName}
+                    onChange={(e) => setModalViName(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      background: '#ffffff',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '6px',
+                      color: '#0f172a',
+                      fontWeight: 700,
+                      fontSize: '14px',
+                      outline: 'none'
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Phân Loại Thực Thể:
+                  </label>
+                  <select
+                    value={modalType}
+                    onChange={(e) => setModalType(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      background: '#ffffff',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '6px',
+                      color: '#0f172a',
+                      fontSize: '13px',
+                      outline: 'none'
+                    }}
+                  >
+                    <option value="NAME">👤 Nhân Vật (NAME)</option>
+                    <option value="SECT">🏰 Môn Phái & Thế Lực (SECT)</option>
+                    <option value="PLACE">🗺️ Địa Danh & Không Gian (PLACE)</option>
+                    <option value="ITEM">⚔️ Pháp Bảo & Đan Dược (ITEM)</option>
+                    <option value="SKILL">📜 Công Pháp & Võ Học (SKILL)</option>
+                    <option value="CREATURE">🐉 Linh Thú & Thần Thú (CREATURE)</option>
+                    <option value="OTHER">⚡ Cảnh Giới & Thuật Ngữ (OTHER)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', color: '#334155', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Vai Trò / Ghi Chú:
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="VD: Nhân vật chính, đệ tử tông môn..."
+                    value={modalRole}
+                    onChange={(e) => setModalRole(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 12px',
+                      background: '#ffffff',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '6px',
+                      color: '#0f172a',
+                      fontSize: '13px',
+                      outline: 'none'
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Modal Actions */}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
@@ -752,7 +1045,7 @@ export default function EntitiesDictionaryView() {
                 className="btn btn-primary"
                 style={{ padding: '8px 20px', fontSize: '13px', fontWeight: 800 }}
               >
-                {editingIndex !== null ? 'Lưu Thay Đổi' : '+ Thêm Thực Thể'}
+                {editingIndex !== null ? 'Lưu & Áp Dụng Thay Từ' : '+ Thêm Thực Thể'}
               </button>
             </div>
           </div>

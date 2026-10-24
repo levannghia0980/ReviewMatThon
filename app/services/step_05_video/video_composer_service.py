@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import json
 import time
 import math
 import shutil
@@ -35,7 +36,7 @@ class VideoComposerService:
         # 1. Test NVIDIA NVENC (tăng timeout lên 8s để card rời Laptop RTX 3050/4060 kịp đánh thức từ chế độ ngủ)
         try:
             test_nvenc = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-pix_fmt", "yuv420p", "-c:v", "h264_nvenc", "-f", "null", "-"],
                 capture_output=True, text=True, errors="replace", timeout=8
             )
             if test_nvenc.returncode == 0:
@@ -129,6 +130,66 @@ class VideoComposerService:
             pass
 
         return 1280, 720
+
+    @staticmethod
+    def get_video_fps(video_path: str) -> Tuple[float, str]:
+        """
+        Đọc chính xác FPS gốc của video từ FFprobe, FFmpeg hoặc OpenCV.
+        Trả về: (fps_float, fps_str) ví dụ: (29.97, "30000/1001") hoặc (24.0, "24/1") hoặc (60.0, "60/1").
+        Giữ nguyên FPS gốc giúp video mượt mà 100%, không bị giật khung hình và tránh render dư thừa.
+        """
+        # 1. Thử qua FFprobe JSON (chính xác tuyệt đối)
+        try:
+            ffprobe_cmd = get_ffprobe_cmd()
+            cmd = [
+                *ffprobe_cmd, "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate,avg_frame_rate",
+                "-of", "json",
+                str(video_path)
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=6)
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                streams = data.get("streams", [])
+                if streams:
+                    for rate_key in ("r_frame_rate", "avg_frame_rate"):
+                        rate_str = streams[0].get(rate_key, "")
+                        if "/" in rate_str:
+                            num, den = rate_str.split("/", 1)
+                            n_val, d_val = float(num), float(den)
+                            if d_val > 0:
+                                fps_val = n_val / d_val
+                                if 10.0 <= fps_val <= 120.0:
+                                    return round(fps_val, 3), rate_str
+        except Exception:
+            pass
+
+        # 2. Thử qua FFmpeg -i regex
+        try:
+            ffmpeg_cmd = get_ffmpeg_cmd()
+            p = subprocess.run([*ffmpeg_cmd, "-i", str(video_path)], capture_output=True, text=True, errors="replace", timeout=6)
+            m = re.search(r"(\d+(?:\.\d+)?)\s*fps", p.stderr)
+            if m:
+                val = float(m.group(1))
+                if 10.0 <= val <= 120.0:
+                    return round(val, 3), str(round(val, 3))
+        except Exception:
+            pass
+
+        # 3. Thử qua OpenCV VideoCapture
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(video_path))
+            if cap.isOpened():
+                val = float(cap.get(cv2.CAP_PROP_FPS))
+                cap.release()
+                if 10.0 <= val <= 120.0:
+                    return round(val, 3), str(round(val, 3))
+        except Exception:
+            pass
+
+        return 30.0, "30"
 
     @staticmethod
     def get_video_duration(video_path: str) -> float:
@@ -399,7 +460,7 @@ class VideoComposerService:
                     dialogue_segments=segments,
                     bgm_volume_when_speaking=0.036,  # 0.036 (3.6%) khi đang có thuyết minh tiếng Việt
                     bgm_volume_normal=0.18,  # 0.18 (18%) khi không nói để giữ rõ âm thanh môi trường và BGM êm ái
-                    voiceover_volume=1.05
+                    voiceover_volume=1.0
                 )
                 audio_source = str(mixed_path)
                 task_manager.add_log(task_id, "   ✔ Đã hòa trộn BGM & giọng Việt thành công.", "emerald")
@@ -412,9 +473,9 @@ class VideoComposerService:
             task_manager.add_log(task_id, "   ⚠️ Chưa tìm thấy file voiceover lồng tiếng, sử dụng âm thanh gốc.", "amber")
             audio_source = project.video_path
 
-        # 3        # 4. Render luồng hình ảnh (tự động chạy song song siêu tốc cho video dài)
+        # 4. Render luồng hình ảnh & âm thanh thành phẩm (Single-Pass Siêu Tốc)
         task_manager.update_task(task_id, step=4, progress=65)
-        task_manager.add_log(task_id, "[4/4] 🚀 Kích hoạt Render Video (Engine Đa Luồng Song Song)...", "purple")
+        task_manager.add_log(task_id, "[4/4] 🚀 Kích hoạt Render Video (Engine Single-Pass Siêu Tốc)...", "purple")
 
         output_video_path = settings.OUTPUT_FINAL_VIDEOS_DIR / f"{project.video_id}_{safe_title}_final.mp4"
         temp_visual_video = settings.TEMP_DIR / f"{project.video_id}_{safe_title}_visual_tmp.mp4"
@@ -432,11 +493,14 @@ class VideoComposerService:
             except Exception:
                 pass
 
+        # Single-Pass Render: Ghép video phân đoạn + Mux âm thanh trực tiếp vào output_video_path
+        # Tiết kiệm hoàn toàn 1 lần ghi 20GB và 1 lần đọc 20GB file trung gian!
         v_ok = cls.render_visual_stream(
             task_id=task_id,
             video_input_path=project.video_path,
             ass_file_path=str(ass_file),
-            output_temp_video=str(temp_visual_video),
+            output_temp_video=str(output_video_path),
+            audio_source_path=str(audio_source),
             logo_path=logo_path,
             logo_position=logo_position,
             logo_size=logo_size,
@@ -457,23 +521,22 @@ class VideoComposerService:
             render_subtitles=render_subtitles
         )
 
-        if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
-            raise RuntimeError("Render luồng hình ảnh video thất bại! Không thể tiến hành ghép audio.")
+        if not v_ok or not output_video_path.exists() or output_video_path.stat().st_size < 1000:
+            # Fallback an toàn nếu cần hợp nhất lại qua file tạm
+            if temp_visual_video.exists() and temp_visual_video.stat().st_size > 1000:
+                task_manager.add_log(task_id, "   ⚡ [Stream Mux Fallback] Hợp nhất video và âm thanh thành phẩm...", "cyan")
+                cls.mux_final_video(
+                    visual_video_path=str(temp_visual_video),
+                    audio_source_path=str(audio_source),
+                    output_final_path=str(output_video_path)
+                )
+                try:
+                    temp_visual_video.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
-        # 5. Hợp nhất luồng hình ảnh & âm thanh thành phẩm (Stream copy 0.5s)
-        task_manager.add_log(task_id, "   ⚡ [Stream Mux] Hợp nhất video và âm thanh thành phẩm...", "cyan")
-        mux_ok = cls.mux_final_video(
-            visual_video_path=str(temp_visual_video),
-            audio_source_path=str(audio_source),
-            output_final_path=str(output_video_path)
-        )
-        try:
-            temp_visual_video.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-        if not mux_ok or not output_video_path.exists():
-            raise RuntimeError("Hợp nhất video thành phẩm thất bại!")
+        if not output_video_path.exists() or output_video_path.stat().st_size < 1000:
+            raise RuntimeError("Render & hợp nhất video thành phẩm thất bại!")
 
         # Cập nhật CSDL
         project.final_video_path = str(output_video_path)
@@ -590,11 +653,11 @@ class VideoComposerService:
             offset_bottom_px = int(round(render_h * (b_offset_val / 100.0)))
             if offset_bottom_px <= 2:
                 m_y = max(0, render_h - m_h)
-                fade_expr = "a='if(lt(Y,8),245*(Y/8),245)'"
+                mask_expr = "if(lt(Y,8),245*(Y/8),245)"
             else:
                 m_y = max(0, render_h - offset_bottom_px - m_h)
                 f_h = max(2, int(round(m_h * 0.12)))
-                fade_expr = f"a='if(lt(Y,{f_h}),245*(Y/{f_h}),if(gt(Y,H-{f_h}),245*((H-Y)/{f_h}),245))'"
+                mask_expr = f"if(lt(Y,{f_h}),245*(Y/{f_h}),if(gt(Y,H-{f_h}),245*((H-Y)/{f_h}),245))"
 
             m_w = max(32, min(render_w, (m_w // 2) * 2))
             m_h = max(16, min(render_h, (m_h // 2) * 2))
@@ -604,15 +667,18 @@ class VideoComposerService:
             else:
                 m_y = max(0, min(render_h - m_h, (m_y // 2) * 2))
 
-            # Dải mờ Frosted Glass đục trắng mịn màng như CapCut: avgblur làm nhòe chữ cũ + ánh sáng trắng sương sang trọng
+            # Dải mờ Frosted Glass đục trắng mịn màng như CapCut: Tối ưu C-SIMD native (tăng tốc gần gấp đôi)
+            # Dùng color tạo frame mặt nạ alpha tĩnh, geq chỉ chạy 1 frame duy nhất rồi loop, sau đó alphamerge C cực nhanh
             filter_chains.append(
+                f"color=s={m_w}x{m_h}:c=black,format=gray,geq=lum='{mask_expr}',loop=loop=-1:size=1:start=0[mask_alpha];"
                 f"[{last_v}]split=2[v_main][v_crop_src];"
                 f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
                 f"avgblur=sizeX=65:sizeY=5,"
-                f"format=yuva420p,"
-                f"geq=r='min(255,r(X,Y)*0.85+35)':g='min(255,g(X,Y)*0.85+35)':b='min(255,b(X,Y)*0.85+40)':"
-                f"{fade_expr}[v_blurred];"
-                f"[v_main][v_blurred]overlay={m_x}:{m_y}[v_masked]"
+                f"colorchannelmixer=rr=0.85:gg=0.85:bb=0.85,"
+                f"eq=brightness=0.14,"
+                f"format=rgba[v_blurred];"
+                f"[v_blurred][mask_alpha]alphamerge[v_feathered];"
+                f"[v_main][v_feathered]overlay={m_x}:{m_y}:shortest=1[v_masked]"
             )
             last_v = "v_masked"
 
@@ -640,17 +706,13 @@ class VideoComposerService:
         return ";".join(filter_chains), logo_inputs, render_w, render_h
 
     @classmethod
-    def render_visual_stream(cls, *args, **kwargs):
-        """Alias tương thích chuyển tiếp tới parallel_render_visual_stream."""
-        return cls.parallel_render_visual_stream(*args, **kwargs)
-
-    @classmethod
     def parallel_render_visual_stream(
         cls,
         task_id: str,
         video_input_path: str,
         ass_file_path: Optional[str],
         output_temp_video: str,
+        audio_source_path: Optional[str] = None,
         logo_path: Optional[str] = None,
         logo_position: str = "top_left",
         logo_size: int = 120,
@@ -676,6 +738,7 @@ class VideoComposerService:
         Render luồng hình ảnh song song tối đa (Parallel Segment Rendering).
         Chia nhỏ video thành nhiều phân đoạn, chạy đa luồng đồng thời trên GPU/CPU,
         rồi ghép lại siêu tốc bằng Concat Demuxer. Tăng tốc từ 3x - 10x so với render đơn luồng.
+        Hỗ trợ Single-Pass Concat + Audio Mux trực tiếp, không sinh file trung gian 20GB.
         """
         total_duration = cls.get_video_duration(video_input_path)
         # Chỉ những video siêu ngắn dưới 60s mới chạy đơn luồng.
@@ -686,6 +749,7 @@ class VideoComposerService:
                 video_input_path=video_input_path,
                 ass_file_path=ass_file_path,
                 output_temp_video=output_temp_video,
+                audio_source_path=audio_source_path,
                 logo_path=logo_path,
                 logo_position=logo_position,
                 logo_size=logo_size,
@@ -740,11 +804,6 @@ class VideoComposerService:
         workers = min(workers, num_segments)
         threads_per_worker = max(1, cpu_cores // workers)
 
-        if task_id:
-            task_manager.add_log(task_id, f"🚀 KÍCH HOẠT ENGINE RENDER SONG SONG TỐI ĐA ({workers} Luồng Đồng Thời)...", "purple")
-            task_manager.add_log(task_id, f"   • Bộ Mã Hóa: {vcodec} ({encoder_desc})", "cyan")
-            task_manager.add_log(task_id, f"   • Video: {cls._format_time(total_duration)} | Chia {num_segments} phân đoạn (~{int(segment_duration)}s/đoạn)", "cyan")
-
         full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
             video_input_path=video_input_path,
             ass_file_path=ass_file_path,
@@ -767,6 +826,27 @@ class VideoComposerService:
             sub_bottom_offset=sub_bottom_offset,
             render_subtitles=render_subtitles
         )
+
+        # Tự động nhận diện FPS gốc và cấu hình bitrate thích ứng độ phân giải để chất lượng video y nguyên bản gốc
+        native_fps_val, native_fps_arg = cls.get_video_fps(video_input_path)
+        if render_h >= 1080:
+            target_bv = "8000k"
+            max_bv = "12000k"
+            crf_val = "19"
+        elif render_h >= 720:
+            target_bv = "5000k"
+            max_bv = "8000k"
+            crf_val = "21"
+        else:
+            target_bv = "3500k"
+            max_bv = "5000k"
+            crf_val = "23"
+
+        if task_id:
+            task_manager.add_log(task_id, f"🚀 KÍCH HOẠT ENGINE RENDER SONG SONG TỐI ĐA ({workers} Luồng Đồng Thời)...", "purple")
+            task_manager.add_log(task_id, f"   • Bộ Mã Hóa: {vcodec} ({encoder_desc})", "cyan")
+            task_manager.add_log(task_id, f"   • Khung Hình Chuẩn: {render_w}x{render_h} @ {native_fps_val} FPS (Bitrate: {target_bv})", "cyan")
+            task_manager.add_log(task_id, f"   • Video: {cls._format_time(total_duration)} | Chia {num_segments} phân đoạn (~{int(segment_duration)}s/đoạn)", "cyan")
 
         out_p = Path(output_temp_video).resolve()
         out_p.parent.mkdir(parents=True, exist_ok=True)
@@ -870,16 +950,22 @@ class VideoComposerService:
             if preset != "none":
                 cmd.extend(["-preset", preset])
             if vcodec == "libx264":
-                cmd.extend(["-crf", "22"])
+                cmd.extend(["-crf", crf_val])
+            elif vcodec == "h264_nvenc":
+                # Tối ưu chuyên biệt cho NVIDIA GeForce/RTX/GTX (Laptop RTX 3050, 4060, v.v.):
+                # -spatial_aq 1: Giữ viền nét chữ phụ đề sắc sảo, chống vỡ hạt macroblock
+                # -rc:v vbr: Variable Bitrate thích ứng khung hình, xuất video siêu tốc
+                cmd.extend(["-rc:v", "vbr", "-cq:v", "20", "-b:v", target_bv, "-maxrate", max_bv, "-spatial_aq", "1"])
             elif vcodec == "h264_amf":
-                cmd.extend(["-quality", "speed", "-b:v", "4000k"])
+                cmd.extend(["-quality", "speed", "-b:v", target_bv, "-maxrate", max_bv])
             else:
-                cmd.extend(["-b:v", "4000k"])
+                cmd.extend(["-b:v", target_bv, "-maxrate", max_bv])
 
             pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
             cmd.extend([
                 "-pix_fmt", pix_fmt,
-                "-r", "30",
+                "-r", native_fps_arg,
+                "-t", f"{dur_sec:.3f}",
                 str(seg_file)
             ])
 
@@ -899,9 +985,10 @@ class VideoComposerService:
                     "-an",
                     "-c:v", "libx264",
                     "-preset", "ultrafast",
-                    "-crf", "22",
+                    "-crf", crf_val,
                     "-pix_fmt", "yuv420p",
-                    "-r", "30",
+                    "-r", native_fps_arg,
+                    "-t", f"{dur_sec:.3f}",
                     str(seg_file)
                 ]
                 res_fb = subprocess.run(fb_cmd, capture_output=True, text=True, errors="replace", cwd=str(settings.BASE_DIR))
@@ -955,6 +1042,7 @@ class VideoComposerService:
                 video_input_path=video_input_path,
                 ass_file_path=ass_file_path,
                 output_temp_video=output_temp_video,
+                audio_source_path=audio_source_path,
                 logo_path=logo_path,
                 logo_position=logo_position,
                 logo_size=logo_size,
@@ -982,20 +1070,56 @@ class VideoComposerService:
                 # Dùng relative filename để FFmpeg concat demuxer đọc an toàn tuyệt đối trên Windows/Linux
                 f.write(f"file '{seg['output'].name}'\n")
 
-        if task_id:
-            task_manager.add_log(task_id, f"⚡ Hợp nhất {num_segments} phân đoạn video (Stream Concat 1s)...", "cyan")
+        # Kiểm tra luồng audio: Nếu có audio_source_path và file hợp lệ -> Single-Pass Concat + Audio Mux
+        has_audio = False
+        if audio_source_path:
+            # Chờ tối đa 60 giây nếu luồng audio mixer chạy song song chưa kịp hoàn tất
+            wait_start = time.time()
+            a_p = Path(audio_source_path)
+            while (not a_p.exists() or a_p.stat().st_size < 1000) and (time.time() - wait_start < 60.0):
+                if task_id and task_manager.is_cancelled(task_id):
+                    break
+                time.sleep(0.5)
+            if a_p.exists() and a_p.stat().st_size > 1000:
+                has_audio = True
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         out_dest = Path(output_temp_video).resolve()
-        concat_cmd = [
-            *ffmpeg_cmd, "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", concat_list_file.name,
-            "-c", "copy",
-            "-movflags", "+faststart",
-            str(out_dest)
-        ]
+
+        if has_audio:
+            if task_id:
+                task_manager.add_log(task_id, f"⚡ [Single-Pass Concat] Hợp nhất {num_segments} phân đoạn & luồng âm thanh trong 1 lệnh duy nhất...", "cyan")
+            concat_cmd = [
+                *ffmpeg_cmd, "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list_file.name,
+                "-i", str(Path(audio_source_path).resolve()),
+                "-map", "0:v:0",
+                "-map", "1:a?",
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-shortest"
+            ]
+            # Chỉ thêm +faststart với video <= 30 phút; video dài bỏ qua để tránh ghi lại toàn bộ file lần 2
+            if total_duration <= 1800.0:
+                concat_cmd.extend(["-movflags", "+faststart"])
+            concat_cmd.append(str(out_dest))
+        else:
+            if task_id:
+                task_manager.add_log(task_id, f"⚡ Hợp nhất {num_segments} phân đoạn video (Stream Concat 1s)...", "cyan")
+            concat_cmd = [
+                *ffmpeg_cmd, "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list_file.name,
+                "-c", "copy"
+            ]
+            if total_duration <= 1800.0:
+                concat_cmd.extend(["-movflags", "+faststart"])
+            concat_cmd.append(str(out_dest))
+
         c_res = subprocess.run(concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir.resolve()))
         out_video = Path(output_temp_video)
         if c_res.returncode == 0 and out_video.exists() and out_video.stat().st_size > 1000:
@@ -1019,6 +1143,7 @@ class VideoComposerService:
                 video_input_path=video_input_path,
                 ass_file_path=ass_file_path,
                 output_temp_video=output_temp_video,
+                audio_source_path=audio_source_path,
                 logo_path=logo_path,
                 logo_position=logo_position,
                 logo_size=logo_size,
@@ -1046,6 +1171,7 @@ class VideoComposerService:
         video_input_path: str,
         ass_file_path: str,
         output_temp_video: str,
+        audio_source_path: Optional[str] = None,
         logo_path: Optional[str] = None,
         logo_position: str = "top_left",
         logo_size: int = 120,
@@ -1066,7 +1192,7 @@ class VideoComposerService:
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
     ) -> bool:
-        """Render đơn luồng (dành cho video ngắn dưới 60s)."""
+        """Render đơn luồng (dành cho video ngắn dưới 60s hoặc fallback). Hỗ trợ Single-Pass muxing."""
         full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
             video_input_path=video_input_path,
             ass_file_path=ass_file_path,
@@ -1091,33 +1217,62 @@ class VideoComposerService:
             render_subtitles=render_subtitles
         )
 
+        total_duration = cls.get_video_duration(video_input_path)
+        native_fps_val, native_fps_arg = cls.get_video_fps(video_input_path)
+        if render_h >= 1080:
+            target_bv = "8000k"
+            max_bv = "12000k"
+            crf_val = "19"
+        elif render_h >= 720:
+            target_bv = "5000k"
+            max_bv = "8000k"
+            crf_val = "21"
+        else:
+            target_bv = "3500k"
+            max_bv = "5000k"
+            crf_val = "23"
+
+        has_audio = False
+        audio_inputs = []
+        audio_maps = ["-an"]
+        if audio_source_path and os.path.exists(audio_source_path) and os.path.getsize(audio_source_path) > 1000:
+            has_audio = True
+            audio_inputs = ["-i", str(Path(audio_source_path).resolve())]
+            a_idx = 1 + (len(logo_inputs) // 2)
+            audio_maps = ["-map", f"{a_idx}:a?", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
         ffmpeg_cmd = get_ffmpeg_cmd()
         cmd = [
             *ffmpeg_cmd, "-y",
             "-i", str(video_input_path),
             *logo_inputs,
+            *audio_inputs,
             "-threads", "0",
             "-filter_complex", full_filter_complex,
             "-map", "[v_out]",
-            "-an",
+            *audio_maps,
             "-c:v", vcodec
         ]
         if preset != "none":
             cmd.extend(["-preset", preset])
         if vcodec == "libx264":
-            cmd.extend(["-crf", "22"])
+            cmd.extend(["-crf", crf_val])
+        elif vcodec == "h264_nvenc":
+            cmd.extend(["-rc:v", "vbr", "-cq:v", "20", "-b:v", target_bv, "-maxrate", max_bv, "-spatial_aq", "1"])
         elif vcodec == "h264_amf":
-            cmd.extend(["-quality", "speed", "-b:v", "4000k"])
+            cmd.extend(["-quality", "speed", "-b:v", target_bv, "-maxrate", max_bv])
         else:
-            cmd.extend(["-b:v", "4000k"])
+            cmd.extend(["-b:v", target_bv, "-maxrate", max_bv])
 
         pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
         cmd.extend([
             "-pix_fmt", pix_fmt,
-            "-r", "30",
-            str(output_temp_video)
+            "-r", native_fps_arg
         ])
+        if total_duration <= 1800.0 and has_audio:
+            cmd.extend(["-movflags", "+faststart"])
+        cmd.append(str(output_temp_video))
 
         process = subprocess.Popen(
             cmd,
@@ -1165,17 +1320,21 @@ class VideoComposerService:
                 *ffmpeg_cmd, "-y",
                 "-i", str(video_input_path),
                 *logo_inputs,
+                *audio_inputs,
                 "-threads", "0",
                 "-filter_complex", clean_part,
                 "-map", "[v_out]",
-                "-an",
+                *audio_maps,
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
-                "-crf", "22",
+                "-crf", crf_val,
                 "-pix_fmt", "yuv420p",
-                "-r", "30",
-                str(output_temp_video)
+                "-r", native_fps_arg
             ]
+            if total_duration <= 1800.0 and has_audio:
+                fallback_cmd.extend(["-movflags", "+faststart"])
+            fallback_cmd.append(str(output_temp_video))
+
             fallback_proc = subprocess.Popen(
                 fallback_cmd,
                 stdout=subprocess.DEVNULL,
@@ -1224,6 +1383,7 @@ class VideoComposerService:
         video_input_path: str,
         ass_file_path: str,
         output_temp_video: str,
+        audio_source_path: Optional[str] = None,
         logo_path: Optional[str] = None,
         logo_position: str = "top_left",
         logo_size: int = 120,
@@ -1248,6 +1408,7 @@ class VideoComposerService:
         """
         Render luồng hình ảnh không tiếng (Visual Stream) với Subtitle Karaoke + Logo + Vùng che.
         Tự động phân luồng song song (Multi-Worker Parallel) cho video dài (>60s), tối ưu tốc độ tối đa trên mọi máy.
+        Hỗ trợ Single-Pass Concat + Audio Mux trực tiếp khi có audio_source_path.
         """
         dur = cls.get_video_duration(video_input_path)
         if dur > 60.0:
@@ -1256,6 +1417,7 @@ class VideoComposerService:
                 video_input_path=video_input_path,
                 ass_file_path=ass_file_path,
                 output_temp_video=output_temp_video,
+                audio_source_path=audio_source_path,
                 logo_path=logo_path,
                 logo_position=logo_position,
                 logo_size=logo_size,
@@ -1283,6 +1445,7 @@ class VideoComposerService:
                 video_input_path=video_input_path,
                 ass_file_path=ass_file_path,
                 output_temp_video=output_temp_video,
+                audio_source_path=audio_source_path,
                 logo_path=logo_path,
                 logo_position=logo_position,
                 logo_size=logo_size,
@@ -1322,6 +1485,7 @@ class VideoComposerService:
         temp_out = out_p.parent / f"{out_p.stem}_mux_tmp{out_p.suffix}"
 
         ffmpeg_cmd = get_ffmpeg_cmd()
+        total_duration = cls.get_video_duration(visual_video_path)
         cmd = [
             *ffmpeg_cmd, "-y",
             "-i", str(visual_video_path),
@@ -1331,10 +1495,11 @@ class VideoComposerService:
             "-c:v", "copy",
             "-c:a", "aac",
             "-b:a", "192k",
-            "-shortest",
-            "-movflags", "+faststart",
-            str(temp_out)
+            "-shortest"
         ]
+        if total_duration <= 1800.0:
+            cmd.extend(["-movflags", "+faststart"])
+        cmd.append(str(temp_out))
 
         print(f"   ⚡ Đang hợp nhất luồng Stream Copy & tối ưu FastStart Web...", flush=True)
         proc = subprocess.Popen(

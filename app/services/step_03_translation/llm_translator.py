@@ -19,6 +19,7 @@ from app.core.llm_client import (
     get_active_openrouter_keys
 )
 from app.services.step_03_translation.profiles import build_user_translation_prompt, build_standard_system_prompt
+from app.services.step_03_translation.script_parser import parse_ai_script_output
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,8 @@ async def extract_batch_entities_pass1_llm(
     raw_ents = await extract_batch_entities_direct_llm(
         combined_raw_text=batch_raw_text,
         existing_entities=accumulated_entities,
-        genre_key=genre
+        genre_key=genre,
+        provider=provider
     )
     result = []
     for ent in raw_ents:
@@ -112,56 +114,36 @@ async def translate_batch_pass2_llm(
             provider=provider,
             model=model,
             temperature=trans_temperature,
-            response_mime_type="application/json",
+            response_mime_type=None,
             prompt_file_path=prompt_save_path,
             timeout=180.0,
             system_instruction=system_prompt
         )
 
-    # VÒNG LẶP AUTO-RETRY KIỂM TRA SỐ LƯỢNG ITEM JSON ĐẾN KHI ĐẠT CHUẨN MỚI THÔI
+    # VÒNG LẶP AUTO-RETRY KIỂM TRA SỐ LƯỢNG ITEM ĐẾN KHI ĐẠT CHUẨN MỚI THÔI
     current_prompt = user_prompt
     attempt = 0
     while True:
         attempt += 1
         ans = await _execute_single_call(current_prompt)
         
-        # Bóc tách JSON an toàn
-        parsed_items = None
-        try:
-            parsed_items = safe_json_loads(ans)
-            if isinstance(parsed_items, dict):
-                for v in parsed_items.values():
-                    if isinstance(v, list):
-                        parsed_items = v
-                        break
-        except Exception as json_parse_err:
-            import logging
-            logging.getLogger(__name__).warning(f"⚠️ [JSON Syntax Error] Lỗi cú pháp JSON ở lần {attempt}: {json_parse_err}")
+        # Bóc tách kịch bản an toàn (hỗ trợ cả dòng [Role|start-end] và JSON)
+        parsed_items = parse_ai_script_output(ans)
 
-        # KIỂM TRA TÍNH TOÀN VẸN CỦA MẢNG JSON TRẢ VỀ:
-        # Nhìn vào CON SỐ THỜI GIAN VÀ NỘI DUNG DỊCH THỰC TẾ, không bắt bẻ hình thức!
+        # KIỂM TRA TÍNH TOÀN VẸN CỦA KỊCH BẢN TRẢ VỀ:
         is_valid = False
         duplicate_detected = False
         duplicate_detail = ""
 
         if isinstance(parsed_items, list) and len(parsed_items) > 0:
-            # Kiểm tra xem các phần tử có chứa trường nội dung dịch ("vi", "text", "viet") hay không
             valid_items = [
                 it for it in parsed_items 
-                if isinstance(it, dict) and any(k in it for k in ["vi", "viet", "text", "translation"])
+                if isinstance(it, dict) and any(k in it for k in ["vi", "viet", "text", "translation"]) and str(it.get("vi") or it.get("text") or "").strip()
             ]
-            # Chỉ cần có nội dung dịch hợp lệ là công nhận kết quả (PostProcessor sẽ lo phần ánh xạ số liệu)
             if len(valid_items) > 0 and len(valid_items) >= max(1, int(len(parsed_items) * 0.70)):
                 is_valid = True
 
             # KIỂM TRA LẶP NỘI DUNG LIỀN KỀ:
-            # CHỈ BÁO LỖI KHI CÂU GỐC TIẾNG TRUNG KHÁC NHAU!
-            # 1. Chỉ so sánh thuần chữ cái/số, gọt sạch 100% dấu câu (. , ! ? … - :) để không bị bắt nhầm.
-            # 2. Gom toàn bộ câu gốc tiếng Trung từ mốc trùng với 'start' đến mốc trùng với 'end' của câu gộp để so sánh.
-            # KIỂM TRA LẶP NỘI DUNG LIỀN KỀ:
-            # CHỈ BÁO LỖI KHI CÂU GỐC TIẾNG TRUNG KHÁC NHAU!
-            # 1. Chỉ so sánh thuần chữ cái/số, gọt sạch 100% dấu câu (. , ! ? … - :) để không bị bắt nhầm.
-            # 2. Gom toàn bộ câu gốc tiếng Trung từ các mẩu 'src' của câu gộp để so sánh.
             if is_valid and len(parsed_items) > 1 and isinstance(input_items, list):
                 def _pure_text(t: str) -> str:
                     return re.sub(r'[^\w\s]', '', str(t).lower()).strip()
@@ -191,8 +173,8 @@ async def translate_batch_pass2_llm(
                     vi_curr_pure = _pure_text(item_curr.get("vi", ""))
                     
                     if vi_prev_pure and vi_curr_pure and vi_prev_pure == vi_curr_pure and len(vi_curr_pure) >= 4:
-                        zh_prev_span = _pure_text(_get_zh_span_by_src(item_prev))
-                        zh_curr_span = _pure_text(_get_zh_span_by_src(item_curr))
+                        zh_prev_span = _pure_text(item_prev.get("zh") or _get_zh_span_by_src(item_prev))
+                        zh_curr_span = _pure_text(item_curr.get("zh") or _get_zh_span_by_src(item_curr))
                         
                         # Nếu nội dung gốc tiếng Trung từ các mẩu src cũng giống hệt nhau (như nhân vật hét lặp lại) -> CHO QUA 100%!
                         if zh_prev_span and zh_curr_span and zh_prev_span == zh_curr_span:
@@ -209,13 +191,13 @@ async def translate_batch_pass2_llm(
             if attempt > 1:
                 import logging
                 logging.getLogger(__name__).info(
-                    f"✔ [Smart JSON Validation] Đã dịch lại thành công ở lần {attempt}! Nhận {len(parsed_items)} câu hợp lệ."
+                    f"✔ [Smart Script Validation] Đã dịch lại thành công ở lần {attempt}! Nhận {len(parsed_items)} câu hợp lệ."
                 )
             return ans
 
         # NẾU ĐÃ THỬ 3 LẦN MÀ PARSE ĐƯỢC MẢNG: CHẤP NHẬN ĐỂ HEALER XỬ LÝ TIẾP
         if attempt >= 3 and isinstance(parsed_items, list) and len(parsed_items) > 0:
-            return json.dumps(parsed_items, ensure_ascii=False)
+            return ans
 
         # NẾU CHƯA ĐẠT: GỬI LỆNH YÊU CẦU DỊCH LẠI
         actual_len = len(parsed_items) if isinstance(parsed_items, list) else 0
@@ -230,11 +212,11 @@ async def translate_batch_pass2_llm(
             )
         else:
             logging.getLogger(__name__).warning(
-                f"⚠️ [JSON Validation] Lần {attempt}: Lỗi cấu trúc JSON! Đang yêu cầu LLM dịch lại..."
+                f"⚠️ [Script Format Validation] Lần {attempt}: Định dạng kịch bản chưa hợp lệ! Đang yêu cầu LLM dịch lại..."
             )
             retry_note = (
-                f"\n\n[CẢNH BÁO LỖI CÚ PHÁP]: Mảng JSON bạn vừa trả về không đúng định dạng chuẩn! "
-                f"BẮT BUỘC trả về mảng JSON thuần túy: [ {{\"role\": \"NARRATOR\", \"src\": [1, 3], \"vi\": \"...\"}} ]."
+                f"\n\n[CẢNH BÁO LỖI ĐỊNH DẠNG]: Bản dịch không đúng quy chuẩn! "
+                f"BẮT BUỘC dịch tuần tự từ dòng 1 đến hết, mỗi câu dịch trên 1 dòng theo đúng cú pháp: [Tên Vai|zh chữ Hán] Lời thoại tiếng Việt trọn vẹn (TUYỆT ĐỐI KHÔNG đánh số thứ tự vào thẻ)."
             )
         current_prompt = user_prompt + retry_note
 

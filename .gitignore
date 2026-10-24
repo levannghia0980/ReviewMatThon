@@ -78,3 +78,7 @@ raw_frame*.*
 clip_frame*.*
 locked.mp4
 out.mp4
+demo_*.png
+mask_*.png
+t_mixer_frame.png
+*_backup.py

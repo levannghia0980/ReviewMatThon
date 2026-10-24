@@ -62,6 +62,10 @@ class PostProcessor:
                     it_e = round(float(item.get("e", 0)), 2)
                     vi_val = str(item.get("vi", "")).strip()
 
+                    # KHỬ SẠCH NHÃN KỸ THUẬT HỆ THỐNG [KHÓA] VÀ (X.Xs) NẾU CÒN SÓT
+                    from app.services.step_03_translation.script_parser import clean_system_tags_from_text
+                    vi_val = clean_system_tags_from_text(vi_val)
+
                     # KHỬ SẠCH TIỀN TỐ TÊN NHÂN VẬT NẾU LLM LỠ IN THỪA (Ví dụ: "Giai Giai: Thôi quên đi..." -> "Thôi quên đi...")
                     role_val = (item.get("role") or item.get("speaker") or "").strip()
                     if role_val and vi_val.lower().startswith(f"{role_val.lower()}:"):
@@ -91,7 +95,9 @@ class PostProcessor:
                     vi_val = re.sub(r'^(?:[A-Za-z0-9_À-ỹ\s]{1,25}|Nhân\s*vật\s*[A-Za-z0-9]+)\s*[:：]\s*', '', vi_val).strip()
 
                     if matched_segs:
-                        role_val = item.get("role") or item.get("speaker") or "NARRATOR"
+                        role_val = item.get("role") or item.get("speaker") or "DẪN CHUYỆN"
+                        if str(role_val).upper() in ["NARRATOR", "DẪN CHUYỆN", "DAN CHUYEN", "DẪN", "KỂ", "KỂ CHUYỆN", "NGƯỜI KỂ", "THUYẾT MINH"]:
+                            role_val = "DẪN CHUYỆN"
                         if len(matched_segs) == 1:
                             lead_seg = matched_segs[0]
                             result_map[lead_seg.id] = vi_val
@@ -273,6 +279,9 @@ class PostProcessor:
             return ""
             
         text = PostProcessor.extract_clean_vietnamese_text(viet_text)
+        from app.services.step_03_translation.script_parser import clean_system_tags_from_text
+        text = clean_system_tags_from_text(text)
+
         # Loại bỏ các thẻ XML hoặc số thứ tự đầu câu còn sót
         text = re.sub(r'<\s*/?\s*s(?:\s+id=[\'"]?\d+[\'"]?)?\s*>', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\[#\d+\]', '', text).strip()

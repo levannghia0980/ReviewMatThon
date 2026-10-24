@@ -130,16 +130,18 @@ def normalize_tts_text(text: str) -> str:
     text = re.sub(r'[\(\)\[\]\{\}]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
 
-    # Kiểm tra xem câu có kết thúc bằng dấu ba chấm "..." hoặc "…" không
-    is_ellipsis = bool(re.search(r'(?:\.\.\.|…)$', text))
+    # 3. Chuẩn hóa dấu câu ở GIỮA chunk: Chuyển toàn bộ các dấu kết câu (. ! ? : ... …) ở giữa câu thành dấu chấm phẩy ";"
+    # để tránh làm hỏng âm/nghẹn giọng của TTS CapCut/TikTok giữa chừng.
+    text = re.sub(r'(?:\.{3,}|…)', ';', text)
+    text = re.sub(r'[\.\!\?\:\;]+(?=\s|$)', ';', text)
+    text = re.sub(r'\s*;\s*', '; ', text)
+    text = re.sub(r';+', ';', text).strip()
+
     # Dọn sạch dấu câu dở dang ở cuối
     text = re.sub(r'[\.\,\!\?\…\:\;\—\-\_\s]+$', '', text).strip()
 
-    # Chuẩn hóa kết thúc: nếu có ngắt nghỉ ellipsis (gap >= 0.85s) thì kết thúc bằng "...", ngược lại kết thúc bằng "."
-    if is_ellipsis:
-        return f"{text}..."
-    else:
-        return f"{text}."
+    # Chuẩn hóa kết thúc: kết thúc bằng dấu chấm phẩy ";"
+    return f"{text};" if text else ""
 
 
 def sanitize_to_vietnamese(text: Optional[str], fallback_orig: Optional[str] = None) -> str:
@@ -573,13 +575,13 @@ class TikTokTTSService:
                         d.borrowed_end_time = round(start_sec + target_dur, 2)
                         d.borrowed_duration = round(target_dur, 2)
 
-                # 5. Co giãn 2 chiều bắt buộc: làm nhanh hoặc chậm để bắt đầu đúng start và vừa in đúng lúc end
+                # 5. Co giãn: Nếu tỷ lệ nhỏ hơn hoặc bằng 1.0 -> Giữ nguyên 1.0x tự nhiên (khoảng thừa để end gánh)
                 speed_factor = trimmed_dur_sec / target_dur
-                if abs(speed_factor - 1.0) < 0.01:
+                if speed_factor <= 1.00:
                     fitted_seg = seg_to_stretch
                     actual_speed = 1.0
                 else:
-                    safe_speed = max(0.35, min(3.5, speed_factor))
+                    safe_speed = min(1.30, speed_factor)  # Khóa trần cứng tốc độ đọc <= 1.30x
                     fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, safe_speed)
                     actual_speed = safe_speed
 
@@ -641,7 +643,7 @@ class TikTokTTSService:
 
                 raw_speed_factor = trimmed_dur_sec / target_dur
                 if auto_fit_timeline and raw_speed_factor > 1.00:
-                    speed_factor = raw_speed_factor
+                    speed_factor = min(1.30, raw_speed_factor)  # Khóa trần cứng <= 1.30x
                     fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, speed_factor)
                     actual_speed = speed_factor
                 else:

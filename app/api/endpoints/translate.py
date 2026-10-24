@@ -16,6 +16,12 @@ def _run_translation_worker(task_id: str, req: TranslateProjectRequest):
     """Worker chạy background thread độc lập để dịch thuật không block HTTP request"""
     db = SessionLocal()
     try:
+        # Tự động nạp lại cấu hình mới nhất từ file .env trước khi thực thi
+        try:
+            settings.reload_from_env()
+        except Exception:
+            pass
+
         task_manager.update_task(task_id, status="running", step=1, progress=5)
         
         loop = asyncio.new_event_loop()
@@ -23,7 +29,7 @@ def _run_translation_worker(task_id: str, req: TranslateProjectRequest):
         
         effective_batch_size = req.batch_size or getattr(settings, "TRANSLATION_BATCH_SIZE", 500)
         effective_max_chars = req.max_chars or getattr(settings, "TRANSLATION_MAX_CHARS", 50000)
-        effective_provider = getattr(settings, "TRANSLATION_PROVIDER", "gemini")
+        effective_provider = (req.provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")).strip()
 
         loop.run_until_complete(
             TranslationPipelineService.translate_project_dialogues(

@@ -188,6 +188,16 @@ export default function MainStudioView({ onNavigateTab }) {
     loadSettings();
     checkActiveTask(); // Gọi đúng 1 lần khi mở app
 
+    const handleSettingsUpdated = (e) => {
+      const cfg = e?.detail;
+      if (cfg && cfg.translation_batch_size) {
+        setBatchSize(cfg.translation_batch_size);
+      } else {
+        loadSettings();
+      }
+    };
+    window.addEventListener('settings-updated', handleSettingsUpdated);
+
     // KẾT NỐI SERVER-SENT EVENTS (SSE): Nhận tín hiệu thời gian thực khi BE có sự kiện
     // Không bao giờ spam polling lặp đi lặp lại!
     let eventSource = null;
@@ -244,6 +254,7 @@ export default function MainStudioView({ onNavigateTab }) {
     }
 
     return () => {
+      window.removeEventListener('settings-updated', handleSettingsUpdated);
       if (eventSource) {
         eventSource.close();
       }

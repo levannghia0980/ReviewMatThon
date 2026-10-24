@@ -9,6 +9,7 @@ class DialogueSegment(BaseModel):
     text: str = Field(..., description="Lời thoại gốc")
     clean_text: Optional[str] = Field(default="", description="Lời thoại đã làm sạch từ đệm & ký tự thừa")
     translated_text: Optional[str] = Field(default="", description="Bản dịch Tiếng Việt chuẩn AIREAD")
+    reference_text: Optional[str] = Field(default="", description="Bản dịch tham chiếu CapCut đối chứng")
     final_text: Optional[str] = Field(default="", description="Bản dịch sau hậu xử lý & kiểm định")
     confidence: Optional[float] = Field(default=0.0, description="Độ tin cậy của AI ASR")
     role: Optional[str] = Field(default="NARRATOR", description="Vai diễn: NARRATOR hoặc tên nhân vật")

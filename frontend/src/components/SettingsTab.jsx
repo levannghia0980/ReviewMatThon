@@ -65,7 +65,14 @@ export default function SettingsTab() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ translation_provider: mode === 'web' ? 'gemini_web' : 'gemini' })
-    }).catch(() => {});
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.settings) {
+          window.dispatchEvent(new CustomEvent('settings-updated', { detail: data.settings }));
+        }
+      })
+      .catch(() => {});
   };
   
   // TTS Engine & Concurrency (CapCut vs TikTok, Up to 128 threads)
@@ -313,8 +320,9 @@ export default function SettingsTab() {
         if (data.settings) {
           setHasBilibiliCookie(!!data.settings.has_bilibili_cookie);
           setResolvedBilibiliCookie(data.settings.resolved_bilibili_cookie || '');
+          window.dispatchEvent(new CustomEvent('settings-updated', { detail: data.settings }));
         }
-        setSaveMessage({ success: true, text: '🎉 Đã lưu toàn bộ cấu hình vào file .env và bộ nhớ trình duyệt an toàn!' });
+        setSaveMessage({ success: true, text: '🎉 Đã lưu toàn bộ cấu hình vào file .env và cập nhật tức thì toàn hệ thống!' });
         setTimeout(() => setSaveMessage(null), 4000);
       } else {
         setSaveMessage({ success: false, text: data.detail || 'Lỗi khi lưu cấu hình.' });

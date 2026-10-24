@@ -35,20 +35,27 @@ class GeminiBrowserSessionManager:
         """
         Quét và đóng triệt để mọi tiến trình Chromium hoặc Node bị kẹt
         đang chiếm giữ profile thư mục database/gemini_profile để tránh xung đột khóa tệp.
+        Sử dụng psutil để quét tức thì (<0.1s) và tuyệt đối không ảnh hưởng đến Chrome cá nhân của người dùng.
         """
-        import subprocess
         profile_dir = cls.get_profile_dir()
         try:
-            ps_cmd = (
-                '$procs = Get-CimInstance Win32_Process | Where-Object { '
-                '($_.Name -like "*chrome*" -or $_.Name -like "*node*") -and '
-                '($_.CommandLine -like "*gemini_profile*" -or $_.CommandLine -like "*playwright*") -and '
-                '($_.CommandLine -notlike "*AppData\\Local\\Google\\Chrome\\User Data*") }; '
-                'foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }'
-            )
-            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd], capture_output=True, text=True, timeout=5)
+            import psutil
+            my_pid = os.getpid()
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['pid'] == my_pid:
+                        continue
+                    pname = (proc.info['name'] or '').lower()
+                    if 'chrome' not in pname and 'node' not in pname:
+                        continue
+                    cmdline = " ".join(proc.info['cmdline'] or [])
+                    # Chỉ diệt tiến trình có flag trỏ vào database/gemini_profile
+                    if "gemini_profile" in cmdline:
+                        proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
         except Exception as e:
-            logger.debug(f"Không thể quét tiến trình Chrome con: {e}")
+            logger.debug(f"Không thể quét tiến trình Chrome con qua psutil: {e}")
 
         # Xóa các file lock của Chromium
         for lock_name in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:

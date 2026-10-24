@@ -33,52 +33,41 @@ def get_db():
 
 def init_db():
     """Tự động tạo bảng và migrate các cột còn thiếu trong SQLite khi Server khởi động"""
+    import app.models  # Nạp đầy đủ metadata của tất cả các bảng
     Base.metadata.create_all(bind=engine)
+
     
-    # Auto-migration nhẹ nhàng cho SQLite nếu database cũ còn thiếu cột mới
+    # Dọn dẹp triệt để 3 bảng cũ đã được di trú 100% sang pipeline_segments
+    # và tự động migrate các cột TTS/Timeline cần thiết cho pipeline_segments
     try:
         with engine.connect() as conn:
             inspector = inspect(engine)
             existing_tables = inspector.get_table_names()
+            for legacy_tbl in ["dialogue_segments", "tts_dialogue_segments", "video_subtitle_segments"]:
+                if legacy_tbl in existing_tables:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {legacy_tbl}"))
 
-            # 1. Kiểm tra bảng dialogue_segments
-            if "dialogue_segments" in existing_tables:
-                diag_cols = {col["name"] for col in inspector.get_columns("dialogue_segments")}
-                if "role" not in diag_cols:
-                    conn.execute(text("ALTER TABLE dialogue_segments ADD COLUMN role VARCHAR(100) DEFAULT 'NARRATOR'"))
-                if "speaker" not in diag_cols:
-                    conn.execute(text("ALTER TABLE dialogue_segments ADD COLUMN speaker VARCHAR(100) DEFAULT 'NARRATOR'"))
-                if "voice_audio_path" not in diag_cols:
-                    conn.execute(text("ALTER TABLE dialogue_segments ADD COLUMN voice_audio_path VARCHAR(500) NULL"))
-                if "voice_duration" not in diag_cols:
-                    conn.execute(text("ALTER TABLE dialogue_segments ADD COLUMN voice_duration FLOAT DEFAULT 0.0"))
-                if "speed_ratio" not in diag_cols:
-                    conn.execute(text("ALTER TABLE dialogue_segments ADD COLUMN speed_ratio FLOAT DEFAULT 1.0"))
+            if "pipeline_segments" in existing_tables:
+                pipe_cols = {col["name"] for col in inspector.get_columns("pipeline_segments")}
+                needed_cols = [
+                    ("src_start_index", "INTEGER NULL"),
+                    ("src_end_index", "INTEGER NULL"),
+                    ("borrowed_start_time", "FLOAT NULL"),
+                    ("borrowed_end_time", "FLOAT NULL"),
+                    ("borrowed_duration", "FLOAT NULL"),
+                    ("borrow_prev_sec", "FLOAT DEFAULT 0.0"),
+                    ("borrow_next_sec", "FLOAT DEFAULT 0.0"),
+                    ("raw_audio_duration", "FLOAT DEFAULT 0.0"),
+                    ("trimmed_audio_duration", "FLOAT DEFAULT 0.0"),
+                    ("cut_head_ms", "INTEGER DEFAULT 0"),
+                    ("cut_tail_ms", "INTEGER DEFAULT 0"),
+                    ("initial_ratio", "FLOAT DEFAULT 1.0"),
+                ]
+                for col_name, col_type in needed_cols:
+                    if col_name not in pipe_cols:
+                        conn.execute(text(f"ALTER TABLE pipeline_segments ADD COLUMN {col_name} {col_type}"))
 
-            # 2. Kiểm tra bảng tts_dialogue_segments
-            if "tts_dialogue_segments" in existing_tables:
-                tts_cols = {col["name"] for col in inspector.get_columns("tts_dialogue_segments")}
-                if "borrowed_start_time" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN borrowed_start_time FLOAT NULL"))
-                if "borrowed_end_time" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN borrowed_end_time FLOAT NULL"))
-                if "borrowed_duration" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN borrowed_duration FLOAT NULL"))
-                if "borrow_prev_sec" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN borrow_prev_sec FLOAT DEFAULT 0.0"))
-                if "borrow_next_sec" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN borrow_next_sec FLOAT DEFAULT 0.0"))
-                if "final_speed_ratio" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN final_speed_ratio FLOAT DEFAULT 1.0"))
-                if "initial_ratio" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN initial_ratio FLOAT DEFAULT 1.0"))
-                if "cut_head_ms" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN cut_head_ms INTEGER DEFAULT 0"))
-                if "cut_tail_ms" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN cut_tail_ms INTEGER DEFAULT 0"))
-                if "is_anomaly" not in tts_cols:
-                    conn.execute(text("ALTER TABLE tts_dialogue_segments ADD COLUMN is_anomaly BOOLEAN DEFAULT 0"))
             conn.commit()
     except Exception as e:
-        # Ghi nhận nhưng không làm crash app nếu đã tồn tại
         pass
+

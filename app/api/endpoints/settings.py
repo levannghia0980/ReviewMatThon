@@ -158,7 +158,9 @@ async def update_settings(req: SettingsUpdateRequest):
             "has_openrouter_key": bool(settings.OPENROUTER_API_KEY and settings.OPENROUTER_API_KEY.strip()),
             "translation_max_chars": settings.TRANSLATION_MAX_CHARS,
             "translation_batch_size": settings.TRANSLATION_BATCH_SIZE,
+            "translation_temperature": getattr(settings, "TRANSLATION_TEMPERATURE", 0.85),
             "tts_threads": settings.TTS_MAX_WORKERS,
+            "asr_threads": getattr(settings, "ASR_MAX_WORKERS", 8),
         }
     }
 

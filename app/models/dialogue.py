@@ -1,147 +1,131 @@
 # -*- coding: utf-8 -*-
-from typing import Optional
+"""
+app/models/dialogue.py
+======================
+BẢNG HỢP NHẤT DUY NHẤT (UNIFIED PIPELINE SEGMENT MODEL)
+Quản trị toàn bộ các mẩu câu xuyên suốt 4 pha trong vòng đời Pipeline:
+1. RAW_ASR    : Câu nhận diện âm thanh gốc (CapCut/Whisper), lưu vĩnh viễn bản dịch tham chiếu CapCut (reference_text).
+2. LLM_MERGED : Câu kịch bản trau chuốt do AI LLM gộp và dịch thuật.
+3. TTS_AUDIO  : Câu lồng tiếng TTS hoàn chỉnh (lưu actual_duration, speed_ratio, audio_path, is_anomaly).
+4. SUB_KARAOKE: Phụ đề hiển thị màn hình Karaoke khớp chính xác theo sóng âm.
+"""
+
+from typing import Optional, List
 from sqlalchemy import Column, Integer, String, Float, Text, Boolean, ForeignKey, UniqueConstraint, Index
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from app.db.session import Base
 
-# =============================================================================
-# NGUYÊN TẮC BẤT BIẾN TUYỆT ĐỐI (IMMUTABILITY INVARIANTS):
-#
-# BẢO VỆ TIMECODE GỐC:
-# 1. dialogue_segments.start_time / end_time
-#    -> Ghi 1 LẦN DUY NHẤT bởi ASR (CapCut/Whisper), KHÔNG BAO GIỜ thay đổi.
-#    -> Đây là "chân lý vật lý" của video gốc. Mọi thuật toán phải đọc từ đây.
-#
-# 2. tts_dialogue_segments.start_time / end_time
-#    -> Ghi 1 LẦN DUY NHẤT bởi SmartTimelineHealer sau bước dịch thuật.
-#    -> KHÔNG BAO GIỜ bị TimelineBorrower, ChunkMerger hay bất kỳ bước nào đè hỏng.
-#
-# 3. tts_dialogue_segments.borrowed_start_time / borrowed_end_time (NULLABLE)
-#    -> CHỈ được ghi bởi TimelineBorrower để lưu kết quả vay mượn TTS.
-#    -> Đây là dữ liệu tham khảo, KHÔNG dùng làm "gốc" cho lần chạy tiếp theo.
-#    -> Khi chạy TTS lại: Reset về NULL, tính lại từ start_time/end_time.
-# =============================================================================
 
-
-class DialogueSegmentModel(Base):
+class PipelineSegmentModel(Base):
     """
-    Bảng câu thoại ASR gốc – Bất biến sau bước STT.
-
-    Lưu từng mẩu câu nhỏ do ASR nhận diện.
-    start_time / end_time = mốc thời gian gốc của video, KHÔNG BAO GIỜ thay đổi.
+    BẢNG DUY NHẤT THỐNG NHẤT (UNIFIED PIPELINE SEGMENTS)
+    Thay thế hoàn toàn 3 bảng rời rạc cũ (dialogue_segments, tts_dialogue_segments, video_subtitle_segments).
+    Hỗ trợ Single Table Inheritance để các lớp DialogueSegmentModel, TTSDialogueSegmentModel,
+    SubtitleSegmentModel tự động ánh xạ theo stage tương ứng.
     """
-    __tablename__ = "dialogue_segments"
+    __tablename__ = "pipeline_segments"
     __table_args__ = (
-        UniqueConstraint("task_id", "index", name="uq_task_dialogue_index"),
-        Index("idx_diag_task_tts", "task_id", "tts_index"),
-        Index("idx_diag_task_status", "task_id", "status"),
+        UniqueConstraint("task_id", "stage", "index", name="uq_task_stage_index"),
+        Index("idx_pipe_task_stage_idx", "task_id", "stage", "index"),
+        Index("idx_pipe_task_stage_batch", "task_id", "stage", "batch_index"),
+        Index("idx_pipe_task_parent", "task_id", "parent_index"),
+        Index("idx_pipe_task_anomaly", "task_id", "is_anomaly"),
     )
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
     task_id = Column(Integer, ForeignKey("project_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    index = Column(Integer, nullable=False, index=True)         # Thứ tự câu ASR gốc: 1, 2, 3...
-    tts_index = Column(Integer, nullable=True, index=True)      # Liên kết tới câu gộp TTS
 
-    # -- TIMELINE ASR GỐC – BẤT BIẾN TUYỆT ĐỐI --
-    # Chỉ được ghi bởi WhisperService/CapCutASR, KHÔNG AI ĐƯỢC SỬA SAU ĐÓ.
-    start_time = Column(Float, nullable=False)   # Giây bắt đầu ASR gốc
-    end_time   = Column(Float, nullable=False)   # Giây kết thúc ASR gốc
-    duration   = Column(Float, nullable=False)   # end_time - start_time (giây)
+    # 1. PHÂN CẤP TẦNG DỮ LIỆU (STAGE)
+    # RAW_ASR | LLM_MERGED | TTS_AUDIO | SUB_KARAOKE
+    stage = Column(String(30), nullable=False, index=True)
 
-    # -- NỘI DUNG VĂN BẢN --
-    original_text   = Column(Text, nullable=False)  # Tiếng nguồn gốc (Trung/Anh...)
-    clean_text      = Column(Text, nullable=True)   # Tiếng nguồn đã lọc từ đệm
-    translated_text = Column(Text, nullable=True)   # Bản dịch tiếng Việt (Karaoke Subtitle)
+    # 2. SỐ THỨ TỰ & PHÂN LÔ
+    index = Column(Integer, nullable=False, index=True)
+    batch_index = Column(Integer, default=1, index=True)
 
-    # -- NHÂN VẬT --
-    role    = Column(String(100), default="NARRATOR")   # NARRATOR | tên nhân vật
-    speaker = Column(String(100), default="NARRATOR")   # Alias của role (tương thích TTS)
+    # 3. QUAN HỆ HỒI QUY (LINEAGE / TRACEABILITY)
+    parent_index   = Column(Integer, nullable=True, index=True)   # Trỏ về câu TTS_AUDIO cha
+    source_indices = Column(String(500), nullable=True)          # Chuỗi các câu con (vd: "1,2,3")
+    sub_count      = Column(Integer, default=1)                  # Số lượng mẩu con gộp lại
 
-    # -- ÂM THANH RIÊNG (NẾU CÓ) --
-    voice_audio_path = Column(String(500), nullable=True)
-    voice_duration   = Column(Float, default=0.0)
-    speed_ratio      = Column(Float, default=1.0)
+    # 4. TIMECODE VẬT LÝ & ÂM THANH
+    start_time = Column(Float, nullable=False)
+    end_time   = Column(Float, nullable=False)
+    duration   = Column(Float, nullable=False)
 
-    # -- CHẤT LƯỢNG & TRẠNG THÁI --
-    confidence = Column(Float, default=0.0)
-    # RAW: Chưa dịch | TRANSLATED: Đã dịch | DUBBED: Đã lồng tiếng | SYNCED: Đã đồng bộ sub
-    status = Column(String(30), default="RAW")
+    # 5. NỘI DUNG VĂN BẢN
+    original_text   = Column(Text, nullable=False)
+    translated_text = Column(Text, nullable=True)
+    reference_text  = Column(Text, nullable=True)  # Bản dịch tham chiếu CapCut bất biến
 
-    project = relationship("ProjectTask", back_populates="dialogues")
+    # 6. NHÂN VẬT & GIỌNG ĐỌC
+    role       = Column(String(100), default="NARRATOR")
+    speaker    = Column(String(100), default="NARRATOR")
+    voice_code = Column(String(100), nullable=True)
 
+    # 7. THÔNG SỐ ÂM THANH THỰC TẾ
+    audio_path      = Column(String(500), nullable=True)
+    actual_duration = Column(Float, default=0.0)
+    speed_ratio     = Column(Float, default=1.0)
 
-class TTSDialogueSegmentModel(Base):
-    """
-    Bảng câu gộp TTS – Được xây dựng từ SmartTimelineHealer sau bước dịch.
+    # 8. TRẠNG THÁI & CẢNH BÁO BẤT THƯỜNG
+    confidence = Column(Float, default=0.98)
+    status     = Column(String(30), default="PENDING")
+    is_anomaly = Column(Boolean, default=False, index=True)
+    is_locked  = Column(Boolean, default=False)
 
-    Mỗi hàng = 1 chunk âm thanh đọc liên tục (có thể gộp nhiều mẩu ASR con).
-
-    NGUYÊN TẮC BẤT BIẾN:
-    - start_time / end_time: Bất biến từ SmartTimelineHealer, KHÔNG AI SỬA SAU ĐÓ.
-    - borrowed_start_time / borrowed_end_time: CHỈ TimelineBorrower ghi, dùng tham khảo.
-    - Toàn bộ xử lý audio (ghép master_buffer) đọc start_time/end_time.
-      TimelineBorrower chỉ trả về Dict[tts_index -> (borrow_start, borrow_end)]
-      để dùng NỘI BỘ khi ghép audio, KHÔNG ghi đè start_time/end_time.
-    """
-    __tablename__ = "tts_dialogue_segments"
-    __table_args__ = (
-        UniqueConstraint("task_id", "tts_index", name="uq_task_tts_dialogue_index"),
-        Index("idx_tts_task_batch", "task_id", "batch_index"),
-        Index("idx_tts_task_speaker", "task_id", "speaker"),
-        Index("idx_tts_task_status", "task_id", "status"),
-    )
-
-    id          = Column(Integer, primary_key=True, autoincrement=True)
-    task_id     = Column(Integer, ForeignKey("project_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    tts_index   = Column(Integer, nullable=False, index=True)   # Thứ tự chunk TTS: 1, 2, 3...
-    batch_index = Column(Integer, default=1)                    # Thuộc lô dịch nào
-
-    # -- 1. LIÊN KẾT VỀ CÂU ASR GỐC --
-    src_start_index = Column(Integer, nullable=False)    # Mẩu ASR đầu tiên được gộp (vd: 35)
-    src_end_index   = Column(Integer, nullable=False)    # Mẩu ASR cuối cùng được gộp (vd: 37)
-    src_indices     = Column(String(500), nullable=False)   # Chuỗi trực quan: "35,36,37"
-    orig_count      = Column(Integer, default=1)            # Số mẩu ASR gộp lại
-
-    # -- 2. TIMELINE ASR GỐC – BẤT BIẾN TUYỆT ĐỐI --
-    # Ghi 1 lần bởi SmartTimelineHealer, KHÔNG AI ĐƯỢC SỬA SAU ĐÓ.
-    start_time = Column(Float, nullable=False)   # Giây bắt đầu theo ASR gốc
-    end_time   = Column(Float, nullable=False)   # Giây kết thúc theo ASR gốc
-    duration   = Column(Float, nullable=False)   # end_time - start_time
-
-    # -- 3. TIMELINE SAU VAY MƯỢN (TimelineBorrower) – CHỈ THAM KHẢO --
-    borrowed_start_time = Column(Float, nullable=True)   # Start sau vay mượn
-    borrowed_end_time   = Column(Float, nullable=True)   # End sau vay mượn
-    borrowed_duration   = Column(Float, nullable=True)   # Tổng cửa sổ sau vay mượn
-    borrow_prev_sec     = Column(Float, default=0.0)     # Đã vay của câu trước (giây)
-    borrow_next_sec     = Column(Float, default=0.0)     # Đã vay của câu sau (giây)
-
-    # -- 4. KẾT QUẢ ÂM THANH THỰC TẾ (Sau khi ghép master_buffer) --
-    raw_audio_duration     = Column(Float, default=0.0)   # Độ dài TTS thô ban đầu
-    trimmed_audio_duration = Column(Float, default=0.0)   # Sau khi gọt đầu/đuôi silence
-    cut_head_ms            = Column(Integer, default=0)   # ms đã gọt đầu
-    cut_tail_ms            = Column(Integer, default=0)   # ms đã gọt đuôi
+    # 9. THÔNG SỐ VAY MƯỢN TIMELINE & TTS (TƯƠNG THÍCH 100% NHÁNH TEST1)
+    src_start_index        = Column(Integer, nullable=True)
+    src_end_index          = Column(Integer, nullable=True)
+    borrowed_start_time    = Column(Float, nullable=True)
+    borrowed_end_time      = Column(Float, nullable=True)
+    borrowed_duration      = Column(Float, nullable=True)
+    borrow_prev_sec        = Column(Float, default=0.0)
+    borrow_next_sec        = Column(Float, default=0.0)
+    raw_audio_duration     = Column(Float, default=0.0)
+    trimmed_audio_duration = Column(Float, default=0.0)
+    cut_head_ms            = Column(Integer, default=0)
+    cut_tail_ms            = Column(Integer, default=0)
     initial_ratio          = Column(Float, default=1.0)
-    final_speed_ratio      = Column(Float, default=1.0)   # Tỉ lệ co giãn cuối cùng
-    voice_duration         = Column(Float, default=0.0)   # Thời lượng audio dán vào phim
-    is_anomaly             = Column(Boolean, default=False) # True nếu final_speed_ratio > 2.0x
 
-    # -- 5. NỘI DUNG VĂN BẢN --
-    original_text   = Column(Text, nullable=False)   # Tiếng nguồn gộp
-    translated_text = Column(Text, nullable=False)   # Bản dịch tiếng Việt (chunk TTS)
+    project = relationship("ProjectTask", back_populates="pipeline_segments")
 
-    # -- 6. NHÂN VẬT & GIỌNG ĐỌC --
-    speaker          = Column(String(100), default="NARRATOR")
-    voice_code       = Column(String(100), nullable=True)
-    voice_audio_path = Column(String(500), nullable=True)   # File audio riêng của chunk
+    __mapper_args__ = {
+        "polymorphic_on": stage,
+        "polymorphic_identity": "PIPELINE_SEGMENT",
+    }
 
-    # -- 7. TRẠNG THÁI --
-    status    = Column(String(30), default="PENDING")
-    is_locked = Column(Boolean, default=False)   # Người dùng khóa thủ công
+    # =========================================================================
+    # ALIASES & SYNONYMS TẦNG ORM (TƯƠNG THÍCH SQL QUERY CHO TEST1)
+    # Cho phép gọi .asc(), .desc(), .filter() hoặc đọc/ghi bình thường
+    # =========================================================================
+    text_vi            = synonym("translated_text")
+    text_zh            = synonym("original_text")
+    clean_text         = synonym("original_text")
+    final_speed_ratio  = synonym("speed_ratio")
+    voice_duration     = synonym("actual_duration")
+    voice_audio_path   = synonym("audio_path")
+    src_indices        = synonym("source_indices")
+    orig_count         = synonym("sub_count")
+    parent_tts_index   = synonym("parent_index")
+    tts_index          = synonym("index")
+    sub_index          = synonym("index")
 
-    project = relationship("ProjectTask", back_populates="tts_dialogues")
+    asr_start          = synonym("start_time")
+    asr_end            = synonym("end_time")
+    asr_duration       = synonym("duration")
+    borrowed_start     = synonym("borrowed_start_time")
+    borrowed_end       = synonym("borrowed_end_time")
 
     def __init__(self, *args, **kwargs):
-        # Hỗ trợ cả tên biến asr_start/asr_end và start_time/end_time
+        if "tts_index" in kwargs and "index" not in kwargs:
+            kwargs["index"] = kwargs.pop("tts_index")
+        if "sub_index" in kwargs and "index" not in kwargs:
+            kwargs["index"] = kwargs.pop("sub_index")
+        if "text_vi" in kwargs and "translated_text" not in kwargs:
+            kwargs["translated_text"] = kwargs.pop("text_vi")
+        if "text_zh" in kwargs and "original_text" not in kwargs:
+            kwargs["original_text"] = kwargs.pop("text_zh")
         if "asr_start" in kwargs and "start_time" not in kwargs:
             kwargs["start_time"] = kwargs.pop("asr_start")
         if "asr_end" in kwargs and "end_time" not in kwargs:
@@ -152,91 +136,67 @@ class TTSDialogueSegmentModel(Base):
             kwargs["borrowed_start_time"] = kwargs.pop("borrowed_start")
         if "borrowed_end" in kwargs and "borrowed_end_time" not in kwargs:
             kwargs["borrowed_end_time"] = kwargs.pop("borrowed_end")
-        if "speed_ratio" in kwargs and "final_speed_ratio" not in kwargs:
-            kwargs["final_speed_ratio"] = kwargs.pop("speed_ratio")
+        if "final_speed_ratio" in kwargs and "speed_ratio" not in kwargs:
+            kwargs["speed_ratio"] = kwargs.pop("final_speed_ratio")
+        if "src_indices" in kwargs and "source_indices" not in kwargs:
+            kwargs["source_indices"] = kwargs.pop("src_indices")
+        if "orig_count" in kwargs and "sub_count" not in kwargs:
+            kwargs["sub_count"] = kwargs.pop("orig_count")
+        if "voice_audio_path" in kwargs and "audio_path" not in kwargs:
+            kwargs["audio_path"] = kwargs.pop("voice_audio_path")
+        if "voice_duration" in kwargs and "actual_duration" not in kwargs:
+            kwargs["actual_duration"] = kwargs.pop("voice_duration")
         super().__init__(*args, **kwargs)
 
-    # -- ALIAS PROPERTIES --
-    @property
-    def asr_start(self) -> float:
-        return self.start_time
 
-    @property
-    def asr_end(self) -> float:
-        return self.end_time
+# =========================================================================
+# CÁC LỚP CON THỪA KẾ ĐA HÌNH (POLYMORPHIC SINGLE TABLE INHERITANCE)
+# Tự động ánh xạ 100% với các bảng cũ của nhánh test1 mà vẫn dùng chung 1 bảng SQLite
+# =========================================================================
+class DialogueSegmentModel(PipelineSegmentModel):
+    """Bảng câu thoại ASR gốc (stage='RAW_ASR')"""
+    __mapper_args__ = {"polymorphic_identity": "RAW_ASR"}
+    tts_index = synonym("parent_index")
 
-    @property
-    def asr_duration(self) -> float:
-        return self.duration
-
-    @property
-    def borrowed_start(self) -> Optional[float]:
-        return self.borrowed_start_time
-
-    @borrowed_start.setter
-    def borrowed_start(self, val: Optional[float]):
-        self.borrowed_start_time = val
-
-    @property
-    def borrowed_end(self) -> Optional[float]:
-        return self.borrowed_end_time
-
-    @borrowed_end.setter
-    def borrowed_end(self, val: Optional[float]):
-        self.borrowed_end_time = val
-
-    @property
-    def speed_ratio(self) -> float:
-        return self.final_speed_ratio
-
-    @speed_ratio.setter
-    def speed_ratio(self, val: float):
-        self.final_speed_ratio = val
-
-    @property
-    def clean_text(self) -> str:
-        return self.original_text or ""
-
-    @property
-    def role(self) -> str:
-        return self.speaker or "NARRATOR"
-
-    @property
-    def index(self) -> int:
-        return self.tts_index or 1
-
-    @index.setter
-    def index(self, value: int):
-        self.tts_index = value
+    def __init__(self, *args, **kwargs):
+        if "tts_index" in kwargs and "parent_index" not in kwargs:
+            kwargs["parent_index"] = kwargs.pop("tts_index")
+        super().__init__(*args, **kwargs)
 
 
-class SubtitleSegmentModel(Base):
-    """
-    BẢNG 3: Phụ đề hiển thị màn hình Karaoke (Karaoke Subtitles).
-    Được sinh ra từ kịch bản dịch và đồng bộ 100% theo sóng âm của chunk TTS cha.
-    Dùng trực tiếp để render phụ đề Karaoke ASS lên video.
-    """
-    __tablename__ = "video_subtitle_segments"
-    __table_args__ = (
-        UniqueConstraint("task_id", "sub_index", name="uq_task_sub_index"),
-        Index("idx_sub_task_tts", "task_id", "tts_index"),
-        Index("idx_sub_task_batch", "task_id", "batch_index"),
-    )
+class TTSDialogueSegmentModel(PipelineSegmentModel):
+    """Bảng câu thoại TTS (stage='TTS_AUDIO')"""
+    __mapper_args__ = {"polymorphic_identity": "TTS_AUDIO"}
+    tts_index = synonym("index")
 
-    id          = Column(Integer, primary_key=True, autoincrement=True)
-    task_id     = Column(Integer, ForeignKey("project_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    sub_index   = Column(Integer, nullable=False, index=True)   # Thứ tự phụ đề hiển thị: 1, 2, 3...
-    tts_index   = Column(Integer, nullable=False, index=True)   # Trỏ về chunk cha trong tts_dialogue_segments
-    batch_index = Column(Integer, default=1)
+    def __init__(self, *args, **kwargs):
+        if "tts_index" in kwargs and "index" not in kwargs:
+            kwargs["index"] = kwargs.pop("tts_index")
+        super().__init__(*args, **kwargs)
 
-    # -- TIMELINE PHỤ ĐỀ HIỂN THỊ (Đã căn theo sóng âm & lồng tiếng) --
-    start_time = Column(Float, nullable=False)   # Giây bắt đầu hiển thị sub
-    end_time   = Column(Float, nullable=False)   # Giây kết thúc hiển thị sub
-    duration   = Column(Float, nullable=False)   # end_time - start_time
 
-    # -- NỘI DUNG PHỤ ĐỀ --
-    text_vi = Column(Text, nullable=False)       # Chữ tiếng Việt hiển thị trên màn hình
-    text_zh = Column(Text, nullable=True)        # Câu gốc tiếng Trung tương ứng (nếu có)
-    speaker = Column(String(100), default="NARRATOR")
+class SubtitleSegmentModel(PipelineSegmentModel):
+    """Bảng câu phụ đề Karaoke (stage='SUB_KARAOKE')"""
+    __mapper_args__ = {"polymorphic_identity": "SUB_KARAOKE"}
+    sub_index = synonym("index")
+    tts_index = synonym("parent_index")
 
-    project = relationship("ProjectTask", back_populates="subtitles")
+    def __init__(self, *args, **kwargs):
+        if "sub_index" in kwargs and "index" not in kwargs:
+            kwargs["index"] = kwargs.pop("sub_index")
+        if "tts_index" in kwargs and "parent_index" not in kwargs:
+            kwargs["parent_index"] = kwargs.pop("tts_index")
+        super().__init__(*args, **kwargs)
+
+
+class LLMMergedSegmentModel(PipelineSegmentModel):
+    """Bảng câu kịch bản dịch thuật LLM (stage='LLM_MERGED')"""
+    __mapper_args__ = {"polymorphic_identity": "LLM_MERGED"}
+    tts_index = synonym("index")
+
+    def __init__(self, *args, **kwargs):
+        if "tts_index" in kwargs and "index" not in kwargs:
+            kwargs["index"] = kwargs.pop("tts_index")
+        super().__init__(*args, **kwargs)
+
+

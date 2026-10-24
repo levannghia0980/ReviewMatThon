@@ -286,9 +286,26 @@ def apply_entities_to_dialogues(
         raise HTTPException(status_code=404, detail="Không tìm thấy project")
         
     replacements = payload.get("replacements", []) # List of {"old_val": "...", "new_val": "..."}
+    from_term = (payload.get("from_term") or "").strip()
+    to_term = (payload.get("to_term") or "").strip()
+    if from_term and to_term and from_term.lower() != to_term.lower():
+        if not any(r.get("old_val", "").strip().lower() == from_term.lower() for r in replacements):
+            replacements.insert(0, {"old_val": from_term, "new_val": to_term})
+
     if not replacements:
         return {"status": "success", "message": "Không có từ nào cần thay thế", "updated_count": 0}
         
+    def _smart_sub(content: str, old_str: str, new_str: str) -> str:
+        if not content or not old_str or not new_str or old_str == new_str:
+            return content
+        if old_str in content:
+            content = content.replace(old_str, new_str)
+        # Quét Regex Case-Insensitive an toàn
+        pat = re.compile(re.escape(old_str), re.IGNORECASE)
+        if pat.search(content):
+            content = pat.sub(new_str, content)
+        return content
+
     dialogues = db.query(DialogueSegmentModel).filter(
         DialogueSegmentModel.task_id == project_id,
         DialogueSegmentModel.translated_text.isnot(None)
@@ -301,8 +318,7 @@ def apply_entities_to_dialogues(
         for r in replacements:
             old_val = r.get("old_val", "").strip()
             new_val = r.get("new_val", "").strip()
-            if old_val and new_val and old_val != new_val and old_val in text:
-                text = text.replace(old_val, new_val)
+            text = _smart_sub(text, old_val, new_val)
                 
         if text != original_text:
             d.translated_text = text
@@ -320,8 +336,7 @@ def apply_entities_to_dialogues(
         for r in replacements:
             old_val = r.get("old_val", "").strip()
             new_val = r.get("new_val", "").strip()
-            if old_val and new_val and old_val != new_val and old_val in t_text:
-                t_text = t_text.replace(old_val, new_val)
+            t_text = _smart_sub(t_text, old_val, new_val)
         if t_text != t_original:
             t.translated_text = t_text
             updated_lines_count += 1
@@ -353,14 +368,45 @@ def apply_entities_to_dialogues(
                 for r in replacements:
                     old_val = r.get("old_val", "").strip()
                     new_val = r.get("new_val", "").strip()
-                    if old_val and new_val and old_val != new_val:
-                        content = content.replace(old_val, new_val)
+                    content = _smart_sub(content, old_val, new_val)
                 if content != original_content:
                     with open(str(f_target), "w", encoding="utf-8") as f:
                         f.write(content)
             except Exception as e:
                 print(f"Lỗi khi cập nhật file {f_target}: {e}")
-            
+
+    # Cập nhật cả file all_entities.json nếu có thay thế cụm từ con
+    ent_file = p_dirs["entities"] / "all_entities.json"
+    if ent_file.exists():
+        try:
+            with open(str(ent_file), "r", encoding="utf-8") as f:
+                ent_data = json.load(f)
+            ent_changed = False
+            if isinstance(ent_data, dict):
+                for e in ent_data.get("entities", []):
+                    v = e.get("vietnamese_name", "")
+                    for r in replacements:
+                        v_new = _smart_sub(v, r["old_val"], r["new_val"])
+                        if v_new != v:
+                            e["vietnamese_name"] = v_new
+                            v = v_new
+                            ent_changed = True
+            elif isinstance(ent_data, list):
+                for e in ent_data:
+                    v = e.get("viet", "") or e.get("vietnamese_name", "")
+                    for r in replacements:
+                        v_new = _smart_sub(v, r["old_val"], r["new_val"])
+                        if v_new != v:
+                            if "viet" in e: e["viet"] = v_new
+                            if "vietnamese_name" in e: e["vietnamese_name"] = v_new
+                            v = v_new
+                            ent_changed = True
+            if ent_changed:
+                with open(str(ent_file), "w", encoding="utf-8") as f:
+                    json.dump(ent_data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
     return {
         "status": "success",
         "message": f"Đã cập nhật thành công {updated_lines_count} câu thoại theo từ điển mới!",

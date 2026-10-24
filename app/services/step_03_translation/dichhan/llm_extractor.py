@@ -3,7 +3,7 @@ import os
 import httpx
 import re
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.config import settings
 from app.core.llm_client import execute_llm_call, safe_json_loads
 
@@ -125,9 +125,15 @@ async def extract_batch_entities_direct_llm(
     genre_profile_desc: str = "",
     raw_text: str = None,
     genre: str = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
     **kwargs: Any
 ) -> Any:
-    # Hỗ trợ tương thích ngược cho caller truyền raw_text hoặc genre
+    # Hỗ trợ tương thích ngược cho caller truyền raw_text hoặc genre hoặc kwargs provider
+    if provider is None and "provider" in kwargs:
+        provider = kwargs["provider"]
+    if model is None and "model" in kwargs:
+        model = kwargs["model"]
     if combined_raw_text is None and raw_text is not None:
         combined_raw_text = raw_text
     if genre is not None and (genre_key == "xianxia" or not genre_key):
@@ -231,12 +237,34 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
 """
     prompt = re.sub(r'\n{2,}', '\n', prompt.strip())
 
-    text_response = await execute_llm_call(prompt, response_mime_type="application/json")
+    max_retries = 2
+    parsed = {}
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            text_response = await execute_llm_call(
+                prompt,
+                provider=provider,
+                model=model,
+                response_mime_type="application/json",
+                thinking_budget=2048
+            )
+            if not text_response or len(text_response.strip()) < 5:
+                raise ValueError("Phản hồi LLM rỗng hoặc quá ngắn")
+            parsed = safe_json_loads(text_response)
+            if isinstance(parsed, dict) and "entities" in parsed:
+                break
+            else:
+                raise ValueError("JSON trả về không chứa mảng 'entities'")
+        except Exception as parse_err:
+            last_err = parse_err
+            logger.warning(f"⚠️ [LLM Extractor] Lần {attempt}/{max_retries} bóc tách thực thể gặp lỗi ({parse_err}). Đang thử lại...")
+            if attempt < max_retries:
+                import asyncio
+                await asyncio.sleep(2.0)
 
-    try:
-        parsed = safe_json_loads(text_response)
-    except Exception as parse_err:
-        logger.warning(f"⚠️ [LLM Extractor] Không parse được JSON thực thể ({parse_err}). Sử dụng dữ liệu tích lũy đã có.")
+    if not parsed or not isinstance(parsed, dict):
+        logger.error(f"❌ [LLM Extractor] Bóc tách thực thể thất bại sau {max_retries} lần thử: {last_err}")
         parsed = {}
 
     raw_entities = parsed.get("entities", []) if isinstance(parsed, dict) else []
@@ -255,22 +283,71 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
         "县尉", "捕快", "县令", "知府", "尚书", "侍郎", "皇帝", "皇后", "贵妃", "公公"
     }
 
+    # TÍCH HỢP THUẬT TOÁN SAFE ENTITY PRUNING TỪ AIREAD GỐC:
+    # 1. Khử chuỗi dính động từ/liên từ/ngữ pháp rác
+    JUNK_PARTICLES = (
+        "给", "杀", "救", "看", "当", "见", "说", "道", "冷笑", "神色", 
+        "大喊", "喝道", "说道", "冷哼", "一闪", "一拳", "一掌", "一刀", "一剑"
+    )
+    
+    # 2. Sắp xếp thực thể theo độ dài giảm dần để phát hiện chuỗi dài nuốt chuỗi ngắn
+    entities_sorted = sorted(raw_entities, key=lambda x: len(x.get("chinese_name", "").strip()) if isinstance(x, dict) else 0, reverse=True)
+    suppressed_names = set()
+
+    for e in entities_sorted:
+        if not isinstance(e, dict):
+            continue
+        cn = e.get("chinese_name", "").strip()
+        if not cn:
+            continue
+        # Loại bỏ nếu dính liên từ rác ở đầu hoặc cuối
+        if any(cn.startswith(jp) or cn.endswith(jp) for jp in JUNK_PARTICLES):
+            suppressed_names.add(cn)
+
+    # Xử lý chuỗi dài (>= 5 chữ) nuốt thực thể ngắn chuẩn (2-4 chữ) như '万气本根金光神咒' nuốt '金光神咒'
+    for i, e_long in enumerate(entities_sorted):
+        if not isinstance(e_long, dict):
+            continue
+        c_long = e_long.get("chinese_name", "").strip()
+        if c_long in suppressed_names:
+            continue
+        for e_short in entities_sorted[i + 1:]:
+            if not isinstance(e_short, dict):
+                continue
+            c_short = e_short.get("chinese_name", "").strip()
+            if c_short in suppressed_names:
+                continue
+            if c_short and c_long and (c_short in c_long) and len(c_short) < len(c_long):
+                # Chuỗi dài >= 5 chữ nuốt thực thể chuẩn 2-4 chữ -> Gạt bỏ chuỗi dài, bảo toàn thực thể chuẩn!
+                if len(c_long) >= 5 and 2 <= len(c_short) <= 4:
+                    suppressed_names.add(c_long)
+                    break
+                elif c_long.endswith(c_short) and len(c_long) - len(c_short) == 1:
+                    suppressed_names.add(c_short)
+
+    from app.services.step_03_translation.dichhan.hanviet_data import sanitize_entity_vietnamese
+
     final_entities = []
     seen = set()
-    for e in raw_entities:
+    for e in entities_sorted:
         if not isinstance(e, dict):
             continue
         ch_name = e.get("chinese_name", "").strip()
         vn_name = e.get("vietnamese_name", "").strip()
-        if not ch_name or not vn_name or len(ch_name) < 2 or ch_name in seen or ch_name in EXCLUDED_CHINESE_TERMS:
+        if not ch_name or not vn_name or len(ch_name) < 2 or ch_name in seen or ch_name in EXCLUDED_CHINESE_TERMS or ch_name in suppressed_names:
             continue
 
         e["chinese_name"] = ch_name
         # Khóa cứng 100% bản dịch cũ nếu đã có trong CSDL các chương trước
         if existing_entities and ch_name in existing_entities:
-            e["vietnamese_name"] = existing_entities[ch_name].get("vietnamese_name", vn_name)
+            existing_val = existing_entities[ch_name]
+            if isinstance(existing_val, dict):
+                e["vietnamese_name"] = existing_val.get("vietnamese_name") or existing_val.get("viet") or vn_name
+            else:
+                e["vietnamese_name"] = str(existing_val)
         else:
-            e["vietnamese_name"] = vn_name
+            # Thẩm định và làm sạch âm Hán-Việt qua từ điển nội bộ
+            e["vietnamese_name"] = sanitize_entity_vietnamese(vn_name, ch_name) or vn_name
 
         seen.add(ch_name)
         final_entities.append(e)

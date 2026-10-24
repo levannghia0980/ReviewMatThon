@@ -38,7 +38,11 @@ from app.config import settings, get_project_dirs
 router = APIRouter()
 
 def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
-    """Worker chạy trọn gói từ A-Z: Tải video -> Bóc tách thoại -> Dịch AIREAD -> Quét lỗi Hán -> TTS TikTok -> Render Video"""
+    """Worker chạy trọn gói từ A-Z: Tải video -> Bóc tách thoại -> Dịch AIREAD -> Quét lỗi Hán -> TTS -> Render Video"""
+    try:
+        settings.reload_from_env()
+    except Exception:
+        pass
     db = SessionLocal()
     try:
         task_manager.update_task(task_id, status="running", step=1, progress=2)
@@ -311,7 +315,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         # BƯỚC 3 & 4: CHẠY SONG SONG 100% (PARALLEL MULTI-THREADING TĂNG TỐC 50%)
         task_manager.update_task(task_id, step=3, progress=55)
         task_manager.add_log(task_id, "[3/4] 🚀 KÍCH HOẠT CHẠY SONG SONG 2 LUỒNG (TIẾT KIỆM 50% THỜI GIAN):", "purple")
-        task_manager.add_log(task_id, f"   • Luồng 1 (Mạng & Audio): 🎙️ Gọi TikTok TTS ({req.voice_code}) + 🎵 Mix Vocal Ducking BGM", "cyan")
+        tts_engine_name = getattr(settings, "TTS_ENGINE", "capcut").upper()
+        task_manager.add_log(task_id, f"   • Luồng 1 (Mạng & Audio): 🎙️ Gọi {tts_engine_name} TTS ({req.voice_code}) + 🎵 Mix Vocal Ducking BGM", "cyan")
         task_manager.add_log(task_id, "   • Luồng 2 (GPU Video): 🎬 GPU Render Subtitle Karaoke + Vùng che chữ gốc", "cyan")
 
         safe_title = "".join(c for c in project.title if c.isalnum() or c in (' ', '_', '-')).strip()
@@ -495,7 +500,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 )
                 audio_res_container["audio_path"] = str(mixed_path)
                 audio_res_container["success"] = True
-                task_manager.add_log(task_id, "   ✔ [Luồng Audio] Đã lồng tiếng Việt & giữ BGM hoàn tất.", "emerald")
+                task_manager.add_log(task_id, "   ✔ [Luồng Audio] Đã lồng tiếng Việt & giữ BGM hoàn tất (Đang đợi GPU xuất nốt hình ảnh)...", "emerald")
             except Exception as e:
                 audio_res_container["error"] = str(e)
                 task_manager.add_log(task_id, f"   ❌ [Lỗi Audio Mixer] {str(e)}", "rose")
@@ -503,11 +508,14 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         def _video_worker():
             try:
+                # Single-Pass Muxing: Truyền audio_source_path (mixed_audio_file) và xuất trực tiếp ra output_final_path.
+                # Khi các phân đoạn video hoàn tất, Concat Demuxer sẽ ghép video & gắn audio trong 1 bước duy nhất!
                 v_ok = VideoComposerService.render_visual_stream(
                     task_id=task_id,
                     video_input_path=project.video_path,
                     ass_file_path=str(ass_file),
-                    output_temp_video=str(temp_visual_video),
+                    output_temp_video=str(output_final_path),
+                    audio_source_path=str(mixed_audio_file),
                     logo_position=req.logo_position,
                     logo_size=req.logo_size,
                     channel_name=req.channel_name,
@@ -525,8 +533,9 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     sub_bottom_offset=sub_offset_val,
                     render_subtitles=render_subs
                 )
-                if not v_ok or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
-                    raise RuntimeError(f"GPU/FFmpeg render video thất bại (file tạm {temp_visual_video.name} không tạo được hoặc 0 bytes). Kiểm tra lại file video gốc hoặc codec FFmpeg.")
+                if not v_ok or not output_final_path.exists() or output_final_path.stat().st_size < 1000:
+                    if not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
+                        raise RuntimeError(f"GPU/FFmpeg render video thất bại. Kiểm tra lại file video gốc hoặc codec FFmpeg.")
                 video_res_container["success"] = True
                 if render_subs:
                     task_manager.add_log(task_id, "   ✔ [Luồng Video] GPU Render Karaoke + Che chữ gốc hoàn tất.", "emerald")
@@ -548,28 +557,29 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             err_details = audio_res_container.get("error") or "Không tìm thấy file âm thanh tiếng Việt hoàn chỉnh"
             raise RuntimeError(f"Lỗi tạo giọng lồng tiếng tiếng Việt: {err_details}. Đã chặn tiến trình để không xuất video giữ tiếng Trung gốc.")
 
-        if video_res_container.get("error") or not video_res_container.get("success") or not temp_visual_video.exists() or temp_visual_video.stat().st_size < 1000:
-            err_details = video_res_container.get("error") or "File video render tạm không tồn tại hoặc bị lỗi."
+        if video_res_container.get("error") or not video_res_container.get("success") or (not output_final_path.exists() and not temp_visual_video.exists()):
+            err_details = video_res_container.get("error") or "File video render không tồn tại hoặc bị lỗi."
             raise RuntimeError(f"Lỗi Render Video GPU/CPU: {err_details}. Đã chặn tiến trình gộp video!")
 
-        # BƯỚC 4: HỢP NHẤT STREAM COPY 0.5s
+        # BƯỚC 4: HỢP NHẤT STREAM COPY / SINGLE-PASS HOÀN TẤT
         task_manager.update_task(task_id, step=4, progress=92)
-        task_manager.add_log(task_id, "[4/4] ⚡ Hợp nhất luồng Hình Ảnh GPU & Audio lồng tiếng (Stream Copy 0.5s)...", "cyan")
+        if output_final_path.exists() and output_final_path.stat().st_size > 1000:
+            task_manager.add_log(task_id, "[4/4] ⚡ [Single-Pass Stream] Video và Audio đã hợp nhất hoàn tất (0s overhead, bỏ qua file trung gian 20GB)!", "emerald")
+        else:
+            task_manager.add_log(task_id, "[4/4] ⚡ Hợp nhất luồng Hình Ảnh GPU & Audio lồng tiếng (Stream Copy)...", "cyan")
+            audio_src = audio_res_container.get("audio_path")
+            mux_ok = VideoComposerService.mux_final_video(
+                visual_video_path=str(temp_visual_video),
+                audio_source_path=audio_src,
+                output_final_path=str(output_final_path),
+                task_id=task_id
+            )
+            if not mux_ok or not output_final_path.exists():
+                raise RuntimeError(f"Không thể hợp nhất file video thành phẩm: {output_final_path}")
 
-        audio_src = audio_res_container.get("audio_path")
-        mux_ok = VideoComposerService.mux_final_video(
-            visual_video_path=str(temp_visual_video),
-            audio_source_path=audio_src,
-            output_final_path=str(output_final_path),
-            task_id=task_id
-        )
-
-        # Dọn dẹp file tạm
+        # Dọn dẹp file tạm nếu có
         if temp_visual_video.exists():
             temp_visual_video.unlink(missing_ok=True)
-
-        if not mux_ok or not output_final_path.exists():
-            raise RuntimeError(f"Không thể hợp nhất file video thành phẩm: {output_final_path}")
 
         # Cập nhật CSDL
         project.final_video_path = str(output_final_path)
