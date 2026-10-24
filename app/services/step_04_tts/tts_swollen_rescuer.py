@@ -21,6 +21,18 @@ from app.services.step_03_translation.post_processor import PostProcessor
 logger = logging.getLogger(__name__)
 
 
+def _safe_log(msg: str):
+    """In log an toàn trên mọi hệ điều hành (chống UnicodeEncodeError trên Windows cp1252)."""
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        try:
+            safe_msg = msg.encode("ascii", "backslashreplace").decode("ascii")
+            print(safe_msg, flush=True)
+        except Exception:
+            pass
+
+
 class TTSSwollenRescuer:
     """Bộ cứu hộ văn bản và âm thanh cho các câu thoại bị phình quá tải (> 1.6x)."""
 
@@ -64,7 +76,7 @@ class TTSSwollenRescuer:
                 "max_allowed_words": max_words
             })
 
-        print(f"\n⚡ [TTS Swollen Rescuer] Phát hiện {len(prompt_payload)} câu bị phình (> {cls.RESCUE_RATIO_THRESHOLD}x). Đang kích hoạt vá cục bộ...", flush=True)
+        _safe_log(f"\n⚡ [TTS Swollen Rescuer] Phát hiện {len(prompt_payload)} câu bị phình (> {cls.RESCUE_RATIO_THRESHOLD}x). Đang kích hoạt vá cục bộ...")
 
         prompt_str = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
 
@@ -154,12 +166,24 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
                         if hasattr(d_obj, 'translated_text'):
                             d_obj.translated_text = clean_text
 
+                        # Đồng bộ luôn vào bảng phụ đề DialogueSegmentModel nếu có
+                        if db and getattr(d_obj, 'task_id', None) and getattr(d_obj, 'tts_index', None):
+                            try:
+                                from app.models import DialogueSegmentModel
+                                sub_segs = db.query(DialogueSegmentModel).filter(
+                                    DialogueSegmentModel.task_id == d_obj.task_id,
+                                    DialogueSegmentModel.tts_index == d_obj.tts_index
+                                ).all()
+                                for sub_s in sub_segs:
+                                    sub_s.translated_text = clean_text
+                            except Exception:
+                                pass
+
                     rescued_count += 1
-                    print(
+                    _safe_log(
                         f"  ✔ [Vá Thành Công Câu #{orig_item.get('index', d_id)}]:\n"
                         f"     • Cũ ({orig_item.get('ratio'):.2f}x): \"{orig_item.get('text_vi')}\"\n"
-                        f"     • Mới ({new_ratio:.2f}x): \"{clean_text}\"",
-                        flush=True
+                        f"     • Mới ({new_ratio:.2f}x): \"{clean_text}\""
                     )
 
             if db and rescued_count > 0:
@@ -171,5 +195,34 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
             return rescued_count
 
         except Exception as e:
-            print(f"⚠️ [TTS Swollen Rescuer] Lỗi khi gọi LLM cứu hộ câu phình: {e}", flush=True)
+            _safe_log(f"⚠️ [TTS Swollen Rescuer] Lỗi khi gọi LLM cứu hộ câu phình: {e}")
             return 0
+
+    @classmethod
+    def rescue_swollen_dialogues_sync(
+        cls,
+        swollen_items: List[Dict[str, Any]],
+        raw_results_map: Dict[int, AudioSegment],
+        db: Optional[Session] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None
+    ) -> int:
+        """Wrapper đồng bộ để gọi từ hàm sync không có event loop (như produce_project_voiceover)."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    return pool.submit(
+                        asyncio.run,
+                        cls.rescue_swollen_dialogues(swollen_items, raw_results_map, db, provider, model)
+                    ).result()
+            else:
+                return loop.run_until_complete(
+                    cls.rescue_swollen_dialogues(swollen_items, raw_results_map, db, provider, model)
+                )
+        except RuntimeError:
+            return asyncio.run(
+                cls.rescue_swollen_dialogues(swollen_items, raw_results_map, db, provider, model)
+            )

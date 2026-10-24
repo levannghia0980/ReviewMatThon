@@ -748,6 +748,68 @@ class CapCutTTSService:
         )
         total_count = len(dialogues)
 
+        # =========================================================================
+        # 0.5. CỨU HỘ CÂU PHÌNH QUÁ TẢI (> 1.6x) (TTS Swollen Rescuer)
+        # Quét các câu có tốc độ thực tế > 1.60x, gọi LLM cô đọng và sinh lại TTS
+        # =========================================================================
+        from app.services.step_04_tts.tts_swollen_rescuer import TTSSwollenRescuer
+        swollen_items = []
+        for d in dialogues:
+            audio_seg = raw_results_map.get(d.id)
+            if not audio_seg or len(audio_seg) < 100:
+                continue
+            target_dur = max(0.1, float(d.end_time) - float(d.start_time))
+            raw_dur_sec = len(audio_seg) / 1000.0
+            ratio = raw_dur_sec / target_dur
+            if ratio > TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD:
+                swollen_items.append({
+                    "dialogue_id": d.id,
+                    "dialogue_obj": d,
+                    "index": getattr(d, 'tts_index', getattr(d, 'index', d.id)),
+                    "text_vi": d.translated_text or "",
+                    "target_dur": target_dur,
+                    "ratio": ratio,
+                    "voice_code": voice_code
+                })
+
+        if swollen_items:
+            task_manager.add_log(
+                task_id,
+                f"⚡ [TTS Swollen Rescuer] Phát hiện {len(swollen_items)} câu bị phình (> {TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD}x). Đang kích hoạt vá cục bộ...",
+                "amber"
+            )
+            rescued_cnt = TTSSwollenRescuer.rescue_swollen_dialogues_sync(
+                swollen_items=swollen_items,
+                raw_results_map=raw_results_map,
+                db=db
+            )
+            if rescued_cnt > 0:
+                task_manager.add_log(
+                    task_id,
+                    f"✔ [TTS Swollen Rescuer] Đã vá và sinh lại âm thanh thành công cho {rescued_cnt}/{len(swollen_items)} câu phình!",
+                    "emerald"
+                )
+                # Cập nhật lại script_tts.json nếu có
+                try:
+                    script_tts_path = p_dirs["tts_voiceover"] / "script_tts.json"
+                    if script_tts_path.exists():
+                        json_dialogues = []
+                        for d in dialogues:
+                            json_dialogues.append({
+                                "tts_index": d.tts_index,
+                                "start": round(float(d.start_time), 2),
+                                "end": round(float(d.end_time), 2),
+                                "duration": round(float(d.duration), 2),
+                                "text": d.translated_text,
+                                "speaker": d.speaker,
+                                "orig_count": getattr(d, 'orig_count', 1),
+                                "src_indices": getattr(d, 'src_indices', str(d.tts_index))
+                            })
+                        with open(script_tts_path, "w", encoding="utf-8") as f:
+                            json.dump(json_dialogues, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    logger.warning(f"Lỗi cập nhật script_tts.json sau khi cứu hộ câu phình: {e}")
+
         task_manager.add_log(task_id, f"🎯 Ghép nối {total_count} chunk thoại vào Master Audio Track (Engine: NumPy Siêu Tốc)...", "cyan")
 
         fs = 24000
