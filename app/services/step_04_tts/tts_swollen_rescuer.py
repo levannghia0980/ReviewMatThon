@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Module Cứu Hộ Câu Phình Quá Tải (> 1.6x) Sau Khi Sinh TTS (TTS Swollen Rescuer).
+Module Cứu Hộ Câu Phình Quá Tải (> 1.6x) Sau Khi TTS & Gộp Vai (TTS Swollen Rescuer).
 Triết lý thiết kế:
+- Kích hoạt SAU KHI đã tạo âm thanh TTS và Gộp Vai liên tiếp (Continuous Audio Merger).
+  Nhờ gộp vai, 98% câu ngắn tự động cân bằng thời gian tự nhiên; chỉ 1-2 câu thực sự phình (> 1.6x) mới cần cứu hộ.
 - Hoạt động theo cơ chế Vá Cục Bộ theo ID (tương tự module sửa sót Hán trong TranslationAuditor).
-- Kích hoạt CHỈ KHI thời lượng âm thanh thực tế sau khi TTS đo được vượt quá 1.6x so với khung hình gốc (raw_dur / slot_dur > 1.60).
 - Đánh số lại từ đầu (id: 1, 2, 3...) khi gửi cho LLM để đảm bảo model nhỏ (Lite/Mini) không bao giờ bị ảo giác hay nhảy cóc ID.
-- Code giữ bảng ánh xạ mapping {1: dialogue_id} để cập nhật chuẩn xác 100% vào cơ sở dữ liệu.
-- Giữ nguyên 100% timeline (start, end, src, speaker), chỉ chuốt lại văn bản tiếng Việt cô đọng và sinh lại audio cho đúng 1-2 câu bị phình.
+- Code giữ bảng ánh xạ mapping {1: dialogue_id} để cập nhật chuẩn xác 100% vào cơ sở dữ liệu và file phụ đề.
+- Giữ nguyên 100% timeline (start, end, src, speaker), chỉ chuốt lại văn bản tiếng Việt cô đọng và sinh lại audio cho đúng các câu bị phình.
 """
 
 import json
@@ -209,20 +210,25 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
     ) -> int:
         """Wrapper đồng bộ để gọi từ hàm sync không có event loop (như produce_project_voiceover)."""
         import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    return pool.submit(
-                        asyncio.run,
-                        cls.rescue_swollen_dialogues(swollen_items, raw_results_map, db, provider, model)
-                    ).result()
-            else:
-                return loop.run_until_complete(
+        import concurrent.futures
+
+        def _run_in_new_loop():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(
                     cls.rescue_swollen_dialogues(swollen_items, raw_results_map, db, provider, model)
                 )
+            finally:
+                new_loop.close()
+
+        try:
+            running_loop = asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(
-                cls.rescue_swollen_dialogues(swollen_items, raw_results_map, db, provider, model)
-            )
+            running_loop = None
+
+        if running_loop and running_loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_run_in_new_loop).result()
+        else:
+            return _run_in_new_loop()
