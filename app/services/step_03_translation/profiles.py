@@ -153,32 +153,33 @@ COMMON_RULES = """Bạn là chuyên gia chuyển ngữ kịch bản lồng tiế
 
 === NGUYÊN TẮC CỐT LÕI (ĐỒNG BỘ CHỮ HÁN - LỜI DỊCH & PHÂN VAI CHUẨN XÁC) ===
 
-1. QUY TẮC ÁNH XẠ, GỘP CÂU TỰ NHIÊN THEO Ý HOÀN CHỈNH & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:
+1. QUY TẮC ÁNH XẠ CÂN BẰNG (1:1 KẾT HỢP GỘP 2-3 MẨU CÙNG CÂU) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:
 - Cấu trúc mỗi dòng bắt buộc:
-  + Khi mẩu ASR đã trọn ý: [mẩu ASR gốc] Lời dịch tiếng Việt chuẩn xác, tự nhiên. -> [Tên vai]
-  + Khi một câu nói hoặc một ý của CÙNG MỘT NGƯỜI NÓI bị ASR tách thành nhiều mẩu vụn liền kề: Hãy chủ động gộp các mẩu chữ Hán đó vào chung một cặp ngoặc vuông cách nhau bởi dấu '/', và dịch thành một câu tiếng Việt hoàn chỉnh, liền mạch để nắm trọn ngữ cảnh xác định đúng người nói:
-    [mẩu 1/mẩu 2/...] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]
-- Nguyên tắc gộp và đồng bộ:
-  + Chỉ gộp các mẩu thuộc cùng một người nói (tuyệt đối không gộp lời của hai người khác nhau vào chung một dòng, và không đặt dấu '/' ở phần dịch tiếng Việt).
-  + Trong mỗi dòng, phần chữ Hán nằm trong [...] có nội dung gì thì phần lời dịch tiếng Việt của dòng đó phải dịch đúng nội dung ấy.
-  + Toàn bộ các khối [...] từ trên xuống dưới phải giữ nguyên văn chữ Hán gốc và bao phủ tuần tự 100% danh sách đầu vào từ đầu đến cuối, không tự ý xóa bỏ bất kỳ mẩu nào (nếu có mẩu cảm thán hoặc tiếng gọi ngắn 1-2 chữ, hãy gộp bằng dấu '/' vào câu nói liền kề của cùng nhân vật hoặc dịch thành từ cảm thán tương ứng).
+  + Khi mẩu ASR đã trọn ý hoặc là câu thoại quần chúng / lời hát: [mẩu ASR gốc] Lời dịch tiếng Việt chuẩn xác, tự nhiên. -> [Tên vai]
+  + Khi một câu nói của CÙNG MỘT NHÂN VẬT đã biết tên (hoặc cùng lời dẫn chuyện / hệ thống) bị ASR tách thành 2 hoặc 3 mẩu ngắn liền kề: Hãy gộp các mẩu chữ Hán của câu đó vào chung một cặp ngoặc vuông cách nhau bởi dấu '/' (tối đa 1 đến 2 dấu '/' trong một cặp ngoặc vuông) và dịch thành một câu tiếng Việt hoàn chỉnh để nắm trọn ngữ cảnh xác định đúng người nói:
+    [mẩu 1/mẩu 2] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]
+- Nguyên tắc giới hạn gộp và đồng bộ:
+  + Chỉ gộp tối đa 2 đến 3 mẩu ASR ngắn thuộc cùng một câu của cùng một người nói (tuyệt đối không gộp từ 4 mẩu trở lên thành đoạn văn dài; hết một câu hoàn chỉnh phải xuống dòng mới).
+  + Tuyệt đối không gộp lời của hai người khác nhau vào chung một dòng (không gộp câu hỏi của người trước với câu trả lời của người sau; không gộp lời dẫn chuyện [DẪN CHUYỆN] với lời thoại nhân vật vào chung một dòng; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN]; không đặt dấu '/' ở phần dịch tiếng Việt).
+  + Trong mỗi dòng, phần chữ Hán nằm trong [...] có nội dung gì thì phần lời dịch tiếng Việt của dòng đó phải dịch trực tiếp thành lời nói tiếng Việt đầy đủ của nội dung ấy. Tuyệt đối CẤM dùng dấu ngoặc đơn () trong bản dịch (cấm ghi chú lỗi ASR, cấm tóm tắt mô tả âm thanh kiểu đóng mở ngoặc đơn).
+  + Toàn bộ các khối [...] từ trên xuống dưới phải giữ nguyên văn chữ Hán gốc và bao phủ tuần tự 100% danh sách đầu vào từ đầu đến cuối, không tự ý xóa bỏ bất kỳ mẩu nào.
 
-2. QUY TẮC PHÂN VAI RÕ RÀNG & NGẮT MẠCH HỘI THOẠI:
+2. QUY TẮC PHÂN VAI RÕ RÀNG & KHÓA 1:1 CHO ĐÁM ĐÔNG / LỜI HÁT:
 - Nhãn -> [Tên vai] ở cuối mỗi dòng quyết định giọng đọc và ngắt ghép file âm thanh:
   + Lời dẫn chuyện ngôi thứ ba (mô tả bối cảnh, hành động, tâm lý khách quan): Gán -> [DẪN CHUYỆN].
   + Âm thanh máy móc, loa phát thanh, bảng thông báo hệ thống: Gán -> [HỆ THỐNG].
-  + Lời thoại trực tiếp của nhân vật đã rõ danh tính (theo ngữ cảnh hoặc Bảng thực thể): Gán đúng -> [Tên nhân vật].
+  + Lời thoại trực tiếp hoặc độc thoại nội tâm của nhân vật đã rõ danh tính (theo ngữ cảnh hoặc Bảng thực thể): Gán đúng -> [Tên nhân vật].
 - QUY TẮC NGÔI GỌI TÊN ĐẦU CÂU (VOCATIVE):
   + Khi câu thoại mở đầu bằng việc gọi tên một nhân vật (ví dụ: "A, chúng ta đi thôi" hoặc "B, thôi bỏ đi"), thì tên được gọi ở đầu câu là NGƯỜI NGHE, tuyệt đối KHÔNG phải người nói. Phải gán -> [Tên vai] ở cuối dòng cho NGƯỜI ĐANG NÓI câu đó.
-- QUY TẮC ĐÁM ĐÔNG / HỘI THOẠI KHÔNG RÕ CHỦ NGỮ / LỜI HÁT / TIẾNG LẠ:
-  + Khi có nhiều người quần chúng cùng bàn tán, hô hoán, đối đáp không rõ tên hoặc lời bài hát/tiếng vọng bất định: Tuyệt đối KHÔNG gộp chung và KHÔNG dùng nhãn tập thể như [ĐÁM ĐÔNG] hay [QUẦN CHÚNG].
-  + Bắt buộc tách riêng từng dòng và đánh nhãn luân phiên theo bảng chữ cái: -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]... để tách biệt từng giọng nói. Ngay khi quay lại lời kể chuyện ngôi thứ ba thì trả về -> [DẪN CHUYỆN].
-- Chỉ giữ nguyên cùng [Tên vai] ở hai dòng liên tiếp khi chắc chắn cùng một nhân vật (hoặc cùng [DẪN CHUYỆN]) đang nói tiếp câu của mình; ngay khi đổi lượt lời sang người khác thì bắt buộc đổi sang [Tên vai] của người mới.
+- QUY TẮC CỨNG CHO ĐÁM ĐÔNG / HỘI THOẠI KHÔNG RÕ CHỦ NGỮ / ĐỒNG DAO / LỜI HÁT (BẮT BUỘC 1:1, CẤM DẤU '/'):
+  + Mọi dòng mang nhãn -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D] BẮT BUỘC chỉ chứa DUY NHẤT 1 mẩu chữ Hán gốc trong ngoặc vuông [mẩu ASR đơn] (tuyệt đối CẤM có dấu '/' bên trong [...] ở bất kỳ dòng [Vai A], [Vai B], [Vai C], [Vai D] nào).
+  + Khi gặp cảnh nhiều người quần chúng bàn tán, la hét hoặc các câu đồng dao/lời hát/câu nói kỳ dị liên tiếp: Bắt buộc tách từng mẩu ASR thành từng dòng riêng biệt (1:1), dịch sát chữ từng dòng và đánh nhãn luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D] (không dùng nhãn [ĐÁM ĐÔNG], [QUẦN CHÚNG] hay [Quỷ Dị]). Ngay khi quay lại lời kể chuyện ngôi thứ ba thì trả về -> [DẪN CHUYỆN].
+- Chỉ giữ nguyên cùng [Tên vai] ở hai dòng liên tiếp khi chắc chắn cùng một nhân vật (hoặc cùng [DẪN CHUYỆN]) đang nói câu tiếp theo của mình; ngay khi đổi lượt lời sang người khác thì bắt buộc đổi sang [Tên vai] của người mới.
 
 3. YÊU CẦU DỊCH THUẬT & CHUẨN HÓA LỖI ĐỒNG ÂM ASR:
 - Dịch sạch 100% sang tiếng Việt tự nhiên, giữ đúng dấu câu ngắt nghỉ và quy chuẩn xưng hô của thể loại.
-- Văn bản đầu vào là ASR tự động nên chữ Hán đôi khi bị lệch âm hoặc nhầm chữ đồng âm. Phải đối chiếu ngữ cảnh và Bảng thực thể để dịch thống nhất 100% về đúng tên nhân vật, vật phẩm, địa danh chuẩn xuyên suốt kịch bản (khi sửa lỗi đồng âm trong bản dịch tiếng Việt, phần chữ Hán trong [...] vẫn phải giữ nguyên văn theo đầu vào).
-- Tuyệt đối không để sót chữ Hán, Pinyin hay tiếng Anh trong lời dịch tiếng Việt; không tự chèn chú thích trong ngoặc đơn."""
+- Văn bản đầu vào là ASR tự động nên chữ Hán đôi khi bị lệch âm hoặc nhầm chữ đồng âm. Phải đối chiếu ngữ cảnh và Bảng thực thể để dịch thống nhất 100% về đúng tên nhân vật, vật phẩm, địa danh chuẩn xuyên suốt kịch bản (khi sửa lỗi đồng âm trong bản dịch tiếng Việt, phần chữ Hán trong [...] vẫn phải giữ nguyên văn theo đầu vào; tuyệt đối không viết chú thích ASR trong ngoặc đơn).
+- Tuyệt đối không để sót chữ Hán, Pinyin hay tiếng Anh trong lời dịch tiếng Việt."""
 
 
 CONTEXT_PROFILES = {
@@ -293,24 +294,25 @@ def build_user_translation_prompt(
         f"{entity_line}\n\n"
         f"[ĐỊNH DẠNG ĐẦU RA BẮT BUỘC]\n"
         f"- CẤU TRÚC MỖI DÒNG:\n"
-        f"  + Câu đơn trọn ý: [mẩu ASR gốc] Lời dịch tiếng Việt. -> [Tên vai]\n"
-        f"  + Câu bị ASR tách vụn thành nhiều mảnh (cùng 1 người nói): [mẩu 1/mẩu 2/...] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]\n"
-        f"- NGUYÊN TẮC GỘP CÂU TỰ NHIÊN & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:\n"
-        f"  + Chủ động gộp các mẩu ASR liền kề của cùng một người nói bằng dấu '/' trong [...] để tạo thành câu hoàn chỉnh, giúp xác định chính xác người nói và nhịp đọc tự nhiên. Tuyệt đối không gộp lời của 2 người khác nhau và không đặt dấu '/' ở phần dịch tiếng Việt.\n"
-        f"  + Chữ Hán trong [...] của dòng nào phải đồng bộ chính xác với nghĩa tiếng Việt của dòng đó; giữ nguyên văn chữ Hán gốc trong [...] và bao phủ tuần tự 100% các mẩu đầu vào từ đầu đến cuối, không tự ý bỏ sót mẩu nào (mẩu gọi tên hoặc cảm thán 1-2 chữ có thể gộp bằng '/' vào câu liền kề cùng vai hoặc dịch độc lập).\n"
-        f"- QUY ĐỊNH PHÂN VAI CHUẨN XÁC:\n"
+        f"  + Câu đơn trọn ý hoặc câu quần chúng / lời hát (1:1): [mẩu ASR gốc] Lời dịch tiếng Việt. -> [Tên vai]\n"
+        f"  + Câu của nhân vật đã biết tên (hoặc lời dẫn / hệ thống) bị ASR tách thành 2-3 mảnh ngắn: [mẩu 1/mẩu 2] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]\n"
+        f"- NGUYÊN TẮC GỘP CÂU CÂN BẰNG (TỐI ĐA 2-3 MẨU) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:\n"
+        f"  + Chủ động gộp 2 đến tối đa 3 mẩu ASR ngắn liền kề của cùng một câu và cùng một người nói bằng dấu '/' trong [...] để tạo thành câu hoàn chỉnh, giúp xác định chính xác tên nhân vật. Tuyệt đối không gộp từ 4 mẩu trở lên thành đoạn văn dài; không gộp lời của 2 người khác nhau; không gộp lời dẫn [DẪN CHUYỆN] với lời thoại nhân vật vào chung 1 dòng; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN]; không đặt dấu '/' ở phần dịch tiếng Việt.\n"
+        f"  + Chữ Hán trong [...] của dòng nào phải dịch trực tiếp và đầy đủ sang lời thoại tiếng Việt ở dòng đó; tuyệt đối CẤM dùng dấu ngoặc đơn () để ghi chú lỗi ASR hay tóm tắt âm thanh. Giữ nguyên văn chữ Hán gốc trong [...] và bao phủ tuần tự 100% các mẩu đầu vào từ đầu đến cuối.\n"
+        f"- QUY ĐỊNH PHÂN VAI & KHÓA 1:1 CHO [Vai A], [Vai B], [Vai C], [Vai D]:\n"
         f"  + Lời kể ngôi thứ ba -> [DẪN CHUYỆN]; thông báo máy móc/loa phát thanh -> [HỆ THỐNG]; hội thoại hoặc độc thoại nội tâm rõ nhân vật -> [Tên nhân vật].\n"
         f"  + Ngôi gọi tên đầu câu: Tên được gọi ở đầu câu thoại là NGƯỜI NGHE, bắt buộc gán -> [Tên vai] cho NGƯỜI ĐANG NÓI.\n"
-        f"  + Đám đông / hội thoại không rõ chủ ngữ / lời hát: Không dùng nhãn [ĐÁM ĐÔNG], tách từng lượt nói và gán luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]...; khi quay lại lời kể chuyện thì trả về -> [DẪN CHUYỆN].\n"
+        f"  + Đám đông / hội thoại không rõ chủ ngữ / đồng dao / lời hát: Mọi dòng gán nhãn -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D] bắt buộc đi 1:1 (chỉ chứa duy nhất 1 mẩu chữ Hán trong [...], tuyệt đối CẤM có dấu '/' trong ngoặc vuông ở dòng [Vai A]/[Vai B]/[Vai C]/[Vai D]). Tách riêng từng mẩu và gán luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]; khi quay lại lời kể chuyện thì trả về -> [DẪN CHUYỆN].\n"
         f"  + Đối chiếu Bảng thực thể để chuẩn hóa các từ bị ASR nghe nhầm đồng âm về đúng tên thực thể thống nhất.\n\n"
         f"Ví dụ minh họa cấu trúc chuẩn:\n"
         f"[mẩu ASR lời kể] Lời dịch trần thuật bối cảnh. -> [DẪN CHUYỆN]\n"
-        f"[mẩu 1 bị cắt ngang/mẩu 2 nối tiếp] Lời dịch hoàn chỉnh ghép từ hai mẩu bị cắt hỏng. -> [Tên nhân vật A]\n"
+        f"[mẩu 1 bị cắt ngang/mẩu 2 nối tiếp] Lời dịch hoàn chỉnh ghép từ hai mẩu bị cắt của cùng một câu. -> [Tên nhân vật A]\n"
         f"[mẩu ASR phát thanh] Lời thông báo từ thiết bị. -> [HỆ THỐNG]\n"
         f"[mẩu ASR nhân vật A] Lời nói của người thứ nhất. -> [Tên nhân vật A]\n"
         f"[mẩu ASR nhân vật B] Lời đáp của người thứ hai. -> [Tên nhân vật B]\n"
-        f"[mẩu ASR quần chúng 1] Tiếng bàn tán hoặc câu thoại không rõ tên thứ nhất. -> [Vai A]\n"
-        f"[mẩu ASR quần chúng 2] Tiếng bàn tán hoặc câu thoại tiếp theo. -> [Vai B]\n"
+        f"[mẩu ASR quần chúng 1] Tiếng bàn tán thứ nhất tách dòng đơn không có dấu gạch chéo. -> [Vai A]\n"
+        f"[mẩu ASR quần chúng 2] Tiếng bàn tán thứ hai tách dòng đơn không có dấu gạch chéo. -> [Vai B]\n"
+        f"[mẩu ASR quần chúng 3] Tiếng bàn tán thứ ba tách dòng đơn không có dấu gạch chéo. -> [Vai C]\n"
     )
 
 
