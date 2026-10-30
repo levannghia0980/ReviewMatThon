@@ -508,6 +508,13 @@ class TikTokTTSService:
         )
         total_count = len(dialogues)
 
+        # Hợp nhất các mốc sóng âm từ các sub-chunks tạo bởi AsyncTTSEngine
+        engine_sub_timings = AsyncTTSEngine.get_last_sub_timings()
+        if engine_sub_timings:
+            for d in dialogues:
+                if d.id in engine_sub_timings and (d.tts_index not in chunk_sub_offsets or len(chunk_sub_offsets[d.tts_index]) <= 1):
+                    chunk_sub_offsets[d.tts_index] = engine_sub_timings[d.id]
+
         task_manager.add_log(task_id, f"🎯 Ghép nối {total_count} chunk thoại vào Master Audio Track (Engine: NumPy Siêu Tốc)...", "cyan")
 
         fs = 24000

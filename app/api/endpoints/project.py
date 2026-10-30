@@ -432,7 +432,7 @@ def get_project_stats(project_id: int, db: Session = Depends(get_db)):
 @router.get("/{project_id}/batches", summary="Lấy danh mục các Lô (Chương) cực nhẹ chuẩn AIREAD")
 def get_project_batches(
     project_id: int,
-    batch_size: int = Query(default=250, ge=10, le=1000),
+    batch_size: int = Query(default=500, ge=10, le=1000),
     db: Session = Depends(get_db)
 ):
     total_count = db.query(func.count(DialogueSegmentModel.id)).filter(
@@ -709,10 +709,117 @@ def update_project_dialogues(
             updated_count += 1
 
     db.commit()
+
+    # TỰ ĐỘNG ĐỒNG BỘ 100% CÁC FILE KỊCH BẢN & PHỤ ĐỀ TRÊN Ổ ĐĨA MÁY TÍNH
+    if updated_count > 0:
+        try:
+            import shutil
+            from app.config import get_project_dirs
+            from app.services.step_05_video.karaoke_subtitle_service import KaraokeSubtitleService
+            from app.schemas.transcript import DialogueSegment
+
+            def _fmt_ts(sec: float) -> str:
+                sec = max(0.0, float(sec or 0.0))
+                m, s = divmod(int(sec), 60)
+                h, m = divmod(m, 60)
+                ms = int(round((sec - int(sec)) * 1000))
+                if ms >= 1000:
+                    ms = 999
+                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+            p_dirs = get_project_dirs(project_id)
+            root_dir = p_dirs["root"]
+            sub_dir = p_dirs.get("video_subtitles")
+
+            all_diag = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id
+            ).order_by(DialogueSegmentModel.index.asc()).all()
+
+            if all_diag:
+                srt_lines = []
+                txt_lines = []
+                json_dialogues = []
+                for idx, d in enumerate(all_diag, start=1):
+                    s_time = float(d.start_time or 0.0)
+                    e_time = float(d.end_time or s_time + 1.0)
+                    vt = (d.translated_text or "").strip()
+                    spk = d.speaker or "DẪN CHUYỆN"
+                    srt_lines.append(f"{idx}\n{_fmt_ts(s_time)} --> {_fmt_ts(e_time)}\n{vt}\n")
+                    txt_lines.append(f"[{spk}] ({s_time:.2f}s - {e_time:.2f}s): {vt}" if vt else "")
+                    json_dialogues.append({
+                        "id": d.index,
+                        "start": s_time,
+                        "end": e_time,
+                        "duration": round(max(0.1, e_time - s_time), 2),
+                        "zh": d.clean_text or d.original_text or "",
+                        "vi": vt,
+                        "role": spk,
+                        "tts_index": d.tts_index
+                    })
+
+                srt_content = "\n".join(srt_lines)
+                txt_content = "\n".join(txt_lines)
+
+                # 1. Ghi vào thư mục gốc của project
+                with open(root_dir / "transcript_vi.srt", "w", encoding="utf-8") as f:
+                    f.write(srt_content)
+                with open(root_dir / f"{project.video_id}_clean.srt", "w", encoding="utf-8") as f:
+                    f.write(srt_content)
+                with open(root_dir / "script_vi.txt", "w", encoding="utf-8") as f:
+                    f.write(txt_content)
+                with open(root_dir / f"{project.video_id}_clean.txt", "w", encoding="utf-8") as f:
+                    f.write(txt_content)
+                with open(root_dir / "transcript_vi.json", "w", encoding="utf-8") as f:
+                    json.dump(json_dialogues, f, ensure_ascii=False, indent=2)
+
+                # 2. Ghi vào thư mục video_subtitles/ nếu có
+                if sub_dir and sub_dir.exists():
+                    with open(sub_dir / "subtitles_karaoke.srt", "w", encoding="utf-8") as f:
+                        f.write(srt_content)
+                    with open(sub_dir / "subtitles_karaoke.json", "w", encoding="utf-8") as f:
+                        json.dump(json_dialogues, f, ensure_ascii=False, indent=2)
+
+                # 3. Tái sinh file phụ đề Karaoke ASS chuẩn xác
+                try:
+                    ass_segments = [
+                        DialogueSegment(
+                            id=d.index,
+                            start=float(d.start_time or 0.0),
+                            end=float(d.end_time or (d.start_time or 0.0) + 1.0),
+                            duration=float(d.duration or 1.0),
+                            text=d.original_text or "",
+                            clean_text=d.clean_text or d.original_text or "",
+                            translated_text=d.translated_text or d.clean_text or d.original_text or "",
+                            role=d.speaker or "DẪN CHUYỆN",
+                            speaker=d.speaker or "DẪN CHUYỆN"
+                        )
+                        for d in all_diag
+                    ]
+                    root_ass = root_dir / f"{project.video_id}_karaoke.ass"
+                    KaraokeSubtitleService.create_karaoke_ass_file(
+                        segments=ass_segments,
+                        output_ass_path=str(root_ass),
+                        video_title=project.title
+                    )
+                    if sub_dir and sub_dir.exists():
+                        shutil.copyfile(root_ass, sub_dir / "subtitles_karaoke.ass")
+                    if settings.OUTPUT_TRANSCRIPTS_DIR.exists():
+                        shutil.copyfile(root_ass, settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass")
+                except Exception as e_ass:
+                    print(f"⚠️ Lỗi tái tạo file ASS sau khi lưu câu: {e_ass}", flush=True)
+
+                # Cập nhật đường dẫn file vào CSDL
+                project.srt_path = str(root_dir / "transcript_vi.srt")
+                project.txt_path = str(root_dir / "script_vi.txt")
+                project.json_path = str(root_dir / "transcript_vi.json")
+                db.commit()
+        except Exception as e_sync:
+            print(f"⚠️ Lỗi đồng bộ file vật lý sau khi lưu câu: {e_sync}", flush=True)
+
     return {
         "status": "success",
         "updated_count": updated_count,
-        "message": f"Đã lưu thành công {updated_count} câu thoại vào Database SQLite!"
+        "message": f"Đã lưu thành công {updated_count} câu thoại vào Database SQLite và đồng bộ toàn bộ file trên ổ đĩa máy tính!"
     }
 
 def delete_project(project_id: int, db: Session = Depends(get_db)):

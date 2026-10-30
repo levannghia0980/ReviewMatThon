@@ -8,13 +8,15 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.schemas.transcript import DialogueSegment
 from app.models.project import ProjectTask
-from app.models.dialogue import DialogueSegmentModel, TTSDialogueSegmentModel
+from app.models.dialogue import DialogueSegmentModel, TTSDialogueSegmentModel, LLMMergedSegmentModel, SubtitleSegmentModel
+from app.services.step_04_tts.async_tts_engine import split_text_strictly_by_punctuation
 from app.services.step_03_translation.batch_manager import BatchManager
 from app.services.step_03_translation.llm_translator import translate_batch_pass2_llm
 from app.services.step_03_translation.dichhan.llm_extractor import extract_batch_entities_direct_llm
 from app.services.step_03_translation.post_processor import PostProcessor
 from app.services.step_03_translation.translation_auditor import TranslationAuditor
 from app.services.task_manager import task_manager
+import shutil
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,60 @@ def format_timestamp(seconds: float) -> str:
 
 class TranslationPipelineService:
     @classmethod
+    def _export_partial_transcripts(cls, project: ProjectTask, db: Session, task_id: Optional[str] = None):
+        """Xuất bản thảo phụ đề và kịch bản cho các câu/lô đã hoàn thành tính đến thời điểm dừng/lỗi"""
+        try:
+            from app.config import get_project_dirs
+            p_dirs = get_project_dirs(project.id)
+            root_dir = p_dirs["root"]
+            sub_dir = p_dirs.get("video_subtitles")
+
+            diag_models = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project.id,
+                DialogueSegmentModel.translated_text.isnot(None),
+                DialogueSegmentModel.translated_text != ""
+            ).order_by(DialogueSegmentModel.index.asc()).all()
+
+            if not diag_models:
+                return
+
+            srt_lines = []
+            txt_lines = []
+            for idx, d in enumerate(diag_models, start=1):
+                s_str = format_timestamp(d.start_time or 0.0)
+                e_str = format_timestamp(d.end_time or 0.0)
+                vt = (d.translated_text or "").strip()
+                srt_lines.append(f"{idx}\n{s_str} --> {e_str}\n{vt}\n")
+                spk = d.speaker or d.role or "DẪN CHUYỆN"
+                txt_lines.append(f"[{spk}] ({d.start_time:.2f}s - {d.end_time:.2f}s): {vt}")
+
+            srt_path = root_dir / f"{project.video_id}_clean.srt"
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(srt_lines))
+
+            txt_path = root_dir / f"{project.video_id}_clean.txt"
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(txt_lines))
+
+            try:
+                shutil.copyfile(srt_path, root_dir / "transcript_vi.srt")
+                shutil.copyfile(txt_path, root_dir / "script_vi.txt")
+                if sub_dir and sub_dir.exists():
+                    shutil.copyfile(srt_path, sub_dir / "subtitles_karaoke.srt")
+            except Exception:
+                pass
+
+            project.srt_path = str(srt_path)
+            project.txt_path = str(txt_path)
+            project.status = "TRANSLATED"
+            db.commit()
+
+            if task_id:
+                task_manager.add_log(task_id, f"   💾 Đã bảo toàn và cập nhật {len(diag_models)} câu đã dịch vào kịch bản trung gian.", "emerald")
+        except Exception as e_exp:
+            logger.warning(f"Lỗi xuất bản thảo trung gian khi dừng: {e_exp}")
+
+    @classmethod
     async def translate_project_dialogues(
         cls,
         task_id: str,
@@ -35,7 +91,8 @@ class TranslationPipelineService:
         genre: str = "cophong",
         batch_size: int = 300,
         max_chars: int = 25000,
-        provider: str = "gemini"
+        provider: str = "gemini",
+        force_clean: bool = False
     ) -> Dict[str, Any]:
         """
         Quy trình Dịch Thuật 2 LLM Chuẩn AIRead:
@@ -189,49 +246,61 @@ class TranslationPipelineService:
         proj_llm_io_dir = p_dirs["llm_io"]
         proj_root_dir = p_dirs["root"]
 
-        # DỌN DẸP SẠCH TOÀN BỘ BẢN DỊCH VÀ FILE TẠM CŨ TRƯỚC KHI DỊCH MỚI (CHỐNG LẪN BẢN CŨ)
-        import shutil
-        for sub in [proj_llm_io_dir, proj_entities_dir, p_dirs.get("tts_voiceover"), p_dirs.get("video_subtitles")]:
-            if sub and sub.exists():
-                for f in list(sub.iterdir()):
-                    try:
-                        if f.is_file():
+        # CHỈ DỌN DẸP SẠCH KHI CÓ YÊU CẦU FORCE_CLEAN (Ví dụ: Người dùng bấm Reset Bản Dịch)
+        # TUYỆT ĐỐI KHÔNG TỰ ĐỘNG XÓA TRẮNG ĐỂ BẢO VỆ CÁC LÔ ĐÃ DỊCH XONG
+        if force_clean:
+            for sub in [proj_llm_io_dir, proj_entities_dir, p_dirs.get("tts_voiceover"), p_dirs.get("video_subtitles")]:
+                if sub and sub.exists():
+                    for f in list(sub.iterdir()):
+                        try:
+                            if f.is_file():
+                                f.unlink(missing_ok=True)
+                            elif f.is_dir():
+                                shutil.rmtree(f, ignore_errors=True)
+                        except Exception:
+                            pass
+
+            if proj_root_dir.exists():
+                for f in list(proj_root_dir.iterdir()):
+                    if f.is_file() and (
+                        f.name.endswith("_voiceover.mp3") or
+                        f.name.endswith("_karaoke.ass") or
+                        f.name in ["script_vi.txt", "transcript_vi.json", "transcript_vi.srt", "transcript_vi.txt", "transcript_vi.vtt", "timeline_balance_report.json"]
+                    ):
+                        try:
                             f.unlink(missing_ok=True)
-                        elif f.is_dir():
-                            shutil.rmtree(f, ignore_errors=True)
-                    except Exception:
-                        pass
+                        except Exception:
+                            pass
 
-        # Xóa file phái sinh cũ trong root của project (giữ file video raw, cleaned.txt, audio gốc)
-        if proj_root_dir.exists():
-            for f in list(proj_root_dir.iterdir()):
-                if f.is_file() and (
-                    f.name.endswith("_voiceover.mp3") or
-                    f.name.endswith("_karaoke.ass") or
-                    f.name in ["script_vi.txt", "transcript_vi.json", "transcript_vi.srt", "transcript_vi.txt", "transcript_vi.vtt", "timeline_balance_report.json"]
-                ):
+            if settings.TEMP_TTS_DIR.exists():
+                tts_cache_p = settings.TEMP_TTS_DIR / project.video_id
+                if tts_cache_p.exists():
                     try:
-                        f.unlink(missing_ok=True)
+                        shutil.rmtree(tts_cache_p, ignore_errors=True)
                     except Exception:
                         pass
 
-        # Dọn sạch TTS cache của video_id trong temp
-        if settings.TEMP_TTS_DIR.exists():
-            tts_cache_p = settings.TEMP_TTS_DIR / project.video_id
-            if tts_cache_p.exists():
-                try:
-                    shutil.rmtree(tts_cache_p, ignore_errors=True)
-                except Exception:
-                    pass
+            from app.models.dialogue import PipelineSegmentModel
+            db.query(PipelineSegmentModel).filter(
+                PipelineSegmentModel.task_id == project.id,
+                PipelineSegmentModel.stage.in_(["TTS_AUDIO", "LLM_MERGED", "SUB_KARAOKE"])
+            ).delete(synchronize_session=False)
+            db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).update({
+                DialogueSegmentModel.translated_text: None,
+                DialogueSegmentModel.status: "RAW",
+                DialogueSegmentModel.tts_index: None
+            }, synchronize_session=False)
+            db.commit()
 
-        # Xóa sạch bảng TTSDialogueSegmentModel trong SQLite cho project này trước khi bắt đầu dịch mới
-        db.query(TTSDialogueSegmentModel).filter(TTSDialogueSegmentModel.task_id == project.id).delete(synchronize_session=False)
-        db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).update({
-            DialogueSegmentModel.translated_text: None,
-            DialogueSegmentModel.status: "RAW",
-            DialogueSegmentModel.tts_index: None
-        }, synchronize_session=False)
-        db.commit()
+        # Nếu toàn bộ câu thoại đều chưa dịch (hoặc vừa chạy lại STT từ đầu), dọn sạch các tầng phái sinh cũ để chống xung đột UNIQUE
+        has_any_translation = any(bool((d.translated_text or "").strip()) for d in dialogue_models)
+        if not has_any_translation:
+            from app.models.dialogue import PipelineSegmentModel
+            db.query(PipelineSegmentModel).filter(
+                PipelineSegmentModel.task_id == project.id,
+                PipelineSegmentModel.stage.in_(["TTS_AUDIO", "LLM_MERGED", "SUB_KARAOKE"])
+            ).delete(synchronize_session=False)
+            db.commit()
 
         # =====================================================================
         # GIAI ĐOẠN 1: TIỀN XỬ LÝ & LÀM SẠCH VĂN BẢN GỐC (01_raw_cleaned)
@@ -251,8 +320,11 @@ class TranslationPipelineService:
                 duration=d.duration,
                 text=orig,
                 clean_text=orig,
+                translated_text=d.translated_text or "",
                 reference_text=d.reference_text or "",
-                confidence=d.confidence
+                confidence=d.confidence,
+                role=d.role or d.speaker or "DẪN CHUYỆN",
+                speaker=d.speaker or d.role or "DẪN CHUYỆN"
             )
             segments.append(seg)
             cleaned_lines.append(f"<s id=\"{seg.id}\">{orig}</s>")
@@ -349,17 +421,68 @@ class TranslationPipelineService:
         prev_batch: List[DialogueSegment] = []
 
         for b_idx, batch in enumerate(batches):
-            # CHỐT AN TOÀN HỦY TIẾN TRÌNH (Cancel Check): Nếu người dùng nhấn dừng thì dọn sạch những gì lô này đang làm
-            if task_manager.is_cancelled(task_id):
-                task_manager.add_log(task_id, f"🛑 Đã phát hiện yêu cầu DỪNG tại Lô #{b_idx + 1}. Hủy bỏ xử lý và dọn dẹp lô dở dang...", "amber")
-                raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_idx + 1}")
-
             b_num = b_idx + 1
             start_bid = getattr(batch[0], 'index', batch[0].id)
             end_bid = getattr(batch[-1], 'index', batch[-1].id)
 
-            # LUÔN XÓA FILE THÔ CŨ VÀ DỊCH TƯƠI MỚI 100% QUA LLM (KHÔNG DÙNG LẠI CACHE)
+            # CHỐT AN TOÀN HỦY TIẾN TRÌNH (Cancel Check): Nếu người dùng nhấn dừng thì dọn sạch những gì lô này đang làm
+            if task_manager.is_cancelled(task_id):
+                task_manager.add_log(task_id, f"🛑 Đã phát hiện yêu cầu DỪNG tại Lô #{b_num}. Dừng tiến trình và bảo toàn nguyên vẹn các lô đã hoàn tất...", "amber")
+                cls._export_partial_transcripts(project, db, task_id)
+                raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
+
             batch_raw_file = proj_llm_io_dir / f"batch_{b_num:02d}_output.json"
+            batch_ent_file = proj_entities_dir / f"batch_{b_num:02d}_entities.json"
+
+            # -------------------------------------------------------------
+            # BATCH RESUMPTION: KIỂM TRA LÔ ĐÃ HOÀN TẤT & ĐẠT CHUẨN TỪ TRƯỚC
+            # -------------------------------------------------------------
+            batch_indices = [getattr(s, 'id', getattr(s, 'index', 0)) for s in batch]
+            db_batch_segs = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project.id,
+                DialogueSegmentModel.index.in_(batch_indices)
+            ).all()
+            trans_count = sum(1 for d in db_batch_segs if bool((d.translated_text or '').strip()))
+            is_all_db_translated = len(batch_indices) > 0 and (trans_count / len(batch_indices)) >= 0.98
+            has_tts_dialogues = db.query(TTSDialogueSegmentModel).filter(
+                TTSDialogueSegmentModel.task_id == project.id,
+                TTSDialogueSegmentModel.batch_index == b_num
+            ).first() is not None
+
+            # Nếu lô đã có đủ bản dịch trong DB và đã có file output hoặc bảng TTS -> BỎ QUA DỊCH LẠI
+            if not force_clean and is_all_db_translated and (has_tts_dialogues or (batch_raw_file.exists() and batch_raw_file.stat().st_size > 10)):
+                # 1. Đồng bộ bản dịch cũ vào các segment trong memory
+                seg_map = {d.index: d.translated_text for d in db_batch_segs}
+                for s in batch:
+                    s_id = getattr(s, 'id', getattr(s, 'index', 0))
+                    if s_id in seg_map:
+                        s.translated_text = seg_map[s_id]
+
+                # 2. Nạp thực thể đã bóc tách của lô này vào accumulated_entities
+                if batch_ent_file.exists():
+                    try:
+                        with open(batch_ent_file, "r", encoding="utf-8") as f_be:
+                            b_ents = json.load(f_be)
+                            for ent in b_ents:
+                                raw = (ent.get("raw") or ent.get("chinese_name") or "").strip()
+                                if raw and raw not in accumulated_entities:
+                                    accumulated_entities[raw] = ent
+                    except Exception as e_be:
+                        logger.warning(f"Lỗi nạp entities từ lô #{b_num}: {e_be}")
+
+                translated_segments.extend(batch)
+                prev_batch = batch
+                batches[b_idx] = batch
+
+                skip_msg = f"   ✔ [Lô #{b_num}/{len(batches)}] Đã dịch hoàn tất từ trước (Câu #{start_bid} ➔ #{end_bid}, {len(batch)} câu) ➔ Kế thừa & Bỏ qua (Tiết kiệm Token)."
+                task_manager.add_log(task_id, skip_msg, "emerald")
+                print(f"✔ [LÔ #{b_num}/{len(batches)}] Đã có bản dịch hoàn chỉnh từ trước -> Kế thừa & Bỏ qua.", flush=True)
+
+                pct = int(30 + (b_num / len(batches)) * 45)
+                task_manager.update_task(task_id, progress=pct)
+                continue
+
+            # NẾU LÔ CHƯA DỊCH HOẶC DỊCH DỞ DANG: TIẾP TỤC DỊCH MỚI QUA LLM
             if batch_raw_file.exists():
                 try:
                     batch_raw_file.unlink(missing_ok=True)
@@ -399,7 +522,8 @@ class TranslationPipelineService:
                 json.dump(new_entities, f, ensure_ascii=False, indent=2)
 
             if task_manager.is_cancelled(task_id):
-                task_manager.add_log(task_id, f"🛑 Đã dừng tiến trình dịch thuật ở Lô #{b_num}.", "amber")
+                task_manager.add_log(task_id, f"🛑 Đã dừng tiến trình dịch thuật ở Lô #{b_num}. Bảo toàn nguyên vẹn các lô đã hoàn tất...", "amber")
+                cls._export_partial_transcripts(project, db, task_id)
                 raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
 
             new_found_count = 0
@@ -448,6 +572,8 @@ class TranslationPipelineService:
             task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Giãn cách 7s xả tải Google AI Studio...", "gray")
             await asyncio.sleep(7)
             if task_manager.is_cancelled(task_id):
+                task_manager.add_log(task_id, f"🛑 Đã dừng tiến trình dịch thuật ở Lô #{b_num}. Bảo toàn nguyên vẹn các lô đã hoàn tất...", "amber")
+                cls._export_partial_transcripts(project, db, task_id)
                 raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
 
             # --- LLM 2: DỊCH VĂN PHONG CHUẨN AIREAD ---
@@ -466,6 +592,8 @@ class TranslationPipelineService:
             )
 
             if task_manager.is_cancelled(task_id):
+                task_manager.add_log(task_id, f"🛑 Đã dừng tiến trình dịch thuật ở Lô #{b_num}. Bảo toàn nguyên vẹn các lô đã hoàn tất...", "amber")
+                cls._export_partial_transcripts(project, db, task_id)
                 raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
 
             # LƯU NGUYÊN VĂN BẢN THÔ 100% TỪ LLM (ĐỐI SOÁT MINH BẠCH INPUT - OUTPUT)
@@ -615,7 +743,7 @@ class TranslationPipelineService:
             except Exception as e:
                 logger.warning(f"Lỗi ghi file sạch LLM {batch_raw_file}: {e}")
 
-            # 3. BÓC TÁCH KẾT QUẢ CHO BẢNG PHỤ ĐỀ KARAOKE TỪ BẢN ĐÃ LÀM SẠCH (KHÔNG RETRY, CHỈ MAP VÀO DIALOGUE_SEGMENTS)
+            # 3. BÓC TÁCH KẾT QUẢ CHO BẢNG PHỤ ĐỀ KARAOKE TỪ BẢN 1:1 ĐÃ LÀM SẠCH (KHÔNG RETRY, CHỈ MAP VÀO DIALOGUE_SEGMENTS)
             candidate_batch = PostProcessor.apply_post_processing(batch, healed_items if healed_items else raw_llm_batch_output)
             batch_updated = candidate_batch
 
@@ -634,17 +762,24 @@ class TranslationPipelineService:
                     diag_db.translated_text = s.translated_text
                     diag_db.end_time = getattr(s, 'end', diag_db.end_time)
                     diag_db.duration = getattr(s, 'duration', diag_db.duration)
+                    if getattr(s, 'speaker', None) or getattr(s, 'role', None):
+                        spk_val = getattr(s, 'speaker', None) or getattr(s, 'role', None)
+                        diag_db.speaker = spk_val
+                        diag_db.role = spk_val
                     diag_db.status = "TRANSLATED" if (s.translated_text or '').strip() else "RAW"
 
             # 2. LƯU BẢNG CÂU GỘP TTS (tts_dialogue_segments) - Phục vụ TTS và AIREAD
             parsed_raw_llm = healed_items if (healed_items and isinstance(healed_items, list)) else []
 
             if isinstance(parsed_raw_llm, list) and len(parsed_raw_llm) > 0:
-                # Xóa các dòng TTS cũ của lô này nếu dịch lại
-                db.query(TTSDialogueSegmentModel).filter(
-                    TTSDialogueSegmentModel.task_id == project.id,
-                    TTSDialogueSegmentModel.batch_index == b_num
+                # Xóa sạch các dòng cũ từ lô này trở đi (batch_index >= b_num) để chống xung đột index tuần tự
+                from app.models.dialogue import PipelineSegmentModel
+                db.query(PipelineSegmentModel).filter(
+                    PipelineSegmentModel.task_id == project.id,
+                    PipelineSegmentModel.stage.in_(["TTS_AUDIO", "LLM_MERGED", "SUB_KARAOKE"]),
+                    PipelineSegmentModel.batch_index >= b_num
                 ).delete(synchronize_session=False)
+                db.commit()
 
                 # Tìm max tts_index hiện tại của project
                 max_tts_row = db.query(TTSDialogueSegmentModel.tts_index).filter(
@@ -652,6 +787,13 @@ class TranslationPipelineService:
                     TTSDialogueSegmentModel.batch_index < b_num
                 ).order_by(TTSDialogueSegmentModel.tts_index.desc()).first()
                 curr_tts_counter = (max_tts_row[0] if max_tts_row else 0)
+
+                # Tìm max sub_index hiện tại của project
+                max_sub_row = db.query(SubtitleSegmentModel.sub_index).filter(
+                    SubtitleSegmentModel.task_id == project.id,
+                    SubtitleSegmentModel.batch_index < b_num
+                ).order_by(SubtitleSegmentModel.sub_index.desc()).first()
+                curr_sub_counter = (max_sub_row[0] if max_sub_row else 0)
 
                 for item in parsed_raw_llm:
                     if not isinstance(item, dict):
@@ -732,10 +874,66 @@ class TranslationPipelineService:
                     )
                     db.add(tts_entry)
 
+                    llm_entry = LLMMergedSegmentModel(
+                        task_id=project.id,
+                        index=curr_tts_counter,
+                        batch_index=b_num,
+                        src_start_index=src_start_idx,
+                        src_end_index=src_end_idx,
+                        source_indices=src_str,
+                        sub_count=orig_cnt,
+                        start_time=s_time,
+                        end_time=e_time,
+                        duration=tts_dur,
+                        original_text=zh_combined,
+                        translated_text=vi_str,
+                        speaker=role_str,
+                        status="TRANSLATED"
+                    )
+                    db.add(llm_entry)
+
+                    # TÁCH CÂU CON THEO DẤU CÂU TỰ NHIÊN & LƯU TRƯỚC VÀO SUB_KARAOKE
+                    sub_pieces = split_text_strictly_by_punctuation(vi_str, max_words=22, max_chars=180)
+                    if not sub_pieces:
+                        sub_pieces = [vi_str]
+
+                    tot_words = sum(max(1, len(sp.split())) for sp in sub_pieces)
+                    curr_sub_s = s_time
+                    for sp_idx, sp in enumerate(sub_pieces):
+                        curr_sub_counter += 1
+                        w_cnt = max(1, len(sp.split()))
+                        dur_sp = round(tts_dur * (w_cnt / tot_words), 2)
+                        sp_start = round(curr_sub_s, 2)
+                        sp_end = round(e_time if sp_idx == len(sub_pieces) - 1 else curr_sub_s + dur_sp, 2)
+                        curr_sub_s = sp_end
+
+                        sub_entry = SubtitleSegmentModel(
+                            task_id=project.id,
+                            sub_index=curr_sub_counter,
+                            tts_index=curr_tts_counter,
+                            batch_index=b_num,
+                            start_time=sp_start,
+                            end_time=sp_end,
+                            duration=round(max(0.1, sp_end - sp_start), 2),
+                            text_vi=sp,
+                            text_zh=zh_combined,
+                            speaker=role_str,
+                            status="TRANSLATED"
+                        )
+                        db.add(sub_entry)
+
             db.commit()
-            l_done = f"   💾 [Lô #{b_num}/{len(batches)}] Đã dịch xong ➔ Đã lưu 2 bảng (Subtitles & TTS) SQLite."
+
+            # XUẤT BẢN THẢO TRUNG GIAN RA ĐĨA NGAY SAU MỖI LÔ (REAL-TIME DUAL PERSISTENCE: CSDL + Ổ ĐĨA)
+            # Chống mất dữ liệu vật lý khi mất điện, crash hoặc tắt đột ngột
+            try:
+                cls._export_partial_transcripts(project, db, task_id)
+            except Exception as e_p_exp:
+                logger.warning(f"Lỗi xuất bản thảo trung gian sau lô #{b_num}: {e_p_exp}")
+
+            l_done = f"   💾 [Lô #{b_num}/{len(batches)}] Đã dịch xong ➔ Đã lưu 2 bảng (Subtitles & TTS) SQLite & xuất file đĩa."
             task_manager.add_log(task_id, l_done, "emerald")
-            print(f"✔ [LÔ #{b_num}/{len(batches)}] Đạt chuẩn 3 tiêu chí ➔ Đã lưu 2 bảng SQLite.", flush=True)
+            print(f"✔ [LÔ #{b_num}/{len(batches)}] Đạt chuẩn 3 tiêu chí ➔ Đã lưu 2 bảng SQLite & xuất file đĩa.", flush=True)
 
             pct = int(30 + (b_num / len(batches)) * 45)
             task_manager.update_task(task_id, progress=pct)
@@ -778,7 +976,7 @@ class TranslationPipelineService:
         except Exception as e:
             print(f"⚠️ [Pipeline Fix Hanzi LLM] Lỗi khi gọi LLM biên tập: {e}", flush=True)
 
-        # 4.2. Bước 2: Đồng bộ các câu thoại vào SQLite
+        # 4.2. Bước 2: Đồng bộ các câu thoại vào SQLite (Bảng câu con DialogueSegmentModel)
         for s in translated_segments:
             diag_db = db.query(DialogueSegmentModel).filter(
                 DialogueSegmentModel.task_id == project.id,
@@ -786,11 +984,14 @@ class TranslationPipelineService:
             ).first()
             if diag_db:
                 diag_db.translated_text = s.translated_text
-        # 4.3. Đã hoàn tất biên tập qua Tổng Biên Tập LLM
+                if getattr(s, 'speaker', None) or getattr(s, 'role', None):
+                    spk_val = getattr(s, 'speaker', None) or getattr(s, 'role', None)
+                    diag_db.speaker = spk_val
+                    diag_db.role = spk_val
         db.commit()
 
         # Nạp lại dữ liệu đã sạch Hán vào translated_segments và batches
-        diag_map = {d.index: d.translated_text for d in db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).all()}
+        diag_map = {d.index: (d.translated_text or "") for d in db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).all()}
         for s in translated_segments:
             if s.id in diag_map and diag_map[s.id]:
                 s.translated_text = diag_map[s.id]
@@ -799,44 +1000,63 @@ class TranslationPipelineService:
                 if s.id in diag_map and diag_map[s.id]:
                     s.translated_text = diag_map[s.id]
 
-        # 4.4. Bước 4: LÀM SẠCH TRIỆT ĐỂ TOÀN BỘ FILE CACHE VÀ all_llm_items
-        # Đảm bảo 100% sạch Hán trước khi phân chia ra 2 công việc
-        from app.core.llm_client import safe_json_loads
-        from app.services.step_03_translation.dichhan.raw_text_cleaner import contains_chinese, CHINESE_CHAR_REGEX
+        # 4.3. Bước 3: Đồng bộ bản dịch đã sửa Hán sang bảng câu gộp TTS (TTSDialogueSegmentModel)
+        # Giúp kịch bản lồng tiếng TTS mang 100% bản dịch chuốt mượt, không bị regex cắt cụt từ ngữ
+        tts_db_rows_to_sync = db.query(TTSDialogueSegmentModel).filter(
+            TTSDialogueSegmentModel.task_id == project.id
+        ).all()
+        for t_row in tts_db_rows_to_sync:
+            c_indices = []
+            if t_row.src_indices:
+                for x in str(t_row.src_indices).split(","):
+                    if x.strip().isdigit():
+                        c_indices.append(int(x.strip()))
+            elif t_row.src_start_index and t_row.src_end_index:
+                c_indices = list(range(t_row.src_start_index, t_row.src_end_index + 1))
+
+            if c_indices and llm_fixed_map and any(c_id in llm_fixed_map for c_id in c_indices):
+                child_texts = [diag_map[c_id].strip() for c_id in c_indices if c_id in diag_map and diag_map[c_id].strip()]
+                if child_texts:
+                    t_row.translated_text = " ".join(child_texts).strip()
+        db.commit()
+
+        # Đồng bộ ngay bản thảo sửa Hán ra file kịch bản vật lý trên đĩa
+        try:
+            cls._export_partial_transcripts(project, db, task_id)
+        except Exception as e_exp_hanzi:
+            logger.warning(f"Lỗi xuất file sau khi sửa Hán: {e_exp_hanzi}")
+
+        # 4.4. Bước 4: XÂY DỰNG all_llm_items TRỰC TIẾP TỪ SQLITE (SINGLE SOURCE OF TRUTH)
+        # Nạp trực tiếp từ SQLite để đảm bảo 100% đầy đủ mọi lô và sạch Hán, không phụ thuộc file JSON đĩa
         all_llm_items = []
-        if proj_llm_io_dir.exists():
-            for out_f in sorted(proj_llm_io_dir.glob("batch_*_output.json")):
-                try:
-                    with open(out_f, "r", encoding="utf-8") as f:
-                        parsed = safe_json_loads(f.read())
-                    if isinstance(parsed, dict):
-                        for v in parsed.values():
-                            if isinstance(v, list):
-                                parsed = v
-                                break
-                    if isinstance(parsed, list):
-                        batch_modified = False
-                        for it in parsed:
-                            if isinstance(it, dict):
-                                vi_str = str(it.get("vi") or it.get("viet") or it.get("text") or "").strip()
-                                if contains_chinese(vi_str):
-                                    it["vi"] = CHINESE_CHAR_REGEX.sub('', vi_str).strip()
-                                    batch_modified = True
-                        if batch_modified:
-                            with open(out_f, "w", encoding="utf-8") as f:
-                                json.dump(parsed, f, ensure_ascii=False, indent=2)
-                        all_llm_items.extend(parsed)
-                except Exception as e:
-                    logger.warning(f"Lỗi đọc/làm sạch file llm_io {out_f.name}: {e}")
+        tts_db_source = db.query(TTSDialogueSegmentModel).filter(
+            TTSDialogueSegmentModel.task_id == project.id
+        ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
 
-        # Bảo đảm an toàn 100%: mọi item trong all_llm_items sạch hoàn toàn chữ Hán
-        for it in all_llm_items:
-            if isinstance(it, dict) and "vi" in it:
-                if contains_chinese(it["vi"]):
-                    it["vi"] = CHINESE_CHAR_REGEX.sub('', it["vi"]).strip()
-
-        # CHỐT AN TOÀN DỰ PHÒNG: Nếu all_llm_items vì bất kỳ lý do gì bị rỗng, tự nạp lại từ CSDL SQLite
-        if not all_llm_items:
+        if tts_db_source:
+            for row in tts_db_source:
+                s_list = []
+                if row.src_indices:
+                    for x in str(row.src_indices).split(","):
+                        if x.strip().isdigit():
+                            s_list.append(int(x.strip()))
+                elif row.src_start_index and row.src_end_index:
+                    s_list = list(range(row.src_start_index, row.src_end_index + 1))
+                all_llm_items.append({
+                    "id": row.tts_index,
+                    "tts_index": row.tts_index,
+                    "role": row.speaker or "DẪN CHUYỆN",
+                    "speaker": row.speaker or "DẪN CHUYỆN",
+                    "s": float(row.start_time or 0.0),
+                    "e": float(row.end_time or 0.0),
+                    "start": float(row.start_time or 0.0),
+                    "end": float(row.end_time or 0.0),
+                    "vi": (row.translated_text or "").strip(),
+                    "zh": (row.original_text or "").strip(),
+                    "src": s_list or [row.src_start_index or 1],
+                    "batch_index": row.batch_index or 1
+                })
+        else:
             db_segs = db.query(DialogueSegmentModel).filter(
                 DialogueSegmentModel.task_id == project.id
             ).order_by(DialogueSegmentModel.index.asc()).all()
@@ -845,11 +1065,15 @@ class TranslationPipelineService:
                 if v_text:
                     all_llm_items.append({
                         "id": s.index,
+                        "tts_index": s.index,
                         "zh": s.clean_text or s.original_text or "",
                         "vi": v_text,
-                        "role": getattr(s, "speaker", "NARRATOR") or "NARRATOR",
+                        "role": getattr(s, "speaker", "DẪN CHUYỆN") or "DẪN CHUYỆN",
+                        "speaker": getattr(s, "speaker", "DẪN CHUYỆN") or "DẪN CHUYỆN",
                         "start": float(s.start_time or 0.0),
                         "end": float(s.end_time or 0.0),
+                        "s": float(s.start_time or 0.0),
+                        "e": float(s.end_time or 0.0),
                         "src": [s.index]
                     })
 
@@ -957,7 +1181,6 @@ class TranslationPipelineService:
             }, f, ensure_ascii=False, indent=2)
 
         # 5. TƯƠNG THÍCH NGƯỢC: COPY FILE VÀO ROOT FOLDER CỦA PROJECT
-        import shutil
         try:
             shutil.copyfile(sub_result["srt_path"], proj_root_dir / "transcript_vi.srt")
             shutil.copyfile(sub_result["json_path"], proj_root_dir / "transcript_vi.json")

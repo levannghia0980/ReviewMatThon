@@ -67,14 +67,18 @@ class TTSSwollenRescuer:
         for i, item in enumerate(swollen_items, 1):
             mapping[i] = item
             target_dur = float(item.get("target_dur", 2.0))
-            # Ngân sách số từ: tốc độ tự nhiên ~ 3.0 từ/giây
-            max_words = max(3, int(target_dur * 3.0))
+            # Tốc độ lồng tiếng chuẩn tự nhiên ~3.8 từ/giây (vừa khít tỷ lệ 1.05x - 1.25x)
+            # Min words: chặn dưới để câu không bao giờ bị cắt quá cụt làm tỷ lệ tụt < 1.0
+            min_words = max(2, int(round(target_dur * 3.2)))
+            # Max words: chặn trên an toàn để tốc độ đọc không vượt quá 1.30x
+            max_words = max(min_words + 1, int(round(target_dur * 4.4)))
 
             prompt_payload.append({
                 "id": i,
                 "vi_current": item.get("text_vi", ""),
                 "target_duration_sec": round(target_dur, 2),
-                "max_allowed_words": max_words
+                "min_words": min_words,
+                "max_words": max_words
             })
 
         _safe_log(f"\n⚡ [TTS Swollen Rescuer] Phát hiện {len(prompt_payload)} câu bị phình (> {cls.RESCUE_RATIO_THRESHOLD}x). Đang kích hoạt vá cục bộ...")
@@ -82,20 +86,25 @@ class TTSSwollenRescuer:
         prompt_str = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
 
         prompt = f"""Bạn là TỔNG BIÊN TẬP VIÊN LỒNG TIẾNG PHIM CAO CẤP.
-Dưới đây là danh sách các câu thoại tiếng Việt đang bị DÀI QUÁ MỨC so với thời lượng nói của nhân vật (target_duration_sec), khiến âm thanh bị nói quá nhanh / bắn rap (> 1.6x).
+Dưới đây là danh sách các câu thoại tiếng Việt đang bị DÀI QUÁ MỨC so với thời lượng nói của nhân vật (target_duration_sec), khiến âm thanh bị nói quá nhanh (> 1.6x).
 
-=== DANH SÁCH CÂU CẦN CÔ ĐỌNG ===
+=== DANH SÁCH CÂU CẦN ĐIỀU CHỈNH ĐỘ DÀI ===
 {prompt_str}
 
-=== QUY TẮC RÚT GỌN (BẮT BUỘC) ===
-1. Viết lại câu thoại ngắn gọn, súc tích, nằm trọn trong ngân sách từ (max_allowed_words).
-2. Lược bỏ các từ đệm, liên từ phụ, từ thừa ("thế nhỉ", "cái", "thì", "lại thấy"...) nhưng BẢO TOÀN 100% Ý NGHĨA và SẮC THÁI NHÂN VẬT.
-3. Câu viết lại phải đọc xuôi tai, tự nhiên, đúng ngữ cảnh lồng tiếng.
-4. Chỉ trả về duy nhất mảng JSON thuần hợp lệ theo định dạng sau:
+=== QUY TẮC BIÊN TẬP & ĐIỀU CHỈNH (BẮT BUỘC) ===
+1. MỤC TIÊU CỐT LÕI - VỪA VẶN NHỊP NÓI:
+   - Viết lại câu thoại có số từ NẰM TRONG KHOẢNG [min_words - max_words] để giọng đọc khớp tự nhiên với thời lượng cảnh phim.
+   - 🛑 CẤM CẮT XÉN QUÁ CỤT LỦN: Tuyệt đối KHÔNG viết câu ngắn hơn min_words, không được làm câu cộc lốc, vô nghĩa hoặc tụt tỷ lệ dưới 1.0x.
+   - 🛑 CẤM VƯỢT QUÁ TRẦN: Tuyệt đối KHÔNG vượt quá max_words để tránh tràn âm thanh sang cảnh sau.
+2. VĂN PHONG & NỘI DUNG:
+   - Bảo toàn 100% ý nghĩa, sắc thái cảm xúc và bối phận nhân vật trong phim.
+   - Lược bỏ các từ đệm rườm rà, chọn lọc động từ mạnh, súc tích, xuôi tai, đậm chất điện ảnh.
+3. ĐỊNH DẠNG ĐẦU RA:
+   - Chỉ trả về duy nhất mảng JSON thuần hợp lệ theo định dạng sau:
 [
   {{
     "id": 1,
-    "shortened_sentence": "Câu tiếng Việt rút gọn cô đọng"
+    "shortened_sentence": "Câu tiếng Việt vừa vặn nhịp nói"
   }}
 ]
 Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ngoài JSON!"""
@@ -158,6 +167,30 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
                 if new_audio and len(new_audio) > 100:
                     new_dur_sec = len(new_audio) / 1000.0
                     new_ratio = new_dur_sec / target_dur
+                    orig_ratio = float(orig_item.get("ratio", 1.6))
+
+                    # GUARDRAIL KIỂM SOÁT TỶ LỆ ÂM THANH:
+                    # - Nếu new_ratio < 0.85x: Bị cắt quá ngắn/teo tóp. Nếu câu gốc <= 1.85x thì giữ bản gốc để không bị cộc lốc.
+                    # - Nếu new_ratio >= orig_ratio: Không cải thiện được độ dài.
+                    # - Chỉ chấp nhận khi câu mới thực sự đưa tỷ lệ về vùng tối ưu hoặc giảm thời lượng rõ rệt.
+                    is_acceptable = True
+                    reject_reason = ""
+                    if new_ratio < 0.85:
+                        if orig_ratio <= 1.85:
+                            is_acceptable = False
+                            reject_reason = f"Bị cắt quá ngắn ({new_ratio:.2f}x < 0.85x), giữ bản cũ ({orig_ratio:.2f}x) để bảo toàn nghĩa"
+                    elif new_ratio >= orig_ratio:
+                        is_acceptable = False
+                        reject_reason = f"Không giảm được thời lượng ({new_ratio:.2f}x >= cũ {orig_ratio:.2f}x)"
+
+                    if not is_acceptable:
+                        _safe_log(
+                            f"  ⚠️ [Bỏ Qua Vá Câu #{orig_item.get('index', d_id)}]: {reject_reason}\n"
+                            f"     • Cũ: \"{orig_item.get('text_vi')}\"\n"
+                            f"     • Bị loại: \"{clean_text}\""
+                        )
+                        continue
+
                     raw_results_map[d_id] = new_audio
 
                     # Cập nhật văn bản mới vào object dialogue và DB
@@ -183,7 +216,7 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
                     rescued_count += 1
                     _safe_log(
                         f"  ✔ [Vá Thành Công Câu #{orig_item.get('index', d_id)}]:\n"
-                        f"     • Cũ ({orig_item.get('ratio'):.2f}x): \"{orig_item.get('text_vi')}\"\n"
+                        f"     • Cũ ({orig_ratio:.2f}x): \"{orig_item.get('text_vi')}\"\n"
                         f"     • Mới ({new_ratio:.2f}x): \"{clean_text}\""
                     )
 

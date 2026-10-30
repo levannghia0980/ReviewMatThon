@@ -189,8 +189,7 @@ async def translate_batch_pass2_llm(
         # NẾU ĐẠT CHUẨN: TRẢ VỀ KẾT QUẢ NGAY
         if is_valid:
             if attempt > 1:
-                import logging
-                logging.getLogger(__name__).info(
+                logger.info(
                     f"✔ [Smart Script Validation] Đã dịch lại thành công ở lần {attempt}! Nhận {len(parsed_items)} câu hợp lệ."
                 )
             return ans
@@ -201,24 +200,19 @@ async def translate_batch_pass2_llm(
 
         # NẾU CHƯA ĐẠT: GỬI LỆNH YÊU CẦU DỊCH LẠI
         actual_len = len(parsed_items) if isinstance(parsed_items, list) else 0
-        import logging
         if duplicate_detected:
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 f"⚠️ [Duplicate Check] Lần {attempt}: Phát hiện lặp câu ({duplicate_detail})! Đang yêu cầu dịch lại..."
             )
-            retry_note = (
-                f"\n\n[CẢNH BÁO]: Nội dung dịch bị lặp lại ({duplicate_detail})! "
-                f"TUYỆT ĐỐI CẤM lặp lại nguyên văn câu trước, mỗi lời thoại phải mang nội dung chuẩn xác theo ngữ cảnh."
+            current_prompt = user_prompt + (
+                f"\n\n[LƯU Ý]: Bản dịch trước bị lặp câu ({duplicate_detail}). "
+                f"Hãy dịch chuẩn xác từng câu theo đúng ngữ cảnh và giữ nguyên cấu trúc định dạng chuẩn: [mẩu ASR gốc] Lời dịch -> [Tên vai]."
             )
         else:
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 f"⚠️ [Script Format Validation] Lần {attempt}: Định dạng kịch bản chưa hợp lệ! Đang yêu cầu LLM dịch lại..."
             )
-            retry_note = (
-                f"\n\n[CẢNH BÁO LỖI ĐỊNH DẠNG]: Bản dịch không đúng quy chuẩn! "
-                f"BẮT BUỘC dịch tuần tự từ dòng 1 đến hết, mỗi câu dịch trên 1 dòng theo đúng cú pháp: [Tên Vai|zh chữ Hán] Lời thoại tiếng Việt trọn vẹn (TUYỆT ĐỐI KHÔNG đánh số thứ tự vào thẻ)."
-            )
-        current_prompt = user_prompt + retry_note
+            current_prompt = user_prompt
 
 # Backward compatibility aliases
 translate_dialogue_batch_llm = translate_batch_pass2_llm

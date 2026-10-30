@@ -308,8 +308,6 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             task_manager.add_log(task_id, f"[2/5] ✔ Video đã có bản dịch hoàn chỉnh ({total_dialogues} câu). Bỏ qua dịch lại -> Chuyển sang TTS & Render.", "emerald")
 
         p_dirs = get_project_dirs(project_id)
-
-        p_dirs = get_project_dirs(project_id)
         # Kịch bản TTS đã được hoàn tất và đóng gói chuẩn hóa từ Bước 3 (Translation).
 
         # BƯỚC 3 & 4: CHẠY SONG SONG 100% (PARALLEL MULTI-THREADING TĂNG TỐC 50%)
@@ -603,21 +601,19 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         task_manager.add_log(task_id, f"🎉 TỰ ĐỘNG HÓA HOÀN TẤT 100%! File xuất: output/final_videos/{output_final_path.name}", "emerald")
 
     except asyncio.CancelledError:
-        db.rollback()
-        task_manager.add_log(task_id, "🛑 Đã dừng tiến trình tự động hóa an toàn theo yêu cầu của người dùng.", "amber")
+        task_manager.add_log(task_id, "🛑 Đã dừng tiến trình tự động hóa an toàn theo yêu cầu của người dùng. Dữ liệu các lô đã dịch được bảo toàn 100%.", "amber")
         task_manager.update_task(
             task_id,
             status="cancelled",
-            message="Đã hủy theo yêu cầu của người dùng"
+            message="Đã hủy theo yêu cầu của người dùng (Bảo toàn các lô đã dịch)"
         )
     except Exception as e:
         if task_manager.is_cancelled(task_id):
-            db.rollback()
-            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình tự động hóa an toàn theo yêu cầu của người dùng.", "amber")
+            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình tự động hóa an toàn theo yêu cầu của người dùng. Dữ liệu các lô đã dịch được bảo toàn 100%.", "amber")
             task_manager.update_task(
                 task_id,
                 status="cancelled",
-                message="Đã hủy theo yêu cầu của người dùng"
+                message="Đã hủy theo yêu cầu của người dùng (Bảo toàn các lô đã dịch)"
             )
         else:
             db.rollback()

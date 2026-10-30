@@ -682,7 +682,8 @@ export default function MainStudioView({ onNavigateTab }) {
     try {
       await fetch(`/api/v1/pipeline/cancel/${taskId}`, { method: 'POST' });
       setIsRunning(false);
-      setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), text: '🛑 Đã dừng tiến trình & dọn dẹp sạch toàn bộ các chunk tạm!', type: 'amber' }]);
+      setLogs(prev => [...prev, { time: new Date().toLocaleTimeString(), text: '🛑 Đã dừng tiến trình! Dữ liệu các lô đã dịch xong được bảo toàn nguyên vẹn.', type: 'amber' }]);
+      loadProjects();
     } catch (err) {
       console.error('Lỗi khi hủy tiến trình:', err);
       setIsRunning(false);
@@ -2144,7 +2145,7 @@ export default function MainStudioView({ onNavigateTab }) {
                   type="button"
                   className="btn"
                   onClick={handleCancelAutomation}
-                  title="Dừng ngay lập tức và dọn dẹp sạch sẽ các chunk tạm để không bị lẫn"
+                  title="Dừng tiến trình: Bảo toàn nguyên vẹn các lô đã dịch xong, chỉ dọn dẹp các chunk audio/video tạm"
                   style={{
                     padding: '10px 8px',
                     fontSize: '11.5px',
@@ -2160,7 +2161,7 @@ export default function MainStudioView({ onNavigateTab }) {
                     gap: '4px'
                   }}
                 >
-                  🛑 DỪNG & XÓA
+                  🛑 DỪNG TIẾN TRÌNH
                 </button>
               </div>
             ) : (

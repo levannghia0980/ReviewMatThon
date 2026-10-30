@@ -1,19 +1,23 @@
 import asyncio
 import aiohttp
 import base64
+import io
 import json
 import logging
 import os
 import random
 import re
+import subprocess
 import time
 import threading
 import uuid
 from typing import Dict, List, Optional, Tuple, Any, Callable
 from urllib.parse import urlencode
+from pydub import AudioSegment
 
 from app.services.step_04_tts.proxy_manager import proxy_manager
 from app.config import settings
+from app.utils.bin_helper import get_ffmpeg_cmd
 from app.services.step_04_tts.capcut_api.models import DeviceConfig
 from app.services.step_04_tts.capcut_api.signer import (
     base_headers,
@@ -69,6 +73,138 @@ def generate_fake_vietnam_ip() -> str:
     ]
     prefix, a_min, a_max, b_min, b_max = random.choice(isp_ranges)
     return f"{prefix}{random.randint(a_min, a_max)}.{random.randint(b_min, b_max)}"
+
+
+def _load_audio_from_bytes(data: bytes, format: str = "mp3") -> AudioSegment:
+    """
+    Giải mã âm thanh từ byte buffer sang AudioSegment siêu tốc & an toàn:
+    - Sử dụng trực tiếp ffmpeg pipe decode sang WAV thô (tránh lỗi pydub ffprobe JSONDecodeError).
+    """
+    if not data or len(data) < 100:
+        return AudioSegment.silent(duration=200)
+    try:
+        ffmpeg_bin = get_ffmpeg_cmd()[0]
+        cmd = [ffmpeg_bin, "-y", "-i", "pipe:0", "-f", "wav", "pipe:1"]
+        res = subprocess.run(cmd, input=data, capture_output=True)
+        if res.returncode == 0 and len(res.stdout) > 44:
+            return AudioSegment.from_wav(io.BytesIO(res.stdout))
+    except Exception:
+        pass
+    temp_dir = settings.TEMP_TTS_DIR
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        import tempfile
+        fd, temp_path = tempfile.mkstemp(suffix=f".{format}", dir=str(temp_dir))
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+        return AudioSegment.from_file(temp_path)
+    except Exception:
+        return AudioSegment.silent(duration=200)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+def split_text_strictly_by_punctuation(text: str, max_words: int = 25, max_chars: int = 180) -> List[str]:
+    """
+    Tách câu nghiêm ngặt dựa trên dấu câu tự nhiên:
+    1. Ưu tiên ngắt tại các dấu kết câu: [.?!:\n]+ hoặc \.{3,}
+    2. Nếu câu dài (> max_words hoặc > max_chars):
+       - Tìm các dấu giữa câu: [;,—–]+
+    3. Cơ chế an toàn (Fallback cho văn bản bị thiếu dấu câu):
+       - Nếu một đoạn vẫn vượt quá max_words mà không có dấu giữa câu:
+         Tìm ranh giới viết hoa đầu câu r'(?<=[a-zà-ỹ0-9])\s+(?=[A-ZÀ-Ỹ])'
+       - Tuyệt đối không bao giờ cắt ngang một từ ngữ.
+    """
+    if not text or not text.strip():
+        return []
+    text = text.strip()
+
+    def _break_long_piece(p_text: str) -> List[str]:
+        if len(p_text.split()) <= max_words and len(p_text) <= max_chars:
+            return [p_text.strip()] if p_text.strip() else []
+        cap_parts = re.split(r'(?<=[a-zà-ỹ0-9])\s+(?=[A-ZÀ-Ỹ])', p_text)
+        res = []
+        curr = ''
+        for cp in cap_parts:
+            cp = cp.strip()
+            if not cp:
+                continue
+            if not curr:
+                curr = cp
+            elif len((curr + ' ' + cp).split()) <= max_words and len(curr + ' ' + cp) <= max_chars:
+                curr = curr + ' ' + cp
+            else:
+                if curr:
+                    res.append(curr)
+                if len(cp.split()) > max_words or len(cp) > max_chars:
+                    words = cp.split()
+                    for k in range(0, len(words), max_words):
+                        w_slice = ' '.join(words[k:k+max_words])
+                        if w_slice:
+                            res.append(w_slice)
+                    curr = ''
+                else:
+                    curr = cp
+        if curr:
+            res.append(curr)
+        return res
+
+    # Bước 1: Tách theo dấu kết câu chính
+    raw_sentences = re.split(r'([.!?:\n]+|\.{3,})', text)
+    sentences = []
+    i = 0
+    while i < len(raw_sentences):
+        s = raw_sentences[i].strip()
+        punc = raw_sentences[i+1].strip() if i + 1 < len(raw_sentences) else ''
+        full_s = (s + (' ' + punc if punc and not s.endswith(punc) else '')).strip()
+        if full_s:
+            sentences.append(full_s)
+        i += 2
+
+    final_chunks = []
+    for s in sentences:
+        if len(s.split()) <= max_words and len(s) <= max_chars:
+            final_chunks.append(s)
+            continue
+
+        # Bước 2: Tách theo dấu giữa câu (; , — –)
+        sub_parts = re.split(r'([;,—–]+)', s)
+        curr = ''
+        j = 0
+        while j < len(sub_parts):
+            part = sub_parts[j].strip()
+            p = sub_parts[j+1].strip() if j + 1 < len(sub_parts) else ''
+            piece = (part + (' ' + p if p else '')).strip()
+            if not piece:
+                j += 2
+                continue
+
+            if not curr:
+                if len(piece.split()) <= max_words and len(piece) <= max_chars:
+                    curr = piece
+                else:
+                    final_chunks.extend(_break_long_piece(piece))
+                    curr = ''
+            elif len((curr + ' ' + piece).split()) <= max_words and len(curr + ' ' + piece) <= max_chars:
+                curr = curr + ' ' + piece
+            else:
+                final_chunks.append(curr.strip())
+                if len(piece.split()) <= max_words and len(piece) <= max_chars:
+                    curr = piece
+                else:
+                    final_chunks.extend(_break_long_piece(piece))
+                    curr = ''
+            j += 2
+        if curr.strip():
+            final_chunks.append(curr.strip())
+
+    return [c for c in final_chunks if any(ch.isalnum() for ch in c)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -373,6 +509,175 @@ class AsyncTTSEngine:
         return (None, []) if return_utterances else None
 
     @classmethod
+    async def synthesize_single_subchunk(
+        cls,
+        session: aiohttp.ClientSession,
+        sub_text: str,
+        engine: str,
+        voice_code: str,
+        session_id: Optional[str] = None,
+        proxy: Optional[str] = None,
+        return_utterances: bool = False
+    ) -> Any:
+        """Tải 1 mẩu câu đơn qua đúng Engine/Voice được chỉ định."""
+        if "Neural" in voice_code or "hoaimy" in voice_code.lower():
+            actual_voice = "vi-VN-HoaiMyNeural" if "hoaimy" in voice_code.lower() else voice_code
+            audio_bytes = await cls.fetch_edge_chunk_async(text=sub_text, voice_code=actual_voice)
+            return (audio_bytes, []) if return_utterances else audio_bytes
+        elif engine.lower() == "capcut" or "multi_" in voice_code:
+            return await cls.fetch_capcut_chunk_async(
+                session=session,
+                text=sub_text,
+                voice_code=voice_code,
+                cookie=session_id or _get_capcut_cookie(),
+                proxy=proxy,
+                return_utterances=return_utterances,
+            )
+        else:
+            audio_bytes = await cls.fetch_tiktok_chunk_async(
+                session=session,
+                text=sub_text,
+                voice_code=voice_code,
+                session_id=session_id or _get_tiktok_session(),
+                proxy=proxy,
+            )
+            return (audio_bytes, []) if return_utterances else audio_bytes
+
+    _last_sub_timings_map: Dict[int, List[Dict[str, Any]]] = {}
+
+    @classmethod
+    def get_last_sub_timings(cls) -> Dict[int, List[Dict[str, Any]]]:
+        return dict(getattr(cls, "_last_sub_timings_map", {}))
+
+    @classmethod
+    async def synthesize_dialogue_smart(
+        cls,
+        session: aiohttp.ClientSession,
+        text: str,
+        engine: str,
+        voice_code: str,
+        session_id: Optional[str] = None,
+        proxy: Optional[str] = None,
+        return_utterances: bool = False,
+        return_sub_timings: bool = False
+    ) -> Any:
+        """
+        Tổng hợp giọng nói thông minh cho câu thoại:
+        1. Tự động bẻ nhỏ câu theo dấu câu nghiêm ngặt (. ! ? : ; ,) thành các mẩu câu con.
+        2. Tải âm thanh cho từng mẩu con qua Engine/Voice.
+        3. Ghép nối âm thanh liền mạch thành đúng 1 AudioSegment/MP3 hoàn chỉnh cho câu thoại.
+        4. Tự động cộng dồn offset thời gian cho mảng utterances (cho phụ đề Karaoke chuẩn xác 100%).
+        5. Trả về kèm danh sách mốc thời gian sóng âm của từng câu con (sub_timings) phục vụ phụ đề tuần tự.
+        """
+        chunks = split_text_strictly_by_punctuation(text, max_words=22, max_chars=180)
+        if len(chunks) <= 1:
+            raw_text = chunks[0] if chunks else text
+            res = await cls.synthesize_single_subchunk(
+                session=session,
+                sub_text=raw_text,
+                engine=engine,
+                voice_code=voice_code,
+                session_id=session_id,
+                proxy=proxy,
+                return_utterances=return_utterances,
+            )
+            audio_b = res[0] if return_utterances and isinstance(res, tuple) else res
+            # Cứu hộ nhanh qua Edge TTS nếu API chính từ chối câu
+            if (not audio_b or len(audio_b) < 100) and ("Neural" not in voice_code and "hoaimy" not in voice_code.lower()):
+                rescue_b = await cls.fetch_edge_chunk_async(text=raw_text, voice_code="vi-VN-HoaiMyNeural")
+                if rescue_b and len(rescue_b) > 100:
+                    audio_b = rescue_b
+                    res = (rescue_b, []) if return_utterances else rescue_b
+
+            if return_sub_timings:
+                seg_dur = len(_load_audio_from_bytes(audio_b, "mp3")) if audio_b else 0
+                single_timing = [{
+                    "text": raw_text,
+                    "raw_start_ms": 0,
+                    "raw_end_ms": seg_dur,
+                    "duration_ms": seg_dur
+                }]
+                if return_utterances:
+                    u_list = res[1] if isinstance(res, tuple) else []
+                    return audio_b, u_list, single_timing
+                return audio_b, single_timing
+
+            return res
+
+        # Xử lý đa chunk con
+        sub_audio_bytes: List[bytes] = []
+        sub_utts_list: List[List[Dict[str, Any]]] = []
+
+        for sub_c in chunks:
+            res = await cls.synthesize_single_subchunk(
+                session=session,
+                sub_text=sub_c,
+                engine=engine,
+                voice_code=voice_code,
+                session_id=session_id,
+                proxy=proxy,
+                return_utterances=return_utterances,
+            )
+            a_b = res[0] if return_utterances and isinstance(res, tuple) else res
+            u_l = res[1] if return_utterances and isinstance(res, tuple) else []
+
+            # Cứu hộ chunk con nếu lỗi
+            if not a_b or len(a_b) < 100:
+                a_b = await cls.fetch_edge_chunk_async(text=sub_c, voice_code="vi-VN-HoaiMyNeural")
+                u_l = []
+
+            if not a_b or len(a_b) < 100:
+                if return_sub_timings:
+                    return (None, [], []) if return_utterances else (None, [])
+                return (None, []) if return_utterances else None
+
+            sub_audio_bytes.append(a_b)
+            sub_utts_list.append(u_l)
+
+        # Ghép nối các audio con thành 1 buffer MP3 hoàn chỉnh
+        sub_segs = [_load_audio_from_bytes(b, "mp3") for b in sub_audio_bytes]
+        if not sub_segs or any(len(s) < 50 for s in sub_segs):
+            if return_sub_timings:
+                return (None, [], []) if return_utterances else (None, [])
+            return (None, []) if return_utterances else None
+
+        merged_seg = sub_segs[0]
+        for s in sub_segs[1:]:
+            if len(merged_seg) > 300 and len(s) > 300:
+                merged_seg = merged_seg.append(s, crossfade=10)
+            else:
+                merged_seg = merged_seg + s
+
+        out_buf = io.BytesIO()
+        merged_seg.export(out_buf, format="mp3", bitrate="128k")
+        final_bytes = out_buf.getvalue()
+
+        merged_utts: List[Dict[str, Any]] = []
+        sub_timings: List[Dict[str, Any]] = []
+        cum_ms = 0
+        for s_seg, sub_c, s_utts in zip(sub_segs, chunks, sub_utts_list):
+            dur_ms = len(s_seg)
+            sub_timings.append({
+                "text": sub_c,
+                "raw_start_ms": cum_ms,
+                "raw_end_ms": cum_ms + dur_ms,
+                "duration_ms": dur_ms
+            })
+            if s_utts:
+                for u in s_utts:
+                    u_copy = dict(u)
+                    if "start_time" in u_copy:
+                        u_copy["start_time"] = u_copy["start_time"] + cum_ms
+                    if "end_time" in u_copy:
+                        u_copy["end_time"] = u_copy["end_time"] + cum_ms
+                    merged_utts.append(u_copy)
+            cum_ms += dur_ms
+
+        if return_sub_timings:
+            return (final_bytes, merged_utts, sub_timings) if return_utterances else (final_bytes, sub_timings)
+        return (final_bytes, merged_utts) if return_utterances else final_bytes
+
+    @classmethod
     async def batch_synthesize_async(
         cls,
         dialogues_data: List[Tuple[int, str]],  # [(dialogue_id, text_to_speak), ...]
@@ -404,8 +709,10 @@ class AsyncTTSEngine:
 
         results_map: Dict[int, bytes] = {}
         utterances_map: Dict[int, List[Dict[str, Any]]] = {}
+        sub_timings_map: Dict[int, List[Dict[str, Any]]] = {}
         total = len(dialogues_data)
         if total == 0:
+            cls._last_sub_timings_map = {}
             return (results_map, utterances_map) if return_utterances else results_map
 
         task_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
@@ -478,34 +785,28 @@ class AsyncTTSEngine:
                         target_proxy = None if used_direct else current_proxy
 
                         cur_utterances = []
-                        if "Neural" in cur_voice or "hoaimy" in cur_voice.lower():
-                            actual_voice = "vi-VN-HoaiMyNeural" if "hoaimy" in cur_voice.lower() else cur_voice
-                            audio_data = await cls.fetch_edge_chunk_async(text=text, voice_code=actual_voice)
-                        elif engine.lower() == "capcut" or "multi_" in cur_voice:
-                            if return_utterances:
-                                audio_data, cur_utterances = await cls.fetch_capcut_chunk_async(
-                                    session=session,
-                                    text=text,
-                                    voice_code=cur_voice,
-                                    cookie=session_id or _get_capcut_cookie(),
-                                    proxy=target_proxy,
-                                    return_utterances=True,
-                                )
-                            else:
-                                audio_data = await cls.fetch_capcut_chunk_async(
-                                    session=session,
-                                    text=text,
-                                    voice_code=cur_voice,
-                                    cookie=session_id or _get_capcut_cookie(),
-                                    proxy=target_proxy,
-                                )
-                        else:
-                            audio_data = await cls.fetch_tiktok_chunk_async(
+                        cur_sub_timings = []
+                        if return_utterances:
+                            audio_data, cur_utterances, cur_sub_timings = await cls.synthesize_dialogue_smart(
                                 session=session,
                                 text=text,
+                                engine=engine,
                                 voice_code=cur_voice,
-                                session_id=session_id or _get_tiktok_session(),
+                                session_id=session_id,
                                 proxy=target_proxy,
+                                return_utterances=True,
+                                return_sub_timings=True,
+                            )
+                        else:
+                            audio_data, cur_sub_timings = await cls.synthesize_dialogue_smart(
+                                session=session,
+                                text=text,
+                                engine=engine,
+                                voice_code=cur_voice,
+                                session_id=session_id,
+                                proxy=target_proxy,
+                                return_utterances=False,
+                                return_sub_timings=True,
                             )
 
                         elapsed = time.time() - t0
@@ -521,6 +822,7 @@ class AsyncTTSEngine:
                         # ── XỬ LÝ KẾT QUẢ ─────────────────────────────────
                         if audio_data and len(audio_data) > 100:
                             results_map[d_id] = audio_data
+                            sub_timings_map[d_id] = cur_sub_timings
                             if return_utterances:
                                 utterances_map[d_id] = cur_utterances
                             completed_count += 1
@@ -543,8 +845,34 @@ class AsyncTTSEngine:
                             except Exception:
                                 pass
                         else:
-                            # 💥 GẶP LỖI: CHÍNH SÁCH ZERO-DROP (Tuyệt đối không bỏ rơi câu thoại)
+                            # 💥 GẶP LỖI
                             next_retry = attempts + 1
+                            if next_retry > max_retries_per_item:
+                                # Đã thử vượt ngưỡng retry: Cứu hộ dứt điểm bằng Edge TTS
+                                edge_rescue = await cls.fetch_edge_chunk_async(text=text, voice_code="vi-VN-HoaiMyNeural")
+                                if edge_rescue and len(edge_rescue) > 100:
+                                    results_map[d_id] = edge_rescue
+                                    if return_utterances:
+                                        utterances_map[d_id] = []
+                                    completed_count += 1
+                                    log_msg = f"⚡ TTS: Cứu hộ thành công câu #{chunk_idx + 1:03d} qua Edge TTS an toàn! ✔"
+                                    try:
+                                        if log_callback:
+                                            log_callback(log_msg, "emerald")
+                                    except Exception:
+                                        pass
+                                    continue
+                                else:
+                                    # Fallback cuối: Cấp đệm âm thanh im lặng để không treo hàng đợi
+                                    silent_buf = io.BytesIO()
+                                    AudioSegment.silent(duration=1500).export(silent_buf, format="mp3")
+                                    results_map[d_id] = silent_buf.getvalue()
+                                    if return_utterances:
+                                        utterances_map[d_id] = []
+                                    completed_count += 1
+                                    logger.error(f"Câu #{chunk_idx + 1:03d} đã quá {max_retries_per_item} lần thử -> Cấp đệm im lặng giải phóng queue.")
+                                    continue
+
                             high_prio = priority - 100_000_000
 
                             # Dọn dẹp nhẹ ký tự điều khiển vô hình (nếu có), TUYỆT ĐỐI giữ nguyên 100% từ ngữ và dấu câu tự nhiên
@@ -553,7 +881,6 @@ class AsyncTTSEngine:
                                 clean_text = text
 
                             # Tiếp tục nạp lại vào hàng đợi ưu tiên cao để các luồng sau thử lại qua Proxy/IP khác
-                            # TUYỆT ĐỐI giữ đúng Engine và Voice được chỉ định, không bao giờ bỏ rơi câu thoại!
                             try:
                                 if log_callback:
                                     log_callback(
@@ -598,6 +925,8 @@ class AsyncTTSEngine:
             if return_utterances:
                 return {}, {}
             return {}
+
+        cls._last_sub_timings_map = sub_timings_map
 
         if return_utterances:
             return results_map, utterances_map

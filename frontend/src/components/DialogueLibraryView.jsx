@@ -193,6 +193,10 @@ export default function DialogueLibraryView() {
           } else if (data.status === 'cancelled') {
             setIsTranslating(false);
             clearInterval(interval);
+            if (selectedProject) {
+              await loadBatches(selectedProject.id, activeBatchIndex);
+            }
+            loadProjects();
           } else if (data.status === 'failed' || data.status === 'FAILED') {
             setIsTranslating(false);
             clearInterval(interval);

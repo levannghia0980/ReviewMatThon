@@ -759,6 +759,13 @@ class CapCutTTSService:
         )
         total_count = len(dialogues)
 
+        # Hợp nhất các mốc sóng âm từ các sub-chunks tạo bởi AsyncTTSEngine
+        engine_sub_timings = AsyncTTSEngine.get_last_sub_timings()
+        if engine_sub_timings:
+            for d in dialogues:
+                if d.id in engine_sub_timings and (d.tts_index not in chunk_sub_offsets or len(chunk_sub_offsets[d.tts_index]) <= 1):
+                    chunk_sub_offsets[d.tts_index] = engine_sub_timings[d.id]
+
         # =========================================================================
         # 0.5. CỨU HỘ CÂU PHÌNH QUÁ TẢI (> 1.6x) (TTS Swollen Rescuer)
         # Quét các câu có tốc độ thực tế > 1.60x, gọi LLM cô đọng và sinh lại TTS
@@ -772,7 +779,13 @@ class CapCutTTSService:
             target_dur = max(0.1, float(d.end_time) - float(d.start_time))
             raw_dur_sec = len(audio_seg) / 1000.0
             ratio = raw_dur_sec / target_dur
-            if ratio > TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD:
+            # Ước lượng thời lượng nói thực tế sau khi trừ khoảng im lặng mặc định (~250ms)
+            effective_dur = max(0.1, raw_dur_sec - 0.25)
+            effective_ratio = effective_dur / target_dur
+
+            # Chỉ kích hoạt nếu tỷ lệ thô > ngưỡng (1.60x) VÀ sau khi gọt im lặng vẫn vượt 1.35x
+            # (tránh kích hoạt oan cho các câu ngắn bị dính khoảng lặng tự nhiên của CapCut)
+            if ratio > TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD and effective_ratio > 1.35:
                 swollen_items.append({
                     "dialogue_id": d.id,
                     "dialogue_obj": d,

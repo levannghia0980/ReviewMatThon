@@ -405,7 +405,7 @@ async def execute_llm_call(
             }
         elif thinking_budget > 0:
             payload["generationConfig"]["thinkingConfig"] = {
-                "thinkingBudget": min(8192, thinking_budget)
+                "thinkingBudget": min(24576, thinking_budget)
             }
         elif thinking_budget == 0:
             payload["generationConfig"]["thinkingConfig"] = {

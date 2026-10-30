@@ -3,43 +3,6 @@ from typing import List, Dict, Any, Tuple
 from app.schemas.transcript import DialogueSegment
 
 class BatchManager:
-    CYCLIC_MARKS = ["。", "！", "？"]
-
-    CYCLE_TAGS = ["@", "#", "$"]
-
-    @classmethod
-    def pack_dialogues_to_json_items(cls, segments: List[DialogueSegment]) -> List[Dict[str, Any]]:
-        """
-        Đóng gói danh sách câu thoại thành mảng Object JSON tinh gọn cho LLM:
-        [{"i": 1, "max_words": 4, "zh": "全球诡异爆发"}, ...]
-        Truyền hạn mức số từ max_words (tính theo dur * 3.3 từ/s) để LLM kiểm soát độ dài.
-        Nếu khoảng cách giữa 2 câu liên tiếp >= 1.0s: đánh dấu "no_merge": true.
-        """
-        items = []
-        for idx, s in enumerate(segments):
-            text = (s.clean_text or s.text or "").strip()
-            text = re.sub(r'[\r\n\t]+', ' ', text).strip()
-
-            raw_start = float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0)
-            raw_end = float(getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0)
-            raw_dur = float(getattr(s, 'duration', 0.0) or (raw_end - raw_start) or 0.1)
-            dur = max(0.1, round(raw_dur, 2))
-            max_words = max(1, int(round(dur * 3.3)))
-
-            # Kiểm tra khoảng cách với câu trước: nếu gap >= 0.4s thì câu trước đó bắt buộc ngắt, cấm gộp
-            if idx > 0:
-                prev_end = float(getattr(segments[idx - 1], 'end', 0.0) or getattr(segments[idx - 1], 'end_time', 0.0) or 0.0)
-                gap_prev = max(0.0, raw_start - prev_end)
-                if gap_prev >= 0.4 and items:
-                    items[-1]["no_merge"] = True
-
-            item_dict: Dict[str, Any] = {
-                "i": idx + 1,
-                "max_words": max_words,
-                "zh": text
-            }
-            items.append(item_dict)
-        return items
 
     @classmethod
     def pack_dialogues_to_tagged_text(cls, segments: List[DialogueSegment]) -> str:
@@ -59,20 +22,7 @@ class BatchManager:
             if not text:
                 text = "..."
 
-            raw_start = float(getattr(s, 'start', 0.0) or getattr(s, 'start_time', 0.0) or 0.0)
-            raw_end = float(getattr(s, 'end', 0.0) or getattr(s, 'end_time', 0.0) or 0.0)
-            raw_dur = float(getattr(s, 'duration', 0.0) or (raw_end - raw_start) or 0.1)
-            dur = max(0.1, round(raw_dur, 2))
-            max_words = max(1, int(round(dur * 3.3)))
-
-            lock_tag = ""
-            if idx + 1 < len(segments):
-                next_s = segments[idx + 1]
-                next_start = float(getattr(next_s, 'start', 0.0) or getattr(next_s, 'start_time', 0.0) or 0.0)
-                if (next_start - raw_end) >= 0.4:
-                    lock_tag = " [KHÓA]"
-
-            lines.append(f"{idx + 1}. {text} (max {max_words} từ){lock_tag}")
+            lines.append(text)
 
         return "\n".join(lines)
 

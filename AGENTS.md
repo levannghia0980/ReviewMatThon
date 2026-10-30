@@ -50,5 +50,23 @@ Khi chuyển mã nguồn dự án này sang máy tính khác (hoặc khi Agent p
 - **Tính toán trung thực tài nguyên phần cứng**:
   - Nghiêm cấm việc đưa ra con số ước tính lý thuyết sai lệch (như 100-200MB) cho các nhân trình duyệt thực tế. Một phiên Chromium chạy web nặng như Gemini luôn ngốn 300MB - 600MB RAM, do đó cơ chế vòng đời phải được lập trình cực kỳ cẩn trọng, không được làm ẩu làm tắt.
 
+---
+
+## 5. TƯ DUY PHẢN BIỆN, NÂNG CẤP Ý TƯỞNG & THÁI ĐỘ LÀM VIỆC (CRITICAL ENGINEERING MINDSET)
+1. **Tuyệt đối cấm khen nịnh (Zero Sycophancy)**:
+   - Cấm các câu mở đầu tâng bốc ("Ý tưởng tuyệt vời", "Bạn thật xuất sắc", "Rất hay"...).
+   - Nói thẳng vào kỹ thuật, dữ liệu và bản chất logic.
+
+2. **Quy trình 4 bước khi tiếp nhận ý tưởng/yêu cầu mới từ người dùng**:
+   - **BƯỚC 1: Phản biện & Bóc tách lỗ hổng (Stress-test)**:
+     - Nếu ý tưởng có điểm sai lầm, bất khả thi hoặc phi thực tế, phải nói thẳng và chỉ rõ lý do tại sao nó hỏng, dẫn chứng cụ thể từ code và các trường hợp biên (edge cases). Không được làm theo một cách mù quáng.
+   - **BƯỚC 2: Tự nâng cấp ý tưởng (Proactive Hardening)**:
+     - Nếu ý tưởng có tiềm năng, cấm việc chỉ nghe thụ động rồi làm đúng y chang cái thô sơ của người dùng. Bắt buộc phải tự đào sâu, bổ sung các khía cạnh lỗi thực tế, xử lý ngoại lệ mà người dùng chưa lường hết để biến nó thành một giải pháp hoàn chỉnh.
+   - **BƯỚC 3: Đánh giá ảnh hưởng toàn luồng (System Impact Analysis)**:
+     - Phân tích cặn kẽ: Thay đổi logic này thì khâu trước (Upstream) và khâu sau (Downstream) trong Pipeline (ASR ➔ Dịch ➔ TTS ➔ Ghép Audio ➔ Phụ đề ➔ Render Video) bị ảnh hưởng thế nào? Có làm hỏng các tính năng cũ không?
+   - **BƯỚC 4: Kế hoạch thay đổi rõ ràng**:
+     - Nêu chính xác cần sửa file nào, sửa hàm nào, ưu nhược điểm là gì trước khi bắt tay vào làm.
+
+
 
 

@@ -43,11 +43,11 @@ def format_timestamp(seconds: float) -> str:
 
 logger = logging.getLogger(__name__)
 
-# Danh sách từ nối / giới từ tự nhiên để căn chỉnh điểm cắt từ không bị gãy từ ghép
+# Danh sách từ nối / liên từ tự nhiên để căn chỉnh điểm cắt từ không bị gãy từ ghép
 NATURAL_SPLIT_HEADS = {
     "trong", "khi", "và", "đã", "để", "mà", "thì", "ở", "tại", "với", "từ",
     "nhưng", "bởi", "vì", "do", "nên", "nếu", "sẽ", "đang", "vừa", "cũng",
-    "liền", "bèn", "lại", "rồi", "qua", "về", "lên", "xuống", "ra", "vào"
+    "liền", "bèn", "lại", "rồi", "qua", "về"
 }
 
 
@@ -157,41 +157,33 @@ class SubtitleBuilderService:
         if not chunks:
             chunks = [{'text': vi_text.strip(), 'lvl': 1}]
 
-        # Nếu số mẩu dấu câu ít hơn số segment (M < n_segs),
-        # bổ sung điểm ngắt tự nhiên tại từ nối (Level 3) để đủ n_segs mà không cắt bừa bãi
-        while len(chunks) < n_segs:
-            max_idx = max(range(len(chunks)), key=lambda i: len(chunks[i]['text'].split()))
-            target = chunks[max_idx]
-            words = target['text'].split()
-            if len(words) <= 1:
-                break
-            min_side = 2 if len(words) >= 4 else 1
-            mid = len(words) // 2
-            best_split_idx = -1
-            min_dist = float('inf')
-            for i, w in enumerate(words):
-                if i < min_side or i > len(words) - min_side:
-                    continue
-                clean_w = w.lower().strip(',.;:!?')
-                if clean_w in NATURAL_SPLIT_HEADS:
-                    dist = abs(i - mid)
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_split_idx = i
-            if best_split_idx == -1:
-                best_split_idx = mid
-
-            part1 = ' '.join(words[:best_split_idx])
-            part2 = ' '.join(words[best_split_idx:])
-            c1 = {'text': part1 + ('' if part1.endswith((',', ';', '.', '!', '?', ':')) else ','), 'lvl': 2}
-            c2 = {'text': part2, 'lvl': target['lvl']}
-            chunks = chunks[:max_idx] + [c1, c2] + chunks[max_idx+1:]
-
+        # 2. Phân bổ các mẩu dấu câu vào các segment:
         m_chunks = len(chunks)
-        if m_chunks < n_segs:
-            while len(chunks) < n_segs:
-                chunks.append({'text': '', 'lvl': 0})
-            m_chunks = len(chunks)
+        if m_chunks <= n_segs:
+            # Nếu số mẩu dấu câu <= số segment: Tuyệt đối KHÔNG chẻ đôi từ ngữ.
+            # Gán lần lượt từng mẩu câu tự nhiên vào các segment tương ứng, các segment còn lại để trống ""
+            res_texts = []
+            for j in range(n_segs):
+                if j < m_chunks:
+                    res_texts.append(chunks[j]['text'])
+                else:
+                    res_texts.append('')
+            res = []
+            for sub_idx, (s, piece) in enumerate(zip(matched_segs, res_texts)):
+                s_start, s_end = seg_times[sub_idx]
+                clean_piece = re.sub(r'[\,\.]+\,', ',', piece)
+                clean_piece = re.sub(r'[\,\.]+\.', '.', clean_piece)
+                res.append({
+                    "id": getattr(s, 'index', getattr(s, 'id', sub_idx + 1)),
+                    "start": s_start,
+                    "end": s_end,
+                    "duration": round(max(0.1, s_end - s_start), 2),
+                    "zh": getattr(s, 'clean_text', '') or getattr(s, 'text', '') or getattr(s, 'original_text', ''),
+                    "vi": clean_piece,
+                    "role": role,
+                    "tts_index": tts_idx
+                })
+            return res
 
         seg_durs = [max(0.1, round(e - s, 2)) for s, e in seg_times]
         tot_dur = max(0.1, sum(seg_durs))
@@ -269,48 +261,20 @@ class SubtitleBuilderService:
         Tách câu dịch tiếng Việt thành các vế câu tự nhiên dựa theo dấu câu:
         - Dấu kết câu: . ! ? …
         - Dấu ngắt vế / liên kết: , ; : — –
-        - Nếu vế câu quá dài (> max_words), tìm từ nối tự nhiên ở giữa vế để ngắt nhẹ.
-        Bảo toàn 100% nội dung chữ, không nuốt chữ, không làm mất dấu câu.
+        Bảo toàn 100% nội dung chữ, không nuốt chữ, không làm mất dấu câu,
+        TUYỆT ĐỐI không chẻ đôi động từ ghép (bước vào, đi ra) và không tự ý chèn dấu phẩy bậy bạ.
         """
         text = text.strip()
         if not text:
             return []
 
-        # Tách vế theo dấu câu tự nhiên: . ! ? … : ; , — –
+        # Tách vế CHUẨN XÁC theo dấu câu tự nhiên: . ! ? … : ; , — –
         pattern = re.compile(r'[^,;:.!?…—–]+(?:[,;:.!?…—–]+|$)', re.UNICODE)
         raw_pieces = [p.strip() for p in pattern.findall(text) if p.strip()]
         if not raw_pieces:
             raw_pieces = [text]
 
-        final_clauses = []
-        for piece in raw_pieces:
-            words = piece.split()
-            if len(words) <= max_words:
-                final_clauses.append(piece)
-            else:
-                chunks = []
-                cur_words = words
-                while len(cur_words) > max_words:
-                    mid = len(cur_words) // 2
-                    best_idx = mid
-                    min_dist = float('inf')
-                    for i in range(2, len(cur_words) - 2):
-                        w_clean = cur_words[i].lower().strip(',.;:!?')
-                        if w_clean in NATURAL_SPLIT_HEADS:
-                            d = abs(i - mid)
-                            if d < min_dist:
-                                min_dist = d
-                                best_idx = i
-                    part1 = ' '.join(cur_words[:best_idx])
-                    if not part1.endswith((',', ';', ':', '.', '!', '?')):
-                        part1 += ','
-                    chunks.append(part1)
-                    cur_words = cur_words[best_idx:]
-                if cur_words:
-                    chunks.append(' '.join(cur_words))
-                final_clauses.extend(chunks)
-
-        return final_clauses
+        return raw_pieces
 
     @classmethod
     def build_from_translated_items(

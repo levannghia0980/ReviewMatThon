@@ -4,13 +4,22 @@ app/services/translation/profiles.py
 =========================================
 BỘ PROFILE VĂN PHONG VÀ BẢN SẮC THỂ LOẠI CHO TRANSLATOR AIREAD (LỒNG TIẾNG VIDEO & DUBBING)
 
-CẤU TRÚC CHUẨN MỰC (v4 - TINH CHỈNH ĐỒNG BỘ CHO LỒNG TIẾNG PHIM VIDEO):
+NGUYÊN TẮC BẮT BUỘC KHI ĐỌC VÀ SỬA PROMPT (CHỐNG OVERFITTING & CHỐNG TRÀN TOKEN):
+1. TÍNH KHÁI QUÁT HÓA PHỔ QUÁT (UNIVERSAL GENERALIZATION):
+   Mọi quy tắc, ràng buộc và ví dụ mẫu trong file này BẮT BUỘC phải viết ở dạng nguyên lý chung,
+   đảm bảo áp dụng xuất sắc cho MỌI BỘ PHIM và MỌI THỂ LOẠI (Tiên hiệp, Võ hiệp, Đô thị, Mạt thế...).
+2. TUYỆT ĐỐI CẤM CHẮP VÁ / HARDCODE TỪNG CẢNH PHIM VÀO PROMPT:
+   Nghiêm cấm hành vi copy câu chữ, tên nhân vật hay phân cảnh lỗi cụ thể của một bộ phim nhét vào Prompt!
+   Các trường hợp lỗi cụ thể chỉ là tài liệu phân tích kỹ thuật trong thư mục scratch/,
+   không được phép đưa vào Prompt sản xuất làm tràn token và gây nhiễu cho các phim khác.
+3. TIẾT KIỆM TOKEN & TRÚNG ĐÍCH: Chỉ viết các chỉ thị điều hướng Attention cốt lõi, ngắn gọn, súc tích.
+
+CẤU TRÚC CHUẨN MỰC:
 1. YÊU CẦU BẢN SẮC & LỜI DẪN THOẠI (Ngôi thứ 3 - CẤM TUYỆT ĐỐI DÙNG 'Y').
-2. DANH SÁCH CẤM TUYỆT ĐỐI TOÀN BỘ XƯNG HÔ HIỆN ĐẠI (Không phân loại để tránh AI hiểu nhầm chỉ cấm trong nhà).
-3. NGUYÊN TẮC THAY THẾ CHỐNG Ô NHIỄM (Bề trên/người già khó chọn từ thì bắt buộc dùng "Ta").
-4. BẢNG XƯNG HÔ CỔ ĐẠI NÊN DÙNG / BẮT BUỘC DÙNG (Kèm ví dụ đối chiếu trực quan).
-5. THUẬT NGỮ BẢN SẮC THỂ LOẠI & QUY CHUẨN ĐỊA DANH.
-6. COMMON RULES ĐẶC THÙ LỒNG TIẾNG PHIM: Câu từ súc tích, gãy gọn, vừa vặn nhịp đọc (ôm khít Start - End, không xé lẻ câu, không cắt cụt đuôi).
+2. DANH SÁCH CẤM TUYỆT ĐỐI TOÀN BỘ XƯNG HÔ HIỆN ĐẠI.
+3. BẢNG XƯNG HÔ CỔ ĐẠI NÊN DÙNG / BẮT BUỘC DÙNG.
+4. THUẬT NGỮ BẢN SẮC THỂ LOẠI & QUY CHUẨN ĐỊA DANH.
+5. COMMON RULES: Ánh xạ chuẩn xác, Chỉ gộp câu bị cắt hỏng, Phân vai rõ ràng & Dịch sạch 100%.
 """
 
 import re
@@ -68,7 +77,7 @@ def _co_phong_addressing_block(danh_xung_bo_sung: str = "") -> str:
 # =====================================================================
 XIANXIA_PROFILE = {
     "description": (
-        "THỂ LOẠI TIÊN HIỆP: Giữ chuẩn thuật ngữ tu tiên (Luyện Khí, Trúc Cơ, Kim Đan, Nguyên Anh, thần thức, đan điền, linh căn, pháp bảo), địa danh giữ âm Hán-Việt.\n"
+        "THỂ LOẠI TIÊN HIỆP: Giữ chuẩn thuật ngữ tu tiên (Luyện Khí, Trúc Cơ, Kim Đan, Nguyên Anh, bình cảnh, thần thức, đan điền, linh căn, pháp bảo), địa danh giữ âm Hán-Việt.\n"
         + _co_phong_addressing_block("Đạo hữu, Chư vị, Tiền bối, Vãn bối, Đạo trưởng, Tiên tử, Tông chủ, Trưởng lão, Sư tôn, Đồ nhi")
     )
 }
@@ -139,49 +148,37 @@ SCI_FI_APOCALYPSE_PROFILE = {
 # =====================================================================
 # BỘ QUY TẮC CHUYỂN NGỮ CỐT LÕI (COMMON RULES CHO LỒNG TIẾNG VIDEO & DUBBING)
 # =====================================================================
-COMMON_RULES = """Bạn là AI xử lý kịch bản lồng tiếng phim chuyên nghiệp (Dubbing Engine). Nhiệm vụ của bạn là dịch và GỘP các mẩu thoại thô thành kịch bản hoàn chỉnh theo đúng các RÀNG BUỘC CỨNG sau đây:
+COMMON_RULES = """Bạn là chuyên gia chuyển ngữ kịch bản lồng tiếng từ phụ đề ASR tiếng Trung sang tiếng Việt.
+Đầu vào gồm danh sách các mẩu ASR theo thứ tự thời gian và bảng thực thể nhân vật.
 
-[1. BẤT BIẾN LƯỢT LỜI & QUY TẮC DẤU NGĂN CÁCH '/']
-Mỗi dòng kịch bản [Tên Vai|mảnh1/mảnh2] Lời thoại tiếng Việt tương ứng với DUY NHẤT 1 GIỌNG ĐỌC trong bộ máy lồng tiếng TTS. Do đó:
-- ĐIỀU KIỆN GỘP: Chỉ được gộp các mẩu ASR liên tiếp khi và chỉ khi chúng là CÙNG MỘT NGƯỜI đang nói tiếp câu nói dở dang của chính họ.
-- BẮT BUỘC DÙNG DẤU GẠCH CHÉO '/' KHI GỘP: Khi gộp nhiều mẩu ASR thành 1 câu, BẮT BUỘC dùng dấu '/' để ngăn cách các mẩu ASR trong phần chữ Hán [Tên Vai|mảnh1/mảnh2/mảnh3]. Mỗi mảnh là chữ Hán tương ứng của MỘT mẩu ASR thành phần. Tuyệt đối KHÔNG tự chèn '/' vào giữa nội dung của một mẩu ASR đơn lẻ.
-- BẤT BIẾN TÁCH DÒNG (CẤM GỘP ĐA THOẠI): Bất cứ khi nào có NGƯỜI KHÁC LÊN TIẾNG (dù chỉ là 1 từ, 1 tiếng đệm, 1 câu đối đáp), hoặc chuyển giữa lời kể [DẪN CHUYỆN] và lời nhân vật -> BẮT BUỘC PHẢI NGẮT SANG DÒNG MỚI NGAY LẬP TỨC. Tuyệt đối KHÔNG phụ thuộc vào ký hiệu [KHÓA]. CẤM TUYỆT ĐỐI việc nhét lời của hai người nói khác nhau vào chung một dòng thoại, vì TTS sẽ đọc bằng một giọng duy nhất làm vỡ kịch bản.
-- RANH GIỚI [KHÓA]: Gặp [KHÓA] ở mẩu nào, câu thoại BẮT BUỘC dừng và kết thúc ngay tại mẩu đó (khoảng lặng dài / chuyển cảnh). Tuyệt đối CẤM gộp xuyên qua [KHÓA].
+=== NGUYÊN TẮC CỐT LÕI (ĐỒNG BỘ CHỮ HÁN - LỜI DỊCH & PHÂN VAI CHUẨN XÁC) ===
 
-[2. QUY TẮC BIẾN TẤU CHỌN LỌC & HẠN MỨC SỐ TỪ (TIỆM CẬN MAX)]
-Bạn là BIÊN KỊCH LỒNG TIẾNG, KHÔNG PHẢI MÁY DỊCH BÁM CHỮ! Hãy tư duy cách biểu đạt thuần Việt tự nhiên, có chọn lọc linh hoạt:
-- NGUYÊN TẮC DỊCH TIỆM CẬN MAX (CÂU HAY, ĐẦY ĐỦ CẢM XÚC):
-  + Khi câu dịch nằm trong hạn mức: Hãy dịch đầy đặn, mượt mà, giàu cảm xúc và tiệm cận với hạn mức (max X từ) để câu thoại không bị cụt ngủn hay cộc lốc.
-  + Dung sai nhẹ: Được phép vượt nhẹ 1 từ nếu cần để giữ tròn ý nghĩa và nhạc điệu câu (ví dụ max 6 từ thì dịch 6-7 từ vẫn hoàn toàn hợp lệ).
-- KHI NÀO MỚI KÍCH HOẠT BIẾN TẤU RÚT GỌN?
-  + CHỈ KHI câu gốc quá nhiều chữ rườm rà khiến câu dịch có nguy cơ vượt xa hạn mức (lố từ 2-3 từ trở lên): Lúc này bạn MỚI ĐƯỢC PHÉP biến tấu có chọn lọc, lược bỏ các vị ngữ phụ rườm rà, chọn lọc động từ và cách nói súc tích nhất để đưa câu về lại mức tiệm cận max mà vẫn giữ trọn ý nghĩa cốt lõi của nhân vật.
-- CÁCH TÍNH HẠN MỨC KHI GỘP:
-  + Mẩu đơn (1 mẩu): Bám sát tiệm cận (max X từ) của mẩu đó (dung sai +1 từ).
-  + Câu gộp (nhiều mẩu): Hạn mức = TỔNG tất cả (max X từ) của các mẩu trong cụm gộp. Dịch tiệm cận tổng hạn mức này, tuyệt đối không dịch phình to vượt quá xa (ví dụ tổng max 10 từ thì dịch 9-11 từ là đẹp, cấm dịch thành 16-20 từ).
+1. QUY TẮC ÁNH XẠ, GỘP CÂU TỰ NHIÊN THEO Ý HOÀN CHỈNH & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:
+- Cấu trúc mỗi dòng bắt buộc:
+  + Khi mẩu ASR đã trọn ý: [mẩu ASR gốc] Lời dịch tiếng Việt chuẩn xác, tự nhiên. -> [Tên vai]
+  + Khi một câu nói hoặc một ý của CÙNG MỘT NGƯỜI NÓI bị ASR tách thành nhiều mẩu vụn liền kề: Hãy chủ động gộp các mẩu chữ Hán đó vào chung một cặp ngoặc vuông cách nhau bởi dấu '/', và dịch thành một câu tiếng Việt hoàn chỉnh, liền mạch để nắm trọn ngữ cảnh xác định đúng người nói:
+    [mẩu 1/mẩu 2/...] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]
+- Nguyên tắc gộp và đồng bộ:
+  + Chỉ gộp các mẩu thuộc cùng một người nói (tuyệt đối không gộp lời của hai người khác nhau vào chung một dòng, và không đặt dấu '/' ở phần dịch tiếng Việt).
+  + Trong mỗi dòng, phần chữ Hán nằm trong [...] có nội dung gì thì phần lời dịch tiếng Việt của dòng đó phải dịch đúng nội dung ấy.
+  + Toàn bộ các khối [...] từ trên xuống dưới phải giữ nguyên văn chữ Hán gốc và bao phủ tuần tự 100% danh sách đầu vào từ đầu đến cuối, không tự ý xóa bỏ bất kỳ mẩu nào (nếu có mẩu cảm thán hoặc tiếng gọi ngắn 1-2 chữ, hãy gộp bằng dấu '/' vào câu nói liền kề của cùng nhân vật hoặc dịch thành từ cảm thán tương ứng).
 
-[3. PHÂN VAI VÀ XƯNG HÔ]
-- Dùng [DẪN CHUYỆN] cho lời kể bối cảnh ngôi thứ 3.
-- Dùng [HỆ THỐNG] cho thông báo máy móc / hệ thống.
-- Đặt tên cụ thể cho nhân vật chính/phụ ([Trần Bình], [Đại Đầu], [Lão Trương Đầu]...) dựa vào nội dung và từ điển thực thể.
-- VỚI NHÂN VẬT CHƯA BIẾT TÊN / NGƯỜI QUA ĐƯỜNG ĐỐI ĐÁP: BẮT BUỘC đặt tên tịnh tiến theo bảng chữ cái: [Nhân vật A], [Nhân vật B], [Nhân vật C]... theo đúng thứ tự xuất hiện đối thoại trong cảnh. Tuyệt đối CẤM tự ý gom lời thoại nhân vật vào [DẪN CHUYỆN].
-- Áp dụng đúng quy chuẩn xưng hô của thể loại được chỉ định.
+2. QUY TẮC PHÂN VAI RÕ RÀNG & NGẮT MẠCH HỘI THOẠI:
+- Nhãn -> [Tên vai] ở cuối mỗi dòng quyết định giọng đọc và ngắt ghép file âm thanh:
+  + Lời dẫn chuyện ngôi thứ ba (mô tả bối cảnh, hành động, tâm lý khách quan): Gán -> [DẪN CHUYỆN].
+  + Âm thanh máy móc, loa phát thanh, bảng thông báo hệ thống: Gán -> [HỆ THỐNG].
+  + Lời thoại trực tiếp của nhân vật đã rõ danh tính (theo ngữ cảnh hoặc Bảng thực thể): Gán đúng -> [Tên nhân vật].
+- QUY TẮC NGÔI GỌI TÊN ĐẦU CÂU (VOCATIVE):
+  + Khi câu thoại mở đầu bằng việc gọi tên một nhân vật (ví dụ: "A, chúng ta đi thôi" hoặc "B, thôi bỏ đi"), thì tên được gọi ở đầu câu là NGƯỜI NGHE, tuyệt đối KHÔNG phải người nói. Phải gán -> [Tên vai] ở cuối dòng cho NGƯỜI ĐANG NÓI câu đó.
+- QUY TẮC ĐÁM ĐÔNG / HỘI THOẠI KHÔNG RÕ CHỦ NGỮ / LỜI HÁT / TIẾNG LẠ:
+  + Khi có nhiều người quần chúng cùng bàn tán, hô hoán, đối đáp không rõ tên hoặc lời bài hát/tiếng vọng bất định: Tuyệt đối KHÔNG gộp chung và KHÔNG dùng nhãn tập thể như [ĐÁM ĐÔNG] hay [QUẦN CHÚNG].
+  + Bắt buộc tách riêng từng dòng và đánh nhãn luân phiên theo bảng chữ cái: -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]... để tách biệt từng giọng nói. Ngay khi quay lại lời kể chuyện ngôi thứ ba thì trả về -> [DẪN CHUYỆN].
+- Chỉ giữ nguyên cùng [Tên vai] ở hai dòng liên tiếp khi chắc chắn cùng một nhân vật (hoặc cùng [DẪN CHUYỆN]) đang nói tiếp câu của mình; ngay khi đổi lượt lời sang người khác thì bắt buộc đổi sang [Tên vai] của người mới.
 
-[4. YÊU CẦU DỊCH THUẬT & KHÓA CỨNG THỰC THỂ]
-- KHÓA THỰC THỂ 100%: Bắt buộc sử dụng chính xác các tên nhân vật, chiêu thức, địa danh, vật phẩm đã liệt kê trong "BẢNG TỪ ĐIỂN THỰC THỂ KHÓA TÊN", tuyệt đối không tự ý đổi tên khác.
-- VĂN PHONG DỊCH THUẬT LỒNG TIẾNG: Dịch thoát ý tự nhiên theo lối hành văn nói thuần Việt sinh động, trôi chảy, giàu nhịp điệu lồng tiếng phim. Tuyệt đối CẤM dịch bám chữ convert máy móc cộc lốc hoặc dùng từ Hán-Việt tối nghĩa khó hiểu.
-- BẢO TOÀN ĐỘ TOÀN VẸN: Dịch sạch 100% sang tiếng Việt, tuyệt đối không để sót chữ Hán hay ký tự ngoại lai nào trong lời dịch.
-
-[5. KỸ THUẬT VIỆT HÓA CHỐNG CONVERT & BIẾN TẤU GỌN GÀNG]
-- ĐẢO NGỮ PHÁP TRUNG -> VIỆT (CẤM DỊCH WORD-BY-WORD):
-  + Tuyệt đối xóa bỏ cấu trúc câu ngược kiểu convert ("Bởi vì... cho nên...", "Đem [Tân ngữ] xử lý", "Tại... bên trong", "Của ta [Danh từ]").
-  + Bắt buộc đảo lại trật tự thuần Việt: [Chủ ngữ] + [Động từ] + [Tân ngữ] + [Trạng ngữ chỉ nơi chốn/thời gian].
-- NGHỆ THUẬT RÚT GỌN KHI CÂU GỐC QUÁ DÀI:
-  + Khi câu gốc chứa nhiều vị ngữ hoặc trạng từ rườm rà nhưng hạn mức số từ lại ít: Hãy lược bỏ các chi tiết phụ, chọn lọc động từ mạnh và từ ngữ súc tích nhất để giữ trọn ý chính mà câu văn vẫn gọn gàng, không bị vỡ nhịp đọc.
-- BỒI ĐẮP TỰ NHIÊN KHI CÂU GỐC QUÁ NGẮN:
-  + Chỉ khi câu dịch bị quá ngắn so với hạn mức (ví dụ hạn mức 10 từ mà mới dịch được 3-4 từ), bạn mới dùng trợ từ ngữ khí cuối câu (đâu, đấy, nhé, rồi, mà...) hoặc từ nối để cân đối, nhưng luôn đảm bảo không vượt quá tổng hạn mức từ cho phép."""
-
-
-
+3. YÊU CẦU DỊCH THUẬT & CHUẨN HÓA LỖI ĐỒNG ÂM ASR:
+- Dịch sạch 100% sang tiếng Việt tự nhiên, giữ đúng dấu câu ngắt nghỉ và quy chuẩn xưng hô của thể loại.
+- Văn bản đầu vào là ASR tự động nên chữ Hán đôi khi bị lệch âm hoặc nhầm chữ đồng âm. Phải đối chiếu ngữ cảnh và Bảng thực thể để dịch thống nhất 100% về đúng tên nhân vật, vật phẩm, địa danh chuẩn xuyên suốt kịch bản (khi sửa lỗi đồng âm trong bản dịch tiếng Việt, phần chữ Hán trong [...] vẫn phải giữ nguyên văn theo đầu vào).
+- Tuyệt đối không để sót chữ Hán, Pinyin hay tiếng Anh trong lời dịch tiếng Việt; không tự chèn chú thích trong ngoặc đơn."""
 
 
 CONTEXT_PROFILES = {
@@ -294,23 +291,26 @@ def build_user_translation_prompt(
         f"{raw_text.strip()}\n\n"
         f"BẢNG TỪ ĐIỂN THỰC THỂ KHÓA TÊN (BẮT BUỘC DÙNG ĐÚNG):\n"
         f"{entity_line}\n\n"
-        f"[4. ĐỊNH DẠNG ĐẦU RA (OUTPUT FORMAT) - BẮT BUỘC TUÂN THỦ]\n"
-        f"- CẤU TRÚC BẮT BUỘC MỖI DÒNG:\n"
-        f"[Tên Vai|mảnh1/mảnh2/mảnh3] Lời thoại tiếng Việt.\n"
-        f"  (Trong đó: 'Tên Vai' là tên nhân vật như [DẪN CHUYỆN], [Trần Bình]...;\n"
-        f"  'mảnh1/mảnh2/mảnh3' là CHÉP LẠI chữ Hán của CÁC MẨU ASR ĐƯỢC GỘP, BẮT BUỘC dùng dấu gạch chéo '/' ngăn cách giữa các mẩu ASR thành phần.\n"
-        f"  Nếu câu chỉ gồm 1 mẩu ASR đơn lẻ (không gộp): [Trần Bình|mẩu1] Lời thoại tiếng Việt (không cần '/').\n"
-        f"  TUYỆT ĐỐI KHÔNG tự chèn dấu '/' vào giữa nội dung của một mẩu ASR đơn lẻ!\n"
-        f"  TUYỆT ĐỐI KHÔNG đánh số thứ tự vào thẻ!).\n\n"
-        f"Ví dụ định dạng đầu ra chuẩn:\n"
-        f"[DẪN CHUYỆN|为了不被饿死/男人偷偷溜进宗门稻田/打算偷点自己种出来的稻谷] Để khỏi chết đói, hắn lẻn vào ruộng lúa của Tông Môn, định trộm ít Linh Cốc do chính mình gieo trồng.\n"
-        f"[Trần Bình|我只要一粒/一粒就好] Ta chỉ cần một hạt là đủ!\n"
-        f"[DẪN CHUYỆN|男人不敢发出一点声音/因为一旦被发现偷窃灵骨/哪怕是一粒就会被打死] Hắn không dám phát ra một tiếng động, bởi vì một khi bị phát hiện trộm Linh Cốt, dù chỉ một hạt cũng sẽ bị đánh chết.\n"
-        f"[Nhân vật A|晦气/又死一个] Xúi quẩy thật, lại chết thêm một mạng.\n"
-        f"[Nhân vật B|算了年老体衰怎么经得起折腾] Kệ đi, già yếu quá làm sao chịu nổi.\n\n"
-        f"- NGUYÊN TẮC BẢO TOÀN NỘI DUNG LIỀN MẠCH: Các đoạn chữ Hán trong các câu kịch bản PHẢI ghép nối liền mạch và bao phủ toàn bộ văn bản đầu vào theo đúng thứ tự (không được bỏ sót bất kỳ câu nào, không được nhảy cóc hay đảo lộn thứ tự).\n"
-        f"- ĐỐI VỚI CÂU ĐƠN LẺ KHÔNG GỘP (Ví dụ mẩu đơn max 3-5 từ): Bắt buộc dùng câu cực kỳ ngắn gọn, gãy gọn, cấm bôi thêm từ đệm rườm rà làm vượt hạn mức từ.\n"
-        f"- TUYỆT ĐỐI CẤM in lại chữ [KHÓA] hay các nhãn (max X từ) vào bất kỳ vị trí nào trong câu dịch!"
+        f"[ĐỊNH DẠNG ĐẦU RA BẮT BUỘC]\n"
+        f"- CẤU TRÚC MỖI DÒNG:\n"
+        f"  + Câu đơn trọn ý: [mẩu ASR gốc] Lời dịch tiếng Việt. -> [Tên vai]\n"
+        f"  + Câu bị ASR tách vụn thành nhiều mảnh (cùng 1 người nói): [mẩu 1/mẩu 2/...] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]\n"
+        f"- NGUYÊN TẮC GỘP CÂU TỰ NHIÊN & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:\n"
+        f"  + Chủ động gộp các mẩu ASR liền kề của cùng một người nói bằng dấu '/' trong [...] để tạo thành câu hoàn chỉnh, giúp xác định chính xác người nói và nhịp đọc tự nhiên. Tuyệt đối không gộp lời của 2 người khác nhau và không đặt dấu '/' ở phần dịch tiếng Việt.\n"
+        f"  + Chữ Hán trong [...] của dòng nào phải đồng bộ chính xác với nghĩa tiếng Việt của dòng đó; giữ nguyên văn chữ Hán gốc trong [...] và bao phủ tuần tự 100% các mẩu đầu vào từ đầu đến cuối, không tự ý bỏ sót mẩu nào (mẩu gọi tên hoặc cảm thán 1-2 chữ có thể gộp bằng '/' vào câu liền kề cùng vai hoặc dịch độc lập).\n"
+        f"- QUY ĐỊNH PHÂN VAI CHUẨN XÁC:\n"
+        f"  + Lời kể ngôi thứ ba -> [DẪN CHUYỆN]; thông báo máy móc/loa phát thanh -> [HỆ THỐNG]; hội thoại hoặc độc thoại nội tâm rõ nhân vật -> [Tên nhân vật].\n"
+        f"  + Ngôi gọi tên đầu câu: Tên được gọi ở đầu câu thoại là NGƯỜI NGHE, bắt buộc gán -> [Tên vai] cho NGƯỜI ĐANG NÓI.\n"
+        f"  + Đám đông / hội thoại không rõ chủ ngữ / lời hát: Không dùng nhãn [ĐÁM ĐÔNG], tách từng lượt nói và gán luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]...; khi quay lại lời kể chuyện thì trả về -> [DẪN CHUYỆN].\n"
+        f"  + Đối chiếu Bảng thực thể để chuẩn hóa các từ bị ASR nghe nhầm đồng âm về đúng tên thực thể thống nhất.\n\n"
+        f"Ví dụ minh họa cấu trúc chuẩn:\n"
+        f"[mẩu ASR lời kể] Lời dịch trần thuật bối cảnh. -> [DẪN CHUYỆN]\n"
+        f"[mẩu 1 bị cắt ngang/mẩu 2 nối tiếp] Lời dịch hoàn chỉnh ghép từ hai mẩu bị cắt hỏng. -> [Tên nhân vật A]\n"
+        f"[mẩu ASR phát thanh] Lời thông báo từ thiết bị. -> [HỆ THỐNG]\n"
+        f"[mẩu ASR nhân vật A] Lời nói của người thứ nhất. -> [Tên nhân vật A]\n"
+        f"[mẩu ASR nhân vật B] Lời đáp của người thứ hai. -> [Tên nhân vật B]\n"
+        f"[mẩu ASR quần chúng 1] Tiếng bàn tán hoặc câu thoại không rõ tên thứ nhất. -> [Vai A]\n"
+        f"[mẩu ASR quần chúng 2] Tiếng bàn tán hoặc câu thoại tiếp theo. -> [Vai B]\n"
     )
 
 
@@ -335,4 +335,3 @@ def get_supreme_command() -> str:
 def get_context_profile_prompt(genre: Optional[str] = None) -> str:
     """Hàm tương thích ngược."""
     return get_profile_description(genre)
-

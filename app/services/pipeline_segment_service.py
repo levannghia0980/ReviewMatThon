@@ -185,19 +185,50 @@ class PipelineSegmentService:
         children = []
 
         if stage in ["RAW_ASR", "SUB_KARAOKE"]:
-            # Tìm cha TTS_AUDIO hoặc LLM_MERGED
+            # Tìm cha: Ưu tiên tìm cha trực tiếp theo thứ tự phân tầng
+            if curr.parent_index:
+                target_stage = "TTS_AUDIO" if stage == "SUB_KARAOKE" else None
+                if target_stage:
+                    p = db.query(PipelineSegmentModel).filter(
+                        PipelineSegmentModel.task_id == project_id,
+                        PipelineSegmentModel.stage == target_stage,
+                        PipelineSegmentModel.index == curr.parent_index
+                    ).all()
+                else:
+                    # RAW_ASR: Ưu tiên TTS_AUDIO, nếu không có thì tìm LLM_MERGED (tránh đụng độ index 2 tầng)
+                    p = db.query(PipelineSegmentModel).filter(
+                        PipelineSegmentModel.task_id == project_id,
+                        PipelineSegmentModel.stage == "TTS_AUDIO",
+                        PipelineSegmentModel.index == curr.parent_index
+                    ).all()
+                    if not p:
+                        p = db.query(PipelineSegmentModel).filter(
+                            PipelineSegmentModel.task_id == project_id,
+                            PipelineSegmentModel.stage == "LLM_MERGED",
+                            PipelineSegmentModel.index == curr.parent_index
+                        ).all()
+                parents = [cls._to_dict(x) for x in p]
+        elif stage == "TTS_AUDIO":
+            # 1. Tìm cha LLM_MERGED (nếu có liên kết)
             if curr.parent_index:
                 p = db.query(PipelineSegmentModel).filter(
                     PipelineSegmentModel.task_id == project_id,
-                    PipelineSegmentModel.stage.in_(["TTS_AUDIO", "LLM_MERGED"]),
+                    PipelineSegmentModel.stage == "LLM_MERGED",
                     PipelineSegmentModel.index == curr.parent_index
                 ).all()
                 parents = [cls._to_dict(x) for x in p]
-        elif stage in ["TTS_AUDIO", "LLM_MERGED"]:
-            # Tìm các con RAW_ASR và SUB_KARAOKE
+            # 2. Tìm các con RAW_ASR và SUB_KARAOKE
             c_subs = db.query(PipelineSegmentModel).filter(
                 PipelineSegmentModel.task_id == project_id,
                 PipelineSegmentModel.stage.in_(["RAW_ASR", "SUB_KARAOKE"]),
+                PipelineSegmentModel.parent_index == curr.index
+            ).all()
+            children = [cls._to_dict(x) for x in c_subs]
+        elif stage == "LLM_MERGED":
+            # Tìm con TTS_AUDIO hoặc con RAW_ASR
+            c_subs = db.query(PipelineSegmentModel).filter(
+                PipelineSegmentModel.task_id == project_id,
+                PipelineSegmentModel.stage.in_(["TTS_AUDIO", "RAW_ASR"]),
                 PipelineSegmentModel.parent_index == curr.index
             ).all()
             children = [cls._to_dict(x) for x in c_subs]

@@ -105,11 +105,68 @@ def parse_ai_script_output(raw_text: str) -> List[Dict[str, Any]]:
         if not line_clean or line_clean.startswith("```"):
             continue
 
-        # 1. Thử khớp định dạng chuẩn v4: [Role|zh] hoặc [Role|start-end|zh]
-        bracket_m = re.match(r'^\s*(?:#?\d+[\.\:\-\)]\s*)?(?:\*{1,2})?\[\s*([^\]]+?)\s*\](?:\*{1,2})?[:\s]*(.*)$', line_clean)
-        if bracket_m:
-            tag_content = bracket_m.group(1).strip()
-            content = bracket_m.group(2).strip()
+        # 1. Thử khớp định dạng chuẩn v5 (Chốt vai ở cuối): [zh] Lời dịch -> [Role]
+        # Phòng thủ: Xử lý trường hợp LLM chèn lặp ngoặc vai ở đầu dòng: [Tag1] [Tag2] Lời dịch -> [Role]
+        double_bracket_m = re.match(
+            r'^\s*(?:#?\d+[\.\:\-\)]\s*)?(?:\*{1,2})?\[\s*([^\]]+?)\s*\]\s*\[\s*([^\]]+?)\s*\](?:\*{1,2})?[:\s]*(.*)$',
+            line_clean
+        )
+        if double_bracket_m:
+            g1 = double_bracket_m.group(1).strip()
+            g2 = double_bracket_m.group(2).strip()
+            content = double_bracket_m.group(3).strip()
+            if re.search(r'[\u4e00-\u9fff]', g2) and not re.search(r'[\u4e00-\u9fff]', g1):
+                tag_content = g2
+            elif re.search(r'[\u4e00-\u9fff]', g1):
+                tag_content = g1
+            else:
+                tag_content = g2
+            has_bracket = True
+        else:
+            bracket_m = re.match(r'^\s*(?:#?\d+[\.\:\-\)]\s*)?(?:\*{1,2})?\[\s*([^\]]+?)\s*\](?:\*{1,2})?[:\s]*(.*)$', line_clean)
+            if bracket_m:
+                tag_content = bracket_m.group(1).strip()
+                content = bracket_m.group(2).strip()
+                has_bracket = True
+            else:
+                has_bracket = False
+
+        if has_bracket:
+
+            def _normalize_role(r_str: str) -> str:
+                r_clean = r_str.strip()
+                if re.match(r'^\d+(?:[\-\–\—\~]|->|\.{2,3})?\d*$', r_clean):
+                    return "DẪN CHUYỆN"
+                elif re.match(r'^(?:NV\s+|Nhân\s*vật\s+|Vai\s+)?([A-Za-z])$', r_clean, re.IGNORECASE):
+                    char_code = re.match(r'^(?:NV\s+|Nhân\s*vật\s+|Vai\s+)?([A-Za-z])$', r_clean, re.IGNORECASE).group(1).upper()
+                    return f"Vai {char_code}"
+                else:
+                    role_upper = r_clean.upper()
+                    if role_upper in ["NARRATOR", "DẪN CHUYỆN", "DAN CHUYEN", "DẪN", "KỂ", "KỂ CHUYỆN", "NGƯỜI KỂ", "THUYẾT MINH"]:
+                        return "DẪN CHUYỆN"
+                return r_clean
+
+            # TH 1A: Định dạng mới: [zh] Lời dịch -> [Role] hoặc @[Role]
+            tail_role_m = re.search(r'(?:->|–>|—>|@)\s*\[?\s*([^\]\n]+?)\s*\]?\s*$', content)
+            if tail_role_m:
+                role = _normalize_role(tail_role_m.group(1))
+                vi_raw = content[:tail_role_m.start()].strip()
+                vi = clean_system_tags_from_text(vi_raw)
+                vi = re.sub(r'^\*+\s*', '', vi)
+                vi = re.sub(r'\s*\*+$', '', vi)
+
+                zh = tag_content
+                item_dict = {"role": role, "src": [], "vi": vi}
+                if zh:
+                    item_dict["zh_raw"] = zh
+                    item_dict["zh_pieces"] = [p.strip() for p in zh.split('/') if p.strip()]
+                    item_dict["zh"] = zh.replace('/', '').strip()
+                else:
+                    item_dict["zh_pieces"] = []
+                results.append(item_dict)
+                continue
+
+            # TH 1B: Định dạng cũ: [Role|zh] hoặc [Role|start-end|zh]
             parts = [p.strip() for p in tag_content.split('|') if p.strip()]
             if len(parts) >= 2:
                 role = "DẪN CHUYỆN"
@@ -128,15 +185,7 @@ def parse_ai_script_output(raw_text: str) -> List[Dict[str, Any]]:
                 vi = re.sub(r'^\*+\s*', '', vi)
                 vi = re.sub(r'\s*\*+$', '', vi)
 
-                if re.match(r'^\d+(?:[\-\–\—\~]|->|\.{2,3})?\d*$', role):
-                    role = "DẪN CHUYỆN"
-                elif re.match(r'^(?:NV\s+|Nhân\s*vật\s+)?([A-Za-z])$', role, re.IGNORECASE):
-                    char_code = re.match(r'^(?:NV\s+|Nhân\s*vật\s+)?([A-Za-z])$', role, re.IGNORECASE).group(1).upper()
-                    role = f"Nhân vật {char_code}"
-                else:
-                    role_upper = role.upper()
-                    if role_upper in ["NARRATOR", "DẪN CHUYỆN", "DAN CHUYEN", "DẪN", "KỂ", "KỂ CHUYỆN", "NGƯỜI KỂ", "THUYẾT MINH"]:
-                        role = "DẪN CHUYỆN"
+                role = _normalize_role(role)
 
                 item_dict = {"role": role, "src": [], "vi": vi}
                 if zh:
@@ -169,9 +218,9 @@ def parse_ai_script_output(raw_text: str) -> List[Dict[str, Any]]:
 
                 if re.match(r'^\d+(?:[\-\–\—\~]|->|\.{2,3})?\d*$', role):
                     role = "DẪN CHUYỆN"
-                elif re.match(r'^(?:NV\s+|Nhân\s*vật\s+)?([A-Za-z])$', role, re.IGNORECASE):
-                    char_code = re.match(r'^(?:NV\s+|Nhân\s*vật\s+)?([A-Za-z])$', role, re.IGNORECASE).group(1).upper()
-                    role = f"Nhân vật {char_code}"
+                elif re.match(r'^(?:NV\s+|Nhân\s*vật\s+|Vai\s+)?([A-Za-z])$', role, re.IGNORECASE):
+                    char_code = re.match(r'^(?:NV\s+|Nhân\s*vật\s+|Vai\s+)?([A-Za-z])$', role, re.IGNORECASE).group(1).upper()
+                    role = f"Vai {char_code}"
                 else:
                     role_upper = role.upper()
                     if role_upper in ["NARRATOR", "DẪN CHUYỆN", "DAN CHUYEN", "DẪN", "KỂ", "KỂ CHUYỆN", "NGƯỜI KỂ", "THUYẾT MINH"]:

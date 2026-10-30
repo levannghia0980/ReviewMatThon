@@ -85,6 +85,10 @@ CÁC TRƯỜNG HỢP TUYỆT ĐỐI CẤM BÓC TÁCH VÀO BẢNG THỰC THỂ (N
    - Quét kỹ toàn bộ các chương trong lô. Nếu có chương nào NỘI DUNG 100% LÀ LỜI CẢM ƠN / XIN PHIẾU / DANH SÁCH DONATE / THÔNG BÁO / LỜI NHẮN NGOÀI LỀ CỦA TÁC GIẢ (ví dụ: '致谢', '感言', '单章', '通知', '说明', hoặc các chương toàn danh sách người ủng hộ không có diễn biến cốt truyện), hãy đưa số chương đó vào mảng JSON "pure_author_note_chapters": [14].
 
 NGUYÊN TẮC DỊCH TÊN CHUẨN XÁC THEO NGỮ CẢNH VĂN HỌC & BÓC TÁCH TOÀN DIỆN:
+- NGUYÊN TẮC XỬ LÝ LỖI ASR BIẾN DẠNG / ĐỒNG ÂM (CHỐNG LỆCH THỰC THỂ GIỮA CÁC CHƯƠNG/LÔ):
+  * Văn bản đầu vào là từ nhận dạng giọng nói tự động (ASR) của video, thường xuyên bị biến dạng các chữ Hán đồng âm hoặc lệch âm do nhạc nền/giọng đọc nhanh.
+  * KHI BÓC TÁCH: Bắt buộc đối chiếu ngữ cảnh cốt truyện và bảng thực thể đã có. Nếu phát hiện một danh từ mới thực chất là biến thể nghe sai/đồng âm của một nhân vật, thảo dược, đan dược, pháp bảo hay địa danh đã xuất hiện trước đó:
+    -> BẮT BUỘC gán 'vietnamese_name' theo đúng tên chuẩn của thực thể gốc đã xác lập, TUYỆT ĐỐI KHÔNG sinh ra một tên dịch mới làm phân mảnh kịch bản!
 - NGUYÊN TẮC BÓC TÁCH ĐẦY ĐỦ 100% (KHÔNG PHỤ THUỘC ĐỘ LẶP LẠI): Bắt buộc quét trích xuất TẤT CẢ các thực thể (Tên người, Địa danh, Vật phẩm, Võ học, Linh thú, Cảnh giới...) xuất hiện trong văn bản. Dù thực thể đó CHỈ XUẤT HIỆN 1 LẦN DUY NHẤT hay xuất hiện nhiều lần đều BẮT BUỘC phải bóc tách chi tiết và đầy đủ 100%, TUYỆT ĐỐI KHÔNG ĐƯỢC BỎ SÓT bất kỳ tên riêng nào chỉ vì nó ít lặp lại!
 - DỊCH ĐÚNG ÂM HÁN-VIỆT VĂN HỌC BÁC HỌC CHUẨN 100% TIẾNG VIỆT:
   * BẮT BUỘC đọc ngữ cảnh câu chuyện để dịch đúng nghĩa thực thể (không tra từ điển cơ học từng chữ làm sai lệch bản chất vũ khí, sinh vật, chức vị hay địa danh).
@@ -191,8 +195,9 @@ Hệ thống đã tự động rà soát CSDL và phát hiện các thực thể
 
 MỆNH LỆNH BẮT BUỘC ĐỐI VỚI CÁC THỰC THỂ ĐÃ CÓ NÀY:
 1. DỊCH Y HỆT 100%: Dùng đúng 100% bản dịch 'vietnamese_name' đã cho ở trên, TUYỆT ĐỐI CẤM tự ý dịch khác hay sửa đổi tên!
-2. VẪN BẮT BUỘC TRẢ VỀ: Nếu các thực thể trên xuất hiện trong lô này, BẮT BUỘC vẫn đưa chúng vào mảng JSON "entities" trả về cùng với các thực thể mới (giữ nguyên 'vietnamese_name' chuẩn).
-3. TẬP TRUNG TÌM MỚI: Đồng thời quét kỹ toàn bộ văn bản để bóc tách thêm tất cả các thực thể MỚI chưa có trong danh sách trên!
+2. BẮT LỖI ASR BIẾN DẠNG / ĐỒNG ÂM: Nếu trong văn bản hiện tại xuất hiện chữ Hán nghe sai/đồng âm hoặc biến thể ngữ âm của một thực thể cũ trong danh sách trên, BẮT BUỘC quy 'vietnamese_name' về đúng tên thực thể cũ tương ứng!
+3. VẪN BẮT BUỘC TRẢ VỀ: Nếu các thực thể trên xuất hiện trong lô này, BẮT BUỘC vẫn đưa chúng vào mảng JSON "entities" trả về cùng với các thực thể mới (giữ nguyên 'vietnamese_name' chuẩn).
+4. TẬP TRUNG TÌM MỚI: Đồng thời quét kỹ toàn bộ văn bản để bóc tách thêm tất cả các thực thể MỚI chưa có trong danh sách trên!
 """
     else:
         existing_ref = """DANH SÁCH THỰC THỂ ĐÃ XUẤT HIỆN Ở CÁC CHƯƠNG TRƯỚC:
@@ -247,7 +252,7 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
                 provider=provider,
                 model=model,
                 response_mime_type="application/json",
-                thinking_budget=2048
+                thinking_budget=None
             )
             if not text_response or len(text_response.strip()) < 5:
                 raise ValueError("Phản hồi LLM rỗng hoặc quá ngắn")
