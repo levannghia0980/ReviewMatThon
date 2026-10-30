@@ -442,15 +442,15 @@ class TranslationPipelineService:
                 DialogueSegmentModel.task_id == project.id,
                 DialogueSegmentModel.index.in_(batch_indices)
             ).all()
-            trans_count = sum(1 for d in db_batch_segs if bool((d.translated_text or '').strip()))
+            trans_count = sum(1 for d in db_batch_segs if bool((d.translated_text or '').strip()) or getattr(d, 'status', '') in ['TRANSLATED', 'DUBBED', 'SILENT_VALID'])
             is_all_db_translated = len(batch_indices) > 0 and (trans_count / len(batch_indices)) >= 0.98
             has_tts_dialogues = db.query(TTSDialogueSegmentModel).filter(
                 TTSDialogueSegmentModel.task_id == project.id,
                 TTSDialogueSegmentModel.batch_index == b_num
             ).first() is not None
 
-            # Nếu lô đã có đủ bản dịch trong DB và đã có file output hoặc bảng TTS -> BỎ QUA DỊCH LẠI
-            if not force_clean and is_all_db_translated and (has_tts_dialogues or (batch_raw_file.exists() and batch_raw_file.stat().st_size > 10)):
+            # Nếu lô đã có đủ bản dịch trong DB và đã có file output hoặc bảng TTS -> BỎ QUA DỊCH LẠI (BẢO TOÀN SỬA ĐỔI CỦA USER)
+            if not force_clean and (is_all_db_translated or has_tts_dialogues) and (has_tts_dialogues or (batch_raw_file.exists() and batch_raw_file.stat().st_size > 10)):
                 # 1. Đồng bộ bản dịch cũ vào các segment trong memory
                 seg_map = {d.index: d.translated_text for d in db_batch_segs}
                 for s in batch:
