@@ -53,12 +53,30 @@ QUALITY_PRESETS = {
 class DownloaderService:
     @staticmethod
     def normalize_url(raw_url: str) -> str:
-        """Tự động chuẩn hóa link đầu vào (BV code, YouTube, Douyin, B23, TikTok...)"""
+        """Tự động chuẩn hóa link đầu vào (BV code, Bilibili locale /vi/, /en/, tracking params, YouTube, Douyin, B23, TikTok...)"""
         u = (raw_url or "").strip()
         if not u:
             return ""
+
+        # 1. Trường hợp người dùng chỉ nhập mã BV hoặc av (vd: BV1g18j6rExp hoặc av123456)
         if re.match(r'^(BV[a-zA-Z0-9]{10}|av\d+)$', u, re.IGNORECASE):
             return f"https://www.bilibili.com/video/{u}"
+
+        # 2. Trường hợp link Bilibili (web, mobile, localized /vi/, /en/, /th/ hoặc chứa tham số tracking rác)
+        if "bilibili.com" in u.lower() or "b23.tv" in u.lower():
+            p_match = re.search(r'[?&]p=(\d+)', u)
+            p_query = f"?p={p_match.group(1)}" if p_match else ""
+
+            # Bóc tách mã BV (12 ký tự: BV + 10 ký tự alnum)
+            bv_match = re.search(r'(BV[a-zA-Z0-9]{10})', u, re.IGNORECASE)
+            if bv_match:
+                return f"https://www.bilibili.com/video/{bv_match.group(1)}{p_query}"
+
+            # Bóc tách mã av
+            av_match = re.search(r'/(av\d+)', u, re.IGNORECASE) or re.search(r'\b(av\d+)\b', u, re.IGNORECASE)
+            if av_match:
+                return f"https://www.bilibili.com/video/{av_match.group(1)}{p_query}"
+
         return u
 
     @staticmethod
