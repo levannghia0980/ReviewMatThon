@@ -13,7 +13,7 @@ Nguyên tắc:
 """
 
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 from app.models.dialogue import DialogueSegmentModel, SubtitleSegmentModel
 
@@ -31,7 +31,8 @@ class WaveformSubSyncer:
         actual_speed: float,
         trimmed_dur_sec: float,
         trim_meta: Dict[str, Any],
-        chunk_sub_offsets: Dict[int, List[Dict[str, Any]]]
+        chunk_sub_offsets: Dict[int, List[Dict[str, Any]]],
+        max_allowed_end: Optional[float] = None
     ) -> None:
         """
         Đồng bộ mốc thời gian của từng mẩu câu con (DialogueSegmentModel)
@@ -48,6 +49,8 @@ class WaveformSubSyncer:
             cut_h = trim_meta.get("cut_head_ms", 0) if trim_meta.get("trimmed") else 0
             speed = max(0.1, actual_speed)
             total_seg_end = round(start_sec + seg_dur_sec, 2)
+            if max_allowed_end is not None:
+                total_seg_end = min(total_seg_end, round(max_allowed_end, 2))
 
             if sub_models:
                 n_subs = len(sub_models)
@@ -86,9 +89,13 @@ class WaveformSubSyncer:
                         s_start = calc_starts[s_idx]
                         if s_idx < n_subs - 1:
                             next_start = calc_starts[s_idx + 1]
-                            s_end = max(round(s_start + 0.3, 2), next_start)
+                            s_end = max(round(s_start + 0.3, 2), min(next_start, total_seg_end))
                         else:
                             s_end = max(round(s_start + 0.4, 2), total_seg_end)
+
+
+                        if max_allowed_end is not None:
+                            s_end = min(s_end, round(max_allowed_end, 2))
 
                         sub_m.start_time = s_start
                         sub_m.end_time = s_end
@@ -164,10 +171,14 @@ class WaveformSubSyncer:
                     s_start = calc_starts[s_idx]
                     if s_idx < n_subs - 1:
                         next_start = calc_starts[s_idx + 1]
-                        s_end = max(round(s_start + 0.3, 2), next_start)
+                        s_end = max(round(s_start + 0.3, 2), min(next_start, total_seg_end))
                     else:
                         s_end = max(round(s_start + 0.4, 2), total_seg_end)
 
+
+
+                    if max_allowed_end is not None:
+                        s_end = min(s_end, round(max_allowed_end, 2))
                     sub.actual_duration = round(max(0.1, s_end - s_start), 2)
 
                     sub_model = db.query(SubtitleSegmentModel).filter(

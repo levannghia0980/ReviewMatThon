@@ -588,22 +588,24 @@ class TikTokTTSService:
                     AdaptiveSilenceTrimmer.log_trim_to_terminal(d.index, raw_dur_sec, target_dur, trim_meta)
                 trimmed_dur_sec = len(seg_to_stretch) / 1000.0
 
-            # 5. BƯỚC 3: CO GIÃN ÂM THANH (TIME-STRETCH) NẾU VẪN > 1.0X
+            # 5. BƯỚC 3: CO GIÃN ÂM THANH (TIME-STRETCH) CÂN BẰNG TỐC ĐỘ [1.10x - 1.30x]
             speed_factor = trimmed_dur_sec / target_dur
-            if speed_factor <= 1.00:
-                fitted_seg = seg_to_stretch
-                actual_speed = 1.0
+            if speed_factor < 1.10:
+                # Những câu có tỷ lệ nhỏ hơn 1.10 sẽ để đều là 1.10x để tạo nhịp nói gọn gàng, chừa khoảng lặng
+                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, 1.10)
+                actual_speed = 1.10
             else:
-                safe_speed = min(1.30, speed_factor)  # Khóa trần cứng tốc độ đọc <= 1.30x
-                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, safe_speed)
-                actual_speed = safe_speed
+                # Những câu trong dải [1.10x - 1.30x] (hoặc lớn hơn sau vá): co giãn đúng speed_factor để vừa khít target_dur
+                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, speed_factor)
+                actual_speed = speed_factor
 
             seg_dur_sec = len(fitted_seg) / 1000.0
 
             # Cập nhật thông số timeline chuẩn xác vừa in vào start và end
+            max_allowed_end = next_start if idx_d < len(dialogues) - 1 else (total_video_ms / 1000.0)
             d.start_time = round(start_sec, 3)
-            d.end_time = round(start_sec + seg_dur_sec, 3)
-            d.duration = round(seg_dur_sec, 3)
+            d.end_time = min(round(start_sec + seg_dur_sec, 3), round(max_allowed_end, 3))
+            d.duration = round(d.end_time - d.start_time, 3)
             d.voice_duration = round(seg_dur_sec, 3)
             d.speed_ratio = round(actual_speed, 2)
             d.status = "DUBBED"
@@ -616,7 +618,7 @@ class TikTokTTSService:
                 seg_len = len(seg_samples)
                 if use_exact_timeline_fit:
                     # Giới hạn không cho âm thanh lấn sang khung của câu kế tiếp
-                    max_allowed_len = int(target_dur * fs)
+                    max_allowed_len = int(max(0.1, max_allowed_end - start_sec) * fs)
                     fit_len = min(seg_len, max_allowed_len)
                 else:
                     fit_len = seg_len
@@ -638,7 +640,8 @@ class TikTokTTSService:
                 actual_speed=actual_speed,
                 trimmed_dur_sec=trimmed_dur_sec,
                 trim_meta=trim_meta,
-                chunk_sub_offsets=chunk_sub_offsets
+                chunk_sub_offsets=chunk_sub_offsets,
+                max_allowed_end=max_allowed_end
             )
 
             # In log tiến độ định kỳ mỗi 1,000 câu

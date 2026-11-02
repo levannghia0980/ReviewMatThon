@@ -796,9 +796,8 @@ class CapCutTTSService:
             effective_dur = max(0.1, raw_dur_sec - 0.25)
             effective_ratio = effective_dur / target_dur
 
-            # Chỉ kích hoạt nếu tỷ lệ thô > ngưỡng (1.60x) VÀ sau khi gọt im lặng vẫn vượt 1.35x
-            # (tránh kích hoạt oan cho các câu ngắn bị dính khoảng lặng tự nhiên của CapCut)
-            if ratio > TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD and effective_ratio > 1.35:
+            # Chỉ kích hoạt nếu tỷ lệ thô > ngưỡng (1.30x) VÀ sau khi gọt im lặng vẫn vượt 1.15x
+            if ratio > TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD and effective_ratio > 1.15:
                 swollen_items.append({
                     "dialogue_id": d.id,
                     "dialogue_obj": d,
@@ -922,24 +921,26 @@ class CapCutTTSService:
                     AdaptiveSilenceTrimmer.log_trim_to_terminal(d.index, raw_dur_sec, target_dur, trim_meta)
                 trimmed_dur_sec = len(seg_to_stretch) / 1000.0
 
-            # 5. BƯỚC 3: CO GIÃN ÂM THANH (TIME-STRETCH) NẾU VẪN > 1.0X
+            # 5. BƯỚC 3: CO GIÃN ÂM THANH (TIME-STRETCH) CÂN BẰNG TỐC ĐỘ [1.10x - 1.30x]
             speed_factor = trimmed_dur_sec / target_dur
-            if speed_factor <= 1.00:
-                fitted_seg = seg_to_stretch
-                actual_speed = 1.0
+            if speed_factor < 1.10:
+                # Những câu có tỷ lệ nhỏ hơn 1.10 sẽ để đều là 1.10x để tạo nhịp nói gọn gàng, chừa khoảng lặng
+                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, 1.10)
+                actual_speed = 1.10
                 count_natural_1x += 1
             else:
-                safe_speed = min(1.30, speed_factor)  # Khóa trần cứng tốc độ đọc <= 1.30x
-                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, safe_speed)
-                actual_speed = safe_speed
+                # Những câu trong dải [1.10x - 1.30x] (hoặc lớn hơn sau vá): co giãn đúng speed_factor để vừa khít target_dur
+                fitted_seg = cls.time_stretch_by_factor(seg_to_stretch, speed_factor)
+                actual_speed = speed_factor
                 count_stretched += 1
 
             seg_dur_sec = len(fitted_seg) / 1000.0
 
             # Cập nhật thông số timeline chuẩn xác vừa in vào start và end
+            max_allowed_end = next_start if idx_d < len(dialogues) - 1 else (total_video_ms / 1000.0)
             d.start_time = round(start_sec, 3)
-            d.end_time = round(start_sec + seg_dur_sec, 3)
-            d.duration = round(seg_dur_sec, 3)
+            d.end_time = min(round(start_sec + seg_dur_sec, 3), round(max_allowed_end, 3))
+            d.duration = round(d.end_time - d.start_time, 3)
             d.voice_duration = round(seg_dur_sec, 3)
             d.speed_ratio = round(actual_speed, 2)
             d.status = "DUBBED"
@@ -967,7 +968,7 @@ class CapCutTTSService:
                 seg_len = len(seg_samples)
                 if use_exact_timeline_fit:
                     # Giới hạn không cho âm thanh lấn sang khung của câu kế tiếp
-                    max_allowed_len = int(target_dur * fs)
+                    max_allowed_len = int(max(0.1, max_allowed_end - start_sec) * fs)
                     fit_len = min(seg_len, max_allowed_len)
                 else:
                     fit_len = seg_len
@@ -989,7 +990,8 @@ class CapCutTTSService:
                 actual_speed=actual_speed,
                 trimmed_dur_sec=trimmed_dur_sec,
                 trim_meta=trim_meta,
-                chunk_sub_offsets=chunk_sub_offsets
+                chunk_sub_offsets=chunk_sub_offsets,
+                max_allowed_end=max_allowed_end
             )
 
             # In log tiến độ định kỳ thông minh mỗi 100 câu
@@ -1019,15 +1021,15 @@ class CapCutTTSService:
             f"\n{'='*65}\n"
             f"📊 TỔNG KẾT GHÉP TIMELINE AUDIO (CAPCUT TTS):\n"
             f"   • Tổng số câu: {total_count:,} câu\n"
-            f"   • Giữ nguyên tự nhiên (1.0x): {count_natural_1x:,} câu ({int(count_natural_1x * 100 / max(1, total_count))} %)\n"
-            f"   • Co giãn vừa khung (>1.05x): {count_stretched:,} câu ({int(count_stretched * 100 / max(1, total_count))} %)\n"
+            f"   • Tốc độ cân bằng (1.10x): {count_natural_1x:,} câu ({int(count_natural_1x * 100 / max(1, total_count))} %)\n"
+            f"   • Co giãn vừa khung [1.10x - 1.30x]: {count_stretched:,} câu ({int(count_stretched * 100 / max(1, total_count))} %)\n"
             f"   • Gọt khoảng lặng thích ứng: {trimmed_sentences_count:,} câu\n"
             f"   • Tốc độ đọc trung bình: {avg_speed}x\n"
             f"   • File kiểm toán chi tiết: {audit_path.name}\n"
             f"{'='*65}\n"
         )
         print(summary_table, flush=True)
-        task_manager.add_log(task_id, f"📊 Tổng kết Timeline: {count_natural_1x} câu 1.0x, {count_stretched} câu co giãn, tốc độ TB {avg_speed}x", "emerald")
+        task_manager.add_log(task_id, f"📊 Tổng kết Timeline: {count_natural_1x} câu 1.10x, {count_stretched} câu [1.10x-1.30x], tốc độ TB {avg_speed}x", "emerald")
 
         if high_speed_anomalies:
             task_manager.add_log(task_id, f"⚠️ Có {len(high_speed_anomalies)} câu thoại phải co giãn âm thanh > 1.8x để khớp timeline.", "amber")
