@@ -329,9 +329,15 @@ class VideoComposerService:
         if not project.video_path or not os.path.exists(project.video_path):
             raise FileNotFoundError(f"Không tìm thấy file video gốc: {project.video_path}")
 
-        dialogues_db = db.query(DialogueSegmentModel).filter(
-            DialogueSegmentModel.task_id == project_id
-        ).order_by(DialogueSegmentModel.index.asc()).all()
+        from app.models.dialogue import SubtitleSegmentModel
+        dialogues_db = db.query(SubtitleSegmentModel).filter(
+            SubtitleSegmentModel.task_id == project_id
+        ).order_by(SubtitleSegmentModel.index.asc()).all()
+
+        if not dialogues_db:
+            dialogues_db = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id
+            ).order_by(DialogueSegmentModel.index.asc()).all()
 
         # Khử trùng lặp tuyệt đối theo index để tránh bị vẽ đè 2 tầng sub
         seen_d_idx = set()

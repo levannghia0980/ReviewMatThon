@@ -330,9 +330,15 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         # 1. Tạo file Karaoke ASS trước
         db.commit()
         ass_file = p_dirs["root"] / f"{project.video_id}_karaoke.ass"
-        dialogues_db = db.query(DialogueSegmentModel).filter(
-            DialogueSegmentModel.task_id == project_id
-        ).order_by(DialogueSegmentModel.index.asc()).all()
+        from app.models.dialogue import SubtitleSegmentModel
+        dialogues_db = db.query(SubtitleSegmentModel).filter(
+            SubtitleSegmentModel.task_id == project_id
+        ).order_by(SubtitleSegmentModel.index.asc()).all()
+
+        if not dialogues_db:
+            dialogues_db = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id
+            ).order_by(DialogueSegmentModel.index.asc()).all()
 
         # Khử trùng lặp tuyệt đối theo index & chỉ lấy các câu có nội dung dịch thực tế (> 0s)
         seen_d_idx = set()
@@ -470,12 +476,48 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         finally:
             db_tts.close()
 
-        # Đồng bộ file ASS mới nhất (vừa được sinh ra sau TTS) sang ass_file dùng cho video render
+        # Tái sinh file ASS chuẩn theo sóng âm thực tế sau TTS với đầy đủ cấu hình giao diện
         if render_subs:
-            latest_ass = p_dirs["video_subtitles"] / "subtitles_karaoke.ass"
-            if latest_ass.exists():
-                shutil.copyfile(latest_ass, ass_file)
-                shutil.copyfile(latest_ass, settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass")
+            db_sub = SessionLocal()
+            try:
+                from app.models.dialogue import SubtitleSegmentModel
+                fresh_subs = db_sub.query(SubtitleSegmentModel).filter(
+                    SubtitleSegmentModel.task_id == project_id
+                ).order_by(SubtitleSegmentModel.index.asc()).all()
+                if fresh_subs:
+                    ass_segments_fresh = [
+                        DialogueSegment(
+                            id=d.index,
+                            start=float(d.start_time),
+                            end=float(d.end_time),
+                            duration=float(d.duration),
+                            text=getattr(d, 'original_text', '') or '',
+                            clean_text=getattr(d, 'clean_text', '') or '',
+                            translated_text=d.translated_text,
+                            role=getattr(d, 'speaker', 'NARRATOR') or 'NARRATOR',
+                            speaker=getattr(d, 'speaker', 'NARRATOR') or 'NARRATOR'
+                        )
+                        for d in fresh_subs
+                    ]
+                    KaraokeSubtitleService.create_karaoke_ass_file(
+                        segments=ass_segments_fresh,
+                        output_ass_path=str(ass_file),
+                        video_title=project.title,
+                        width=ass_w,
+                        height=ass_h,
+                        font_size=font_sz,
+                        highlight_color=highlight_c,
+                        backdrop_opacity_hex=req.backdrop_opacity_hex,
+                        margin_v=margin_v_val,
+                        box_style=getattr(req, "box_style", "white_box"),
+                        box_padding=box_pad_val,
+                        blur_height=blur_h_val,
+                        sub_bottom_offset=sub_offset_val
+                    )
+                    shutil.copyfile(ass_file, p_dirs["video_subtitles"] / "subtitles_karaoke.ass")
+                    shutil.copyfile(ass_file, settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass")
+            finally:
+                db_sub.close()
 
         # =====================================================================
         # BƯỚC 2: CHẠY SONG SONG 2 LUỒNG: HÒA ÂM BGM & RENDER VIDEO GPU

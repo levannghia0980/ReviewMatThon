@@ -772,28 +772,52 @@ def update_project_dialogues(
                 with open(root_dir / "transcript_vi.json", "w", encoding="utf-8") as f:
                     json.dump(json_dialogues, f, ensure_ascii=False, indent=2)
 
-                # 2. Ghi vào thư mục video_subtitles/ nếu có
+                # 2. Ghi vào thư mục video_subtitles/ nếu có (Ưu tiên SubtitleSegmentModel câu đã chuẩn hóa)
+                from app.models.dialogue import SubtitleSegmentModel
+                sub_diag = db.query(SubtitleSegmentModel).filter(
+                    SubtitleSegmentModel.task_id == project_id
+                ).order_by(SubtitleSegmentModel.index.asc()).all()
+                diag_for_karaoke = sub_diag if sub_diag else all_diag
+
                 if sub_dir and sub_dir.exists():
+                    karaoke_srt_lines = []
+                    karaoke_json_list = []
+                    for idx, d in enumerate(diag_for_karaoke, start=1):
+                        s_t = float(d.start_time or 0.0)
+                        e_t = float(d.end_time or s_t + 1.0)
+                        v_t = (d.translated_text or "").strip()
+                        spk_k = getattr(d, 'speaker', None) or "DẪN CHUYỆN"
+                        karaoke_srt_lines.append(f"{idx}\n{_fmt_ts(s_t)} --> {_fmt_ts(e_t)}\n{v_t}\n")
+                        karaoke_json_list.append({
+                            "id": getattr(d, 'index', idx),
+                            "start": s_t,
+                            "end": e_t,
+                            "duration": round(max(0.1, e_t - s_t), 2),
+                            "zh": getattr(d, 'clean_text', '') or getattr(d, 'original_text', '') or "",
+                            "vi": v_t,
+                            "role": spk_k,
+                            "tts_index": getattr(d, 'parent_index', getattr(d, 'tts_index', idx))
+                        })
                     with open(sub_dir / "subtitles_karaoke.srt", "w", encoding="utf-8") as f:
-                        f.write(srt_content)
+                        f.write("\n".join(karaoke_srt_lines))
                     with open(sub_dir / "subtitles_karaoke.json", "w", encoding="utf-8") as f:
-                        json.dump(json_dialogues, f, ensure_ascii=False, indent=2)
+                        json.dump(karaoke_json_list, f, ensure_ascii=False, indent=2)
 
                 # 3. Tái sinh file phụ đề Karaoke ASS chuẩn xác
                 try:
                     ass_segments = [
                         DialogueSegment(
-                            id=d.index,
+                            id=getattr(d, 'index', idx),
                             start=float(d.start_time or 0.0),
                             end=float(d.end_time or (d.start_time or 0.0) + 1.0),
                             duration=float(d.duration or 1.0),
-                            text=d.original_text or "",
-                            clean_text=d.clean_text or d.original_text or "",
-                            translated_text=d.translated_text or d.clean_text or d.original_text or "",
-                            role=d.speaker or "DẪN CHUYỆN",
-                            speaker=d.speaker or "DẪN CHUYỆN"
+                            text=getattr(d, 'original_text', '') or "",
+                            clean_text=getattr(d, 'clean_text', '') or getattr(d, 'original_text', '') or "",
+                            translated_text=d.translated_text or getattr(d, 'clean_text', '') or getattr(d, 'original_text', '') or "",
+                            role=getattr(d, 'speaker', 'DẪN CHUYỆN') or "DẪN CHUYỆN",
+                            speaker=getattr(d, 'speaker', 'DẪN CHUYỆN') or "DẪN CHUYỆN"
                         )
-                        for d in all_diag
+                        for idx, d in enumerate(diag_for_karaoke, start=1)
                     ]
                     root_ass = root_dir / f"{project.video_id}_karaoke.ass"
                     KaraokeSubtitleService.create_karaoke_ass_file(

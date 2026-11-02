@@ -701,11 +701,17 @@ class TikTokTTSService:
             from app.schemas.transcript import DialogueSegment
             import shutil
 
-            all_db_dialogues = db.query(DialogueSegmentModel).filter(
-                DialogueSegmentModel.task_id == project_id
-            ).order_by(DialogueSegmentModel.index.asc()).all()
+            from app.models.dialogue import SubtitleSegmentModel
+            all_db_subs = db.query(SubtitleSegmentModel).filter(
+                SubtitleSegmentModel.task_id == project_id
+            ).order_by(SubtitleSegmentModel.index.asc()).all()
 
-            if all_db_dialogues:
+            if not all_db_subs:
+                all_db_subs = db.query(DialogueSegmentModel).filter(
+                    DialogueSegmentModel.task_id == project_id
+                ).order_by(DialogueSegmentModel.index.asc()).all()
+
+            if all_db_subs:
                 from app.config import get_project_dirs
                 p_dirs = get_project_dirs(project_id)
                 sub_dir = p_dirs["video_subtitles"]
@@ -713,16 +719,16 @@ class TikTokTTSService:
 
                 all_recon = [
                     {
-                        "id": d.index,
+                        "id": getattr(d, 'index', getattr(d, 'id', idx)),
                         "start": float(d.start_time),
                         "end": float(d.end_time),
                         "duration": float(d.duration),
-                        "zh": d.clean_text or d.original_text,
+                        "zh": getattr(d, 'clean_text', '') or getattr(d, 'original_text', ''),
                         "vi": d.translated_text,
-                        "role": getattr(d, 'speaker', 'NARRATOR'),
-                        "tts_index": d.tts_index
+                        "role": getattr(d, 'speaker', 'NARRATOR') or 'NARRATOR',
+                        "tts_index": getattr(d, 'parent_index', getattr(d, 'tts_index', idx))
                     }
-                    for d in all_db_dialogues
+                    for idx, d in enumerate(all_db_subs, 1)
                 ]
                 json_path = sub_dir / "subtitles_karaoke.json"
                 with open(json_path, "w", encoding="utf-8") as f:
@@ -736,15 +742,17 @@ class TikTokTTSService:
                 ass_path = sub_dir / "subtitles_karaoke.ass"
                 segments_for_ass = [
                     DialogueSegment(
-                        id=d.index,
+                        id=getattr(d, 'index', getattr(d, 'id', idx)),
                         start=float(d.start_time),
                         end=float(d.end_time),
                         duration=float(d.duration),
-                        text=d.original_text,
-                        clean_text=d.clean_text,
-                        translated_text=d.translated_text
+                        text=getattr(d, 'original_text', '') or '',
+                        clean_text=getattr(d, 'clean_text', '') or '',
+                        translated_text=d.translated_text,
+                        role=getattr(d, 'speaker', 'NARRATOR') or 'NARRATOR',
+                        speaker=getattr(d, 'speaker', 'NARRATOR') or 'NARRATOR'
                     )
-                    for d in all_db_dialogues
+                    for idx, d in enumerate(all_db_subs, 1)
                 ]
                 KaraokeSubtitleService.create_karaoke_ass_file(
                     segments=segments_for_ass,
