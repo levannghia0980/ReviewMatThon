@@ -95,11 +95,28 @@ WUXIA_PROFILE = {
 
 
 # =====================================================================
+# KHỐI QUY TẮC XƯNG HÔ HIỆN ĐẠI DÙNG CHUNG (ĐÔ THỊ, MẠT THẾ, KHOA HUYỄN)
+# =====================================================================
+
+def _hien_dai_addressing_block(danh_xung_bo_sung: str = "") -> str:
+    extra = f"\n   - Danh xưng thể loại: {danh_xung_bo_sung.strip()}" if danh_xung_bo_sung and danh_xung_bo_sung.strip() else ""
+    return f"""QUY CHUẨN XƯNG HÔ THỂ LOẠI HIỆN ĐẠI / ĐÔ THỊ / MẠT THẾ:
+   - NGUYÊN TẮC KHÓA XƯNG HÔ NHẤT QUÁN (CONSISTENCY LOCK):
+     + Giữa hai nhân vật trong cùng một phân cảnh đối thoại: Đã chọn tầng xưng hô nào thì BẮT BUỘC GIỮ NGUYÊN 100% tầng đó, tuyệt đối CẤM câu trước xưng 'Tôi - Bạn', câu sau nhảy sang 'Ta - Ngươi', câu sau nữa lại 'Mày - Tao'.
+     + 3 TẦNG XƯNG HÔ LINH HOẠT THEO BỐI CẢNH:
+       1. Tầng Xã giao / Bình thường / Đồng đội: Tôi - Cậu / Anh / Chị / Bạn / Bác / Chú (hoặc Chức danh: Đội trưởng, Chỉ huy, Bác sĩ...).
+       2. Tầng Thân mật / Gia đình: Anh - Em, Chị - Em, Bố/Mẹ - Con, Ông/Bà - Cháu.
+       3. Tầng Đối kháng / Chiến đấu / Lưu manh / Xung đột: Dùng 'Mày - Tao' (khi xô xát, đe dọa, giang hồ) HOẶC 'Ta - Ngươi' (khi giao chiến dị năng, thần khí cổ xưa, khẩu khí áp đảo đối phương).
+   - LỜI DẪN NGÔI 3 VÀ GỌI NHÂN VẬT: Dùng 'hắn' (nam), 'cô' hoặc 'nàng' (nữ), tên riêng, chàng trai, cô gái, đối phương... Tuyệt đối cấm dùng từ 'y' (cấm cả lời kể lẫn lời thoại).{extra}"""
+
+
+# =====================================================================
 # 3. ĐÔ THỊ HIỆN ĐẠI, THƯƠNG TRƯỜNG, HỌC ĐƯỜNG, GIỚI GIẢI TRÍ
 # =====================================================================
 URBAN_PROFILE = {
     "description": (
-        "THỂ LOẠI ĐÔ THỊ: Xưng hô đời thường hiện đại (Tôi, Anh, Chị, Bạn, Em, Cậu, Bác...), giữ nhất quán đại từ."
+        "THỂ LOẠI ĐÔ THỊ HIỆN ĐẠI: Giữ chuẩn thuật ngữ thương trường, học đường, đời sống xã hội hiện đại.\n"
+        + _hien_dai_addressing_block("Giám đốc, Quản lý, Chủ tịch, Trợ lý, Thầy giáo, Bạn học")
     )
 }
 
@@ -109,7 +126,8 @@ URBAN_PROFILE = {
 # =====================================================================
 URBAN_SUPERNATURAL_PROFILE = {
     "description": (
-        "THỂ LOẠI LINH DỊ: Đời thường xưng hô thân thuộc (Tôi, Bác, Chú, Lâm Đạo trưởng), khi giao chiến trừ tà dùng khẩu khí đanh thép (Ta, Ngươi, Nghiệt súc, Yêu nghiệt)."
+        "THỂ LOẠI ĐÔ THỊ LINH DỊ, PHONG THỦY: Đời thường xưng hô hiện đại thân thuộc; khi giao chiến trừ tà dùng khẩu khí áp đảo (Ta, Ngươi, Nghiệt súc, Yêu nghiệt).\n"
+        + _hien_dai_addressing_block("Lâm Đạo trưởng, Thiên sư, Đạo hữu, Nghiệt súc, Yêu nghiệt")
     )
 }
 
@@ -130,7 +148,8 @@ ROMANCE_PROFILE = {
 # =====================================================================
 SYSTEM_REINCARNATION_PROFILE = {
     "description": (
-        "THỂ LOẠI HỆ THỐNG: Hệ thống xưng 'Bản hệ thống' gọi 'Ký chủ', ký chủ gọi 'Ngươi', thế giới xuyên không nào thì áp dụng xưng hô chuẩn của thế giới đó."
+        "THỂ LOẠI HỆ THỐNG / TRỌNG SINH: Hệ thống xưng 'Bản hệ thống' gọi 'Ký chủ', ký chủ gọi 'Ngươi'; bối cảnh thuộc thế giới cổ phong thì theo quy chuẩn cổ phong, bối cảnh hiện đại thì theo quy chuẩn hiện đại.\n"
+        + _hien_dai_addressing_block("Hệ thống, Ký chủ")
     )
 }
 
@@ -140,7 +159,8 @@ SYSTEM_REINCARNATION_PROFILE = {
 # =====================================================================
 SCI_FI_APOCALYPSE_PROFILE = {
     "description": (
-        "THỂ LOẠI MẠT THẾ KHOA HUYỄN: Dùng phong cách sinh tồn hiện đại (Tôi, Cậu, Anh, Em, Chỉ huy, Đội trưởng)."
+        "THỂ LOẠI MẠT THẾ KHOA HUYỄN: Giữ chuẩn thuật ngữ sinh tồn, tận thế zombie, khoa học công nghệ, cơ giáp, dị năng.\n"
+        + _hien_dai_addressing_block("Chỉ huy, Đội trưởng, Quân y, Thức tỉnh giả, Tang thi, Dị năng giả")
     )
 }
 
@@ -151,33 +171,34 @@ SCI_FI_APOCALYPSE_PROFILE = {
 COMMON_RULES = """Bạn là chuyên gia chuyển ngữ kịch bản lồng tiếng từ phụ đề ASR tiếng Trung sang tiếng Việt.
 Đầu vào gồm danh sách các mẩu ASR theo thứ tự thời gian và bảng thực thể nhân vật.
 
-=== NGUYÊN TẮC CỐT LÕI (ĐỒNG BỘ CHỮ HÁN - LỜI DỊCH & PHÂN VAI CHUẨN XÁC) ===
+=== NGUYÊN TẮC CỐT LÕI (ĐỒNG BỘ CHỮ HÁN - LỜI DỊCH & BẮT BUỘC CHUYỂN VAI ĐỐI THOẠI) ===
 
-1. QUY TẮC ÁNH XẠ CÂN BẰNG (1:1 KẾT HỢP GỘP 2-3 MẨU CÙNG CÂU) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:
+1. QUY TẮC ÁNH XẠ CÂN BẰNG (ƯU TIÊN 1:1, CHỈ GỘP KHI BỊ CẮT VỤN DỞ DANG) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:
 - Cấu trúc mỗi dòng bắt buộc:
   + Khi mẩu ASR đã trọn ý hoặc là câu thoại quần chúng / lời hát: [mẩu ASR gốc] Lời dịch tiếng Việt chuẩn xác, tự nhiên. -> [Tên vai]
-  + Khi một câu nói của CÙNG MỘT NHÂN VẬT đã biết tên (hoặc cùng lời dẫn chuyện / hệ thống / phát thanh) bị ASR tách thành 2 hoặc 3 mẩu ngắn liền kề: Hãy gộp các mẩu chữ Hán của câu đó vào chung một cặp ngoặc vuông cách nhau bởi dấu '/' (tối đa 1 đến 2 dấu '/' trong một cặp ngoặc vuông) và dịch thành một câu tiếng Việt hoàn chỉnh để nắm trọn ngữ cảnh xác định đúng người nói:
+  + ĐIỀU KIỆN GỘP DUY NHẤT: Khi một câu nói trọn vẹn của CÙNG MỘT NGƯỜI bị ASR chém đứt ngang ngữ pháp (đang nói dở, khuyết cụm từ, chưa trọn vẹn ý) VÀ mẩu kế tiếp là phần nói tiếp của chính người đó: Hãy gộp các mẩu chữ Hán của câu đó vào chung một cặp ngoặc vuông cách nhau bởi dấu '/' (tối đa 1 đến 2 dấu '/' trong một cặp ngoặc vuông) và dịch thành một câu tiếng Việt hoàn chỉnh liền mạch:
     [mẩu 1/mẩu 2] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]
-- Nguyên tắc giới hạn gộp và đồng bộ:
-  + Chỉ gộp tối đa 2 đến 3 mẩu ASR ngắn thuộc cùng một câu của cùng một người nói (tuyệt đối không gộp từ 4 mẩu trở lên thành đoạn văn dài; hết một câu hoàn chỉnh phải xuống dòng mới).
-  + Tuyệt đối không gộp lời của hai người khác nhau vào chung một dòng (không gộp câu hỏi của người trước với câu trả lời của người sau; không gộp lời dẫn chuyện [DẪN CHUYỆN] với lời thoại nhân vật; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN]).
+- RANH GIỚI CẤM CỐ GỘP VÀ ĐỒNG BỘ:
+  + Hễ mẩu ASR đã trọn vẹn một phát ngôn độc lập (kể cả câu ngắn: 'Đứng lại!', 'Chạy mau!', 'Không được!') hoặc có dấu hiệu chuyển lượt lời giữa hai người: BẮT BUỘC giữ nguyên dòng đơn (1:1), TUYỆT ĐỐI CẤM CỐ GỘP làm dính lời của hai người vào một dòng.
+  + Tuyệt đối không gộp lời của hai người khác nhau vào chung một dòng (không gộp câu hỏi của người trước với câu trả lời của người sau; không gộp người ra lệnh/giục với người từ chối/cãi lại; không gộp lời dẫn chuyện [DẪN CHUYỆN] với lời thoại nhân vật; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN]).
   + Trong mỗi dòng, phần chữ Hán nằm trong [...] có nội dung gì thì phần lời dịch tiếng Việt của dòng đó phải dịch trực tiếp thành lời nói tiếng Việt đầy đủ của nội dung ấy. Tuyệt đối CẤM dùng dấu ngoặc đơn () trong bản dịch (cấm ghi chú lỗi ASR, cấm tóm tắt mô tả âm thanh kiểu đóng mở ngoặc đơn).
   + Toàn bộ các khối [...] từ trên xuống dưới phải giữ nguyên văn chữ Hán gốc và bao phủ tuần tự 100% danh sách đầu vào từ đầu đến cuối, không tự ý xóa bỏ bất kỳ mẩu nào.
 
-2. NGUYÊN TẮC PHÂN VAI & BẮT BUỘC CHUYỂN TRẠNG THÁI ĐỐI THOẠI (DIALOGUE STATE TRANSITION):
-- CẢNH BÁO NGUYÊN LÝ LỒNG TIẾNG HẠ NGUỒN: Bộ máy TTS hạ nguồn sẽ tự động GỘP các câu thoại liên tiếp có CÙNG TÊN VAI thành một giọng đọc duy nhất. Do đó, nếu hai người khác nhau đang nói chuyện qua lại mà bạn gán trùng tên vai, hệ thống sẽ gộp nhầm giọng của hai người vào làm một!
+2. NGUYÊN TẮC BẮT BUỘC CHUYỂN VAI ĐỐI THOẠI (DIALOGUE TURN-TAKING LAW) & CƠ CHẾ NHÃN ẨN DANH:
+- BẢN CHẤT ĐỐI THOẠI LÀ LUÂN PHIÊN (TURN-TAKING LAW):
+  + Khi có từ 2 người trở lên đang đối đáp hoặc tương tác qua lại: Các phát ngôn kế tiếp nhau là của các nhân vật khác nhau. TÊN VAI Ở CUỐI DÒNG SAU BẮT BUỘC PHẢI KHÁC TÊN VAI CỦA DÒNG TRƯỚC!
+  + Cấm tuyệt đối việc gán liên tục cùng một tên vai (hoặc gộp hết vào nhân vật chính) khi lời thoại là sự đối đáp qua lại (người hỏi - người đáp, người ra lệnh/giục giã - người từ chối/cãi lại, người tấn công/quát tháo - người kêu đau/phản kháng).
+- CƠ CHẾ NHÃN ẨN DANH (GIẢI QUYẾT TRIỆT ĐỂ LỖI KHÔNG BIẾT TÊN):
+  + Bạn KHÔNG BẮT BUỘC phải đoán đúng 100% tên riêng của người nói. Nếu không biết họ là ai, BẮT BUỘC dùng nhãn vai theo bối cảnh hoặc nhãn ẩn danh luân phiên:
+    Ví dụ: [Cô Gái], [Chủ Tiệm], [Tên Cướp], [Nữ Sinh], [Lưu Manh], [Người Đi Đường], [Lính Cứu Hộ]... HOẶC luân phiên [Người Lạ A] -> [Người Lạ B] -> [Người Lạ A]... (hoặc [Vai A] -> [Vai B]).
+  + NGHIÊM CẤM TUYỆT ĐỐI: Không bao giờ được vì không biết tên người đối diện mà dồn gán hết lời thoại của họ cho nhân vật chính!
 - PHÂN ĐỊNH RÕ CÁC NHÓM VAI ĐẶC THÙ:
   + Lời dẫn chuyện ngôi thứ ba (mô tả bối cảnh, hành động, diễn biến khách quan): Gán -> [DẪN CHUYỆN].
   + Bản tin đài phát thanh, đài radio, loa phát thanh công cộng, thông báo khẩn cấp: Gán -> [PHÁT THANH] (Tuyệt đối CẤM gán vào [DẪN CHUYỆN], vì người dẫn chuyện phim khác với phát thanh viên trên sóng radio!).
   + Âm thanh máy móc tự động, bảng thông báo hệ thống: Gán -> [HỆ THỐNG].
   + Lời thoại trực tiếp hoặc độc thoại nội tâm của nhân vật đã rõ danh tính: Gán đúng -> [Tên nhân vật].
-- QUY TẮC BẮT BUỘC CHUYỂN TRẠNG THÁI ĐỐI THOẠI (CẤM TRÙNG VAI LIÊN TỤC KHI ĐỔI LƯỢT LỜI):
-  + Khi có từ 2 người trở lên đang trò chuyện qua lại (hỏi - đáp, xin xỏ, chê bai, rủ rê, can ngăn, tranh cãi): BẮT BUỘC PHẢI CHUYỂN TRẠNG THÁI NHÂN VẬT (ĐỔI TÊN VAI) ngay khi lượt lời chuyển sang người khác!
-  + Giảm yêu cầu đoán tên: Bạn không bắt buộc phải đoán đúng 100% tên riêng của từng người nếu chưa chắc chắn, NHƯNG TUYỆT ĐỐI CẤM gán cùng một tên vai (như cứ lặp lại Hạ Phàm hoặc cứ lặp lại Cường Tử) cho cả người nói lẫn người nghe trong cuộc đối đáp.
-  + Nếu biết tên: Chuyển luân phiên giữa các nhân vật (ví dụ: [Giai Giai] nói -> [Cường Tử] đáp -> [Hạ Phàm] chen vào -> [Giai Giai] phản hồi).
-  + Nếu không chắc chắn tên: BẮT BUỘC dùng nhãn chữ cái luân phiên [Vai A] -> [Vai B] -> [Vai A] -> [Vai B]... để tách biệt dứt khoát hai giọng đọc khác nhau!
 - QUY TẮC NGÔI GỌI TÊN ĐẦU CÂU (VOCATIVE):
-  + Khi câu thoại mở đầu bằng việc gọi tên một nhân vật (ví dụ: "Phàm ca, cho muội...", "Cường Tử, nhìn kìa..."), thì tên được gọi ở đầu câu là NGƯỜI NGHE, tuyệt đối KHÔNG phải người nói. Phải gán -> [Tên vai] ở cuối dòng cho NGƯỜI ĐANG NÓI câu đó.
+  + Khi câu thoại mở đầu bằng việc gọi tên một nhân vật (ví dụ: "Phàm ca, cho muội...", "Anh Du, nhìn kìa..."), thì tên được gọi ở đầu câu là NGƯỜI NGHE, tuyệt đối KHÔNG phải người nói. Phải gán -> [Tên vai] ở cuối dòng cho NGƯỜI ĐANG NÓI câu đó.
 - QUY TẮC CỨNG CHO ĐÁM ĐÔNG / LỜI HÁT (BẮT BUỘC 1:1, CẤM DẤU '/'):
   + Mọi dòng mang nhãn -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D] BẮT BUỘC chỉ chứa DUY NHẤT 1 mẩu chữ Hán gốc trong ngoặc vuông [mẩu ASR đơn] (tuyệt đối CẤM có dấu '/' bên trong [...] ở bất kỳ dòng [Vai A], [Vai B], [Vai C], [Vai D] nào).
   + Khi gặp cảnh nhiều người quần chúng bàn tán, la hét hoặc các câu đồng dao/lời hát: Bắt buộc tách từng mẩu ASR thành từng dòng riêng biệt (1:1), dịch sát chữ từng dòng và đánh nhãn luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]. Ngay khi quay lại lời kể chuyện ngôi thứ ba thì trả về -> [DẪN CHUYỆN].
@@ -293,6 +314,40 @@ def build_user_translation_prompt(
     else:
         entity_line = "Không có"
 
+    genre_key = normalize_profile_key(genre or "xianxia")
+    is_co_phong = genre_key in ("xianxia", "wuxia", "romance")
+
+    if is_co_phong:
+        few_shot_examples = (
+            "Ví dụ minh họa cấu trúc chuẩn (Thể loại Cổ phong / Kiếm hiệp / Tiên hiệp):\n"
+            "[mẩu ASR lời kể] Lời dịch trần thuật bối cảnh. -> [DẪN CHUYỆN]\n"
+            "[mẩu đài radio 1/mẩu đài radio 2] Bản tin phát thanh từ đài radio cảnh báo người dân. -> [PHÁT THANH]\n"
+            "[mẩu ASR phát thanh] Lời thông báo từ thiết bị thăng cấp. -> [HỆ THỐNG]\n"
+            "[mẩu thoại người 1] Phàm ca, cho muội ngồi nhờ xe được không? -> [Giai Giai]\n"
+            "[mẩu thoại người 2] Không được. -> [Hạ Phàm]\n"
+            "[mẩu thoại người 3] Muội qua ngồi xe của ta này, có đệm êm lắm. -> [Cường Tử]\n"
+            "[mẩu thoại người 1 chê] Xe của huynh xóc quá, sao không kiếm xe bốn bánh? -> [Giai Giai]\n"
+            "[mẩu đối đáp người lạ 1] Huynh đài, cớ sao lại chặn đường tại hạ? -> [Người Lạ A]\n"
+            "[mẩu đối đáp người lạ 2] Để ngân lượng lại, tha cho ngươi một mạng! -> [Người Lạ B]\n"
+            "[mẩu ASR quần chúng 1] Tiếng bàn tán thứ nhất tách dòng đơn không có dấu gạch chéo. -> [Vai A]\n"
+            "[mẩu ASR quần chúng 2] Tiếng bàn tán thứ hai tách dòng đơn không có dấu gạch chéo. -> [Vai B]"
+        )
+    else:
+        few_shot_examples = (
+            "Ví dụ minh họa cấu trúc chuẩn (Thể loại Hiện đại / Đô thị / Mạt thế):\n"
+            "[mẩu ASR lời kể] Tô Du đạp mạnh chân ga lao về phía trước. -> [DẪN CHUYỆN]\n"
+            "[mẩu đài radio 1/mẩu đài radio 2] Bản tin khẩn cấp: Thành phố xuất hiện rung chấn mạnh, yêu cầu người dân sơ tán. -> [PHÁT THANH]\n"
+            "[mẩu ASR hệ thống] Kích hoạt thành công hệ thống sinh tồn. -> [HỆ THỐNG]\n"
+            "[mẩu thoại người 1] Anh ơi, cho em đi nhờ xe được không? -> [Nữ Sinh]\n"
+            "[mẩu thoại người 2] Lên xe đi, tôi chở cô qua trạm cứu hộ. -> [Tô Du]\n"
+            "[mẩu thoại người 3 quát] Đứng lại, để chiếc xe đó lại cho tao! -> [Tên Cướp]\n"
+            "[mẩu thoại người 2 đáp] Muốn cướp xe? Bước qua xác tao đã! -> [Tô Du]\n"
+            "[mẩu đối đáp không rõ tên 1] Chân tao, chân tao gãy rồi! Buông ra! -> [Người Lạ A]\n"
+            "[mẩu đối đáp không rõ tên 2] Đè chết mày, đồ lưu manh! -> [Người Lạ B]\n"
+            "[mẩu ASR quần chúng 1] Tiếng bàn tán thứ nhất tách dòng đơn không có dấu gạch chéo. -> [Vai A]\n"
+            "[mẩu ASR quần chúng 2] Tiếng bàn tán thứ hai tách dòng đơn không có dấu gạch chéo. -> [Vai B]"
+        )
+
     return (
         f"KỊCH BẢN GỐC CẦN XỬ LÝ:\n"
         f"{raw_text.strip()}\n\n"
@@ -302,27 +357,20 @@ def build_user_translation_prompt(
         f"- CẤU TRÚC MỖI DÒNG:\n"
         f"  + Câu đơn trọn ý hoặc câu quần chúng / lời hát (1:1): [mẩu ASR gốc] Lời dịch tiếng Việt. -> [Tên vai]\n"
         f"  + Câu của nhân vật đã biết tên (hoặc lời dẫn / phát thanh / hệ thống) bị ASR tách thành 2-3 mảnh ngắn: [mẩu 1/mẩu 2] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]\n"
-        f"- NGUYÊN TẮC GỘP CÂU CÂN BẰNG (TỐI ĐA 2-3 MẨU) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:\n"
-        f"  + Chủ động gộp 2 đến tối đa 3 mẩu ASR ngắn liền kề của cùng một câu và cùng một người nói bằng dấu '/' trong [...] để tạo thành câu hoàn chỉnh, giúp xác định chính xác tên nhân vật. Tuyệt đối không gộp từ 4 mẩu trở lên thành đoạn văn dài; không gộp lời của 2 người khác nhau; không gộp lời dẫn [DẪN CHUYỆN] với lời thoại nhân vật vào chung 1 dòng; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN].\n"
+        f"- NGUYÊN TẮC GỘP CÂU (ƯU TIÊN 1:1, CHỈ GỘP KHI BỊ CHÉM ĐỨT NGỮ PHÁP) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:\n"
+        f"  + Chỉ gộp tối đa 2 đến 3 mẩu ASR ngắn liền kề khi và chỉ khi mẩu trước bị đứt ngang ngữ pháp của CÙNG MỘT NGƯỜI bằng dấu '/' trong [...]. Hễ mẩu ASR đã trọn vẹn một phát ngôn ngắn hoặc có đổi lượt lời: BẮT BUỘC giữ nguyên 1:1, CẤM CỐ GỘP làm dính lời của hai người vào một dòng.\n"
+        f"  + Tuyệt đối không gộp từ 4 mẩu trở lên; không gộp lời dẫn [DẪN CHUYỆN] với lời thoại nhân vật; không dùng ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN].\n"
         f"  + Chữ Hán trong [...] của dòng nào phải dịch trực tiếp và đầy đủ sang lời thoại tiếng Việt ở dòng đó; tuyệt đối CẤM dùng dấu ngoặc đơn () để ghi chú lỗi ASR hay tóm tắt âm thanh. Giữ nguyên văn chữ Hán gốc trong [...] và bao phủ tuần tự 100% các mẩu đầu vào từ đầu đến cuối.\n"
-        f"- QUY ĐỊNH PHÂN VAI & CHUYỂN TRẠNG THÁI ĐỐI THOẠI (DIALOGUE TRANSITION):\n"
+        f"- NGUYÊN TẮC BẮT BUỘC CHUYỂN VAI ĐỐI THOẠI & CƠ CHẾ NHÃN ẨN DANH:\n"
+        f"  + Hội thoại đối đáp luân phiên: TÊN VAI Ở CUỐI DÒNG SAU BẮT BUỘC PHẢI KHÁC TÊN VAI CỦA DÒNG TRƯỚC! Cấm tuyệt đối gán liên tục cùng một tên vai (hoặc gộp vào nhân vật chính) khi lời thoại là sự đối đáp qua lại.\n"
+        f"  + Nhãn vai ẩn danh khi không biết tên: Không bắt buộc đoán đúng tên riêng, BẮT BUỘC dùng nhãn theo bối cảnh hoặc nhãn luân phiên [Người Lạ A] -> [Người Lạ B] -> [Người Lạ A]... (hoặc [Vai A] -> [Vai B]). Cấm vì không biết tên mà dồn hết câu cho nhân vật chính!\n"
         f"  + Lời kể ngôi thứ ba -> [DẪN CHUYỆN].\n"
         f"  + Bản tin radio, đài phát thanh, loa thông báo công cộng -> [PHÁT THANH] (Cấm gán vào [DẪN CHUYỆN]).\n"
         f"  + Thông báo máy móc/loa phát thanh hệ thống -> [HỆ THỐNG].\n"
-        f"  + Hội thoại đối đáp: Bắt buộc đổi trạng thái vai ngay khi câu thoại của người khác cất lên! Không được gán cùng một tên vai liên tục cho cả hai người đối đáp. Nếu không chắc tên người nói, bắt buộc dùng luân phiên -> [Vai A], -> [Vai B], -> [Vai A]... để tách dứt khoát hai giọng đọc!\n"
         f"  + Ngôi gọi tên đầu câu: Tên được gọi ở đầu câu thoại là NGƯỜI NGHE, bắt buộc gán -> [Tên vai] cho NGƯỜI ĐANG NÓI.\n"
         f"  + Đám đông / hội thoại không rõ chủ ngữ / đồng dao / lời hát: Mọi dòng gán nhãn -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D] bắt buộc đi 1:1 (chỉ chứa duy nhất 1 mẩu chữ Hán trong [...], tuyệt đối CẤM có dấu '/' trong ngoặc vuông ở dòng [Vai A]/[Vai B]/[Vai C]/[Vai D]). Tách riêng từng mẩu và gán luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]; khi quay lại lời kể chuyện thì trả về -> [DẪN CHUYỆN].\n"
         f"  + Đối chiếu Bảng thực thể để chuẩn hóa các từ bị ASR nghe nhầm đồng âm về đúng tên thực thể thống nhất.\n\n"
-        f"Ví dụ minh họa cấu trúc chuẩn:\n"
-        f"[mẩu ASR lời kể] Lời dịch trần thuật bối cảnh. -> [DẪN CHUYỆN]\n"
-        f"[mẩu đài radio 1/mẩu đài radio 2] Bản tin phát thanh từ đài radio cảnh báo người dân. -> [PHÁT THANH]\n"
-        f"[mẩu ASR phát thanh] Lời thông báo từ thiết bị thăng cấp. -> [HỆ THỐNG]\n"
-        f"[mẩu thoại người 1] Phàm ca, cho muội ngồi nhờ xe được không? -> [Giai Giai]\n"
-        f"[mẩu thoại người 2] Không được. -> [Hạ Phàm]\n"
-        f"[mẩu thoại người 3] Muội qua ngồi xe của ta này, có đệm êm lắm. -> [Cường Tử]\n"
-        f"[mẩu thoại người 1 chê] Xe của huynh xóc quá, sao không kiếm xe bốn bánh? -> [Giai Giai]\n"
-        f"[mẩu ASR quần chúng 1] Tiếng bàn tán thứ nhất tách dòng đơn không có dấu gạch chéo. -> [Vai A]\n"
-        f"[mẩu ASR quần chúng 2] Tiếng bàn tán thứ hai tách dòng đơn không có dấu gạch chéo. -> [Vai B]\n"
+        f"{few_shot_examples}\n"
     )
 
 
