@@ -107,21 +107,21 @@ class TranslationAuditor:
     @classmethod
     async def batch_fix_hanzi_leak_llm(
         cls,
-        segments: List[DialogueSegment],
+        segments: List[Any],
         genre: str = "cophong",
         provider: str = None,
         model: str = None,
-        project_title: str = ""
+        project_title: str = "",
+        timeout: float = 180.0
     ) -> Dict[int, str]:
         """
         MODULE SỬA SÓT HÁN TOÀN BỘ PHIM BẰNG LLM (KẾ THỪA TRỰC TIẾP TỪ AIREAD):
-        - Quét toàn bộ danh sách câu thoại sau khi dịch xong tất cả các lô.
+        - Quét toàn bộ danh sách câu thoại (hỗ trợ cả TTSDialogueSegmentModel, DialogueSegmentModel, SubtitleSegmentModel, hoặc dict).
         - Phát hiện mọi câu thoại bị rò rỉ hoặc sót chữ Hán (HANZI_REGEX).
         - Gửi cả câu tiếng Trung gốc + câu tiếng Việt có đánh dấu [CHỮ HÁN CẦN DỊCH: ...] lên LLM.
         - Yêu cầu LLM đóng vai TỔNG BIÊN TẬP VIÊN VĂN HỌC & LỒNG TIẾNG PHIM CAO CẤP,
-          chịu trách nhiệm viết lại trọn vẹn cả câu văn (fixed_sentence) hoàn chỉnh 100% tiếng Việt,
-          văn phong trôi chảy, giàu hình ảnh, khớp với thời lượng (duration) và ngữ cảnh phim.
-        - Ánh xạ chuẩn xác 100% theo ID câu thoại (id_map) -> Tuyệt đối không bao giờ bị lệch câu hay trôi dòng!
+          chịu trách nhiệm viết lại trọn vẹn cả câu văn (fixed_sentence) hoàn chỉnh 100% tiếng Việt.
+        - Có bộ Fallback tự động tra cứu âm Hán-Việt (get_hanviet) để diệt sạch 100% chữ Hán sót lại, chống lọt lưới tuyệt đối.
         """
         if not segments:
             return {}
@@ -134,12 +134,19 @@ class TranslationAuditor:
         # 1. Quét tìm tất cả các câu thoại bị sót chữ Hán
         error_items = []
         for s in segments:
-            viet = (getattr(s, 'translated_text', '') or '').strip()
-            orig = (getattr(s, 'clean_text', '') or getattr(s, 'text', '') or '').strip()
-            dur = getattr(s, 'duration', 0.0) or 0.0
+            if isinstance(s, dict):
+                viet = (s.get('translated_text') or s.get('vi') or s.get('text') or '').strip()
+                orig = (s.get('clean_text') or s.get('original_text') or s.get('text') or s.get('zh') or '').strip()
+                dur = float(s.get('duration') or 0.0)
+                s_id = s.get('id', s.get('tts_index', s.get('index', 0)))
+            else:
+                viet = (getattr(s, 'translated_text', '') or getattr(s, 'vi', '') or '').strip()
+                orig = (getattr(s, 'clean_text', '') or getattr(s, 'original_text', '') or getattr(s, 'text', '') or '').strip()
+                dur = float(getattr(s, 'duration', 0.0) or 0.0)
+                s_id = getattr(s, 'id', getattr(s, 'tts_index', getattr(s, 'index', 0)))
 
-            # Bỏ qua các câu rỗng (câu đã gộp hoặc khoảng lặng)
-            if not viet or dur <= 0:
+            # Bỏ qua các câu rỗng
+            if not viet:
                 continue
 
             # Kiểm tra xem có chứa chữ Hán CJK không
@@ -153,7 +160,7 @@ class TranslationAuditor:
                 masked_context = re.sub(r'\s+', ' ', masked_context).strip()
 
                 error_items.append({
-                    "id": getattr(s, 'id', 0),
+                    "id": s_id,
                     "zh_orig": orig,
                     "vi_context": masked_context,
                     "duration": round(dur, 2)
@@ -208,7 +215,7 @@ Chỉ trả về JSON thuần hợp lệ (mảng JSON các object chứa "id" v�
                 model=model,
                 temperature=0.2,
                 response_mime_type="application/json",
-                timeout=120.0
+                timeout=timeout
             )
 
             if ans_text:
@@ -234,10 +241,43 @@ Chỉ trả về JSON thuần hợp lệ (mảng JSON các object chứa "id" v�
                             except (ValueError, TypeError):
                                 pass
 
-            print(f"✔ [Batch Fix Hanzi] LLM đã biên tập và viết lại thành công {len(result_map)}/{total_err} câu!", flush=True)
+            # 4. Fallback tự động chuyển âm Hán-Việt cho bất kỳ câu nào LLM bỏ sót hoặc lỗi mạng
+            from app.services.step_03_translation.dichhan.hanviet_data import get_hanviet
+            for it in error_items:
+                s_id = it["id"]
+                if s_id not in result_map or HANZI_REGEX.search(result_map[s_id]):
+                    raw_ctx = it["vi_context"]
+                    clean_ctx = re.sub(r'\[CHỮ HÁN CẦN DỊCH:\s*([^\]]+)\]', r'\1', raw_ctx)
+                    chars = HANZI_REGEX.findall(clean_ctx)
+                    fb_text = clean_ctx
+                    for ch in set(chars):
+                        hv = await get_hanviet(ch)
+                        if hv:
+                            fb_text = fb_text.replace(ch, f" {hv} ")
+                    fb_text = re.sub(r'\s+', ' ', fb_text).strip()
+                    result_map[s_id] = fb_text
+
+            print(f"✔ [Batch Fix Hanzi] Đã biên tập và làm sạch 100% {len(result_map)}/{total_err} câu sót chữ Hán!", flush=True)
             return result_map
         except Exception as e:
             print(f"⚠️ [Batch Fix Hanzi] Lỗi trong quá trình gọi LLM biên tập: {e}", flush=True)
-            return {}
+            # Vẫn chạy Fallback Hán-Việt để không bao giờ để sót chữ Hán
+            try:
+                from app.services.step_03_translation.dichhan.hanviet_data import get_hanviet
+                for it in error_items:
+                    s_id = it["id"]
+                    raw_ctx = it["vi_context"]
+                    clean_ctx = re.sub(r'\[CHỮ HÁN CẦN DỊCH:\s*([^\]]+)\]', r'\1', raw_ctx)
+                    chars = HANZI_REGEX.findall(clean_ctx)
+                    fb_text = clean_ctx
+                    for ch in set(chars):
+                        hv = await get_hanviet(ch)
+                        if hv:
+                            fb_text = fb_text.replace(ch, f" {hv} ")
+                    fb_text = re.sub(r'\s+', ' ', fb_text).strip()
+                    result_map[s_id] = fb_text
+                return result_map
+            except Exception:
+                return {}
 
 

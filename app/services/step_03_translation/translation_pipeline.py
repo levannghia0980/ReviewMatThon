@@ -955,72 +955,92 @@ class TranslationPipelineService:
         task_manager.add_log(task_id, "[4/5] 🛡️ TỔNG BIÊN TẬP: Rà soát & sửa sót Hán toàn bộ câu thoại bằng LLM...", "cyan")
         print("\n🛡️ [4/5] TỔNG BIÊN TẬP SỬA SÓT HÁN TOÀN PHIM BẰNG LLM...", flush=True)
 
-        # 4.1. Bước 1: LLM Tổng Biên Tập Viên Cao Cấp (Kế thừa AIRead) viết lại trọn vẹn cả câu
+        tts_db_rows = db.query(TTSDialogueSegmentModel).filter(
+            TTSDialogueSegmentModel.task_id == project.id
+        ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
+
+        diag_db_rows = db.query(DialogueSegmentModel).filter(
+            DialogueSegmentModel.task_id == project.id
+        ).order_by(DialogueSegmentModel.index.asc()).all()
+
         try:
-            llm_fixed_map = await TranslationAuditor.batch_fix_hanzi_leak_llm(
-                segments=translated_segments,
+            # 4.1. Quét và sửa sót Hán trực tiếp trên BẢNG CÂU GỘP TTS (TTSDialogueSegmentModel) - Kịch bản thật
+            tts_fixed_map = await TranslationAuditor.batch_fix_hanzi_leak_llm(
+                segments=tts_db_rows,
                 genre=genre,
                 provider=provider,
-                project_title=project.title
+                project_title=project.title,
+                timeout=180.0
             )
-            if llm_fixed_map:
-                fix_cnt = len(llm_fixed_map)
+            if tts_fixed_map:
+                for t_row in tts_db_rows:
+                    if t_row.id in tts_fixed_map:
+                        t_row.translated_text = tts_fixed_map[t_row.id]
+                db.commit()
+                task_manager.add_log(task_id, f"   ✨ [Tổng Biên Tập LLM] Đã biên tập & làm sạch {len(tts_fixed_map)} câu gộp TTS sót chữ Hán!", "emerald")
+
+            # 4.2. Quét và sửa sót Hán trên BẢNG CÂU CON ASR (DialogueSegmentModel)
+            diag_fixed_map = await TranslationAuditor.batch_fix_hanzi_leak_llm(
+                segments=diag_db_rows,
+                genre=genre,
+                provider=provider,
+                project_title=project.title,
+                timeout=180.0
+            )
+            if diag_fixed_map:
+                for d_row in diag_db_rows:
+                    if d_row.id in diag_fixed_map:
+                        d_row.translated_text = diag_fixed_map[d_row.id]
+                db.commit()
                 for s in translated_segments:
-                    if s.id in llm_fixed_map:
-                        s.translated_text = llm_fixed_map[s.id]
+                    if getattr(s, 'id', None) in diag_fixed_map:
+                        s.translated_text = diag_fixed_map[s.id]
                 for b in batches:
                     for s in b:
-                        if s.id in llm_fixed_map:
-                            s.translated_text = llm_fixed_map[s.id]
-                task_manager.add_log(task_id, f"   ✨ [Tổng Biên Tập LLM] Đã biên tập và chuốt mượt thành công {fix_cnt} câu sót chữ Hán!", "emerald")
+                        if getattr(s, 'id', None) in diag_fixed_map:
+                            s.translated_text = diag_fixed_map[s.id]
+                task_manager.add_log(task_id, f"   ✨ [Tổng Biên Tập LLM] Đã biên tập & làm sạch {len(diag_fixed_map)} câu ASR lẻ sót chữ Hán!", "emerald")
+
         except Exception as e:
             print(f"⚠️ [Pipeline Fix Hanzi LLM] Lỗi khi gọi LLM biên tập: {e}", flush=True)
 
-        # 4.2. Bước 2: Đồng bộ các câu thoại vào SQLite (Bảng câu con DialogueSegmentModel)
-        for s in translated_segments:
-            diag_db = db.query(DialogueSegmentModel).filter(
-                DialogueSegmentModel.task_id == project.id,
-                DialogueSegmentModel.index == s.id
-            ).first()
-            if diag_db:
-                diag_db.translated_text = s.translated_text
-                if getattr(s, 'speaker', None) or getattr(s, 'role', None):
-                    spk_val = getattr(s, 'speaker', None) or getattr(s, 'role', None)
-                    diag_db.speaker = spk_val
-                    diag_db.role = spk_val
-        db.commit()
+        # 4.3. Cập nhật đồng bộ lại vào các file batch_XX_output.json trên đĩa (Bảo đảm đĩa sạch Hán 100%)
+        try:
+            all_tts_cleaned = db.query(TTSDialogueSegmentModel).filter(
+                TTSDialogueSegmentModel.task_id == project.id
+            ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
 
-        # Nạp lại dữ liệu đã sạch Hán vào translated_segments và batches
-        diag_map = {d.index: (d.translated_text or "") for d in db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project.id).all()}
-        for s in translated_segments:
-            if s.id in diag_map and diag_map[s.id]:
-                s.translated_text = diag_map[s.id]
-        for b in batches:
-            for s in b:
-                if s.id in diag_map and diag_map[s.id]:
-                    s.translated_text = diag_map[s.id]
+            batch_to_tts = {}
+            for row in all_tts_cleaned:
+                b_idx = getattr(row, 'batch_index', 1) or 1
+                if b_idx not in batch_to_tts:
+                    batch_to_tts[b_idx] = []
+                use_src = []
+                if row.src_indices:
+                    for x in str(row.src_indices).split(","):
+                        if x.strip().isdigit():
+                            use_src.append(int(x.strip()))
+                elif row.src_start_index and row.src_end_index:
+                    use_src = list(range(row.src_start_index, row.src_end_index + 1))
 
-        # 4.3. Bước 3: Đồng bộ bản dịch đã sửa Hán sang bảng câu gộp TTS (TTSDialogueSegmentModel)
-        # Giúp kịch bản lồng tiếng TTS mang 100% bản dịch chuốt mượt, không bị regex cắt cụt từ ngữ
-        tts_db_rows_to_sync = db.query(TTSDialogueSegmentModel).filter(
-            TTSDialogueSegmentModel.task_id == project.id
-        ).all()
-        for t_row in tts_db_rows_to_sync:
-            c_indices = []
-            if t_row.src_indices:
-                for x in str(t_row.src_indices).split(","):
-                    if x.strip().isdigit():
-                        c_indices.append(int(x.strip()))
-            elif t_row.src_start_index and t_row.src_end_index:
-                c_indices = list(range(t_row.src_start_index, t_row.src_end_index + 1))
+                batch_to_tts[b_idx].append({
+                    "role": row.speaker or row.role or "DẪN CHUYỆN",
+                    "src": use_src,
+                    "vi": row.translated_text or ""
+                })
 
-            if c_indices and llm_fixed_map and any(c_id in llm_fixed_map for c_id in c_indices):
-                child_texts = [diag_map[c_id].strip() for c_id in c_indices if c_id in diag_map and diag_map[c_id].strip()]
-                if child_texts:
-                    t_row.translated_text = " ".join(child_texts).strip()
-        db.commit()
+            for b_num, items in batch_to_tts.items():
+                batch_raw_file = proj_llm_io_dir / f"batch_{b_num:02d}_output.json"
+                if batch_raw_file.exists():
+                    try:
+                        with open(batch_raw_file, "w", encoding="utf-8") as f:
+                            json.dump(items, f, ensure_ascii=False, indent=2)
+                    except Exception as e_w:
+                        logger.warning(f"Lỗi cập nhật sạch Hán vào file {batch_raw_file}: {e_w}")
+        except Exception as e_sync_files:
+            logger.warning(f"Lỗi đồng bộ file batch_XX_output.json: {e_sync_files}")
 
-        # Đồng bộ ngay bản thảo sửa Hán ra file kịch bản vật lý trên đĩa
+        # 4.4. Đồng bộ ngay bản thảo sửa Hán ra file kịch bản vật lý trên đĩa
         try:
             cls._export_partial_transcripts(project, db, task_id)
         except Exception as e_exp_hanzi:
