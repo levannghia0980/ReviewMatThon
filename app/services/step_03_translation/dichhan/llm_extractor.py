@@ -252,7 +252,8 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
                 provider=provider,
                 model=model,
                 response_mime_type="application/json",
-                thinking_budget=None
+                thinking_budget=None,
+                timeout=120.0
             )
             if not text_response or len(text_response.strip()) < 5:
                 raise ValueError("Phản hồi LLM rỗng hoặc quá ngắn")

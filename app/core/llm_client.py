@@ -56,7 +56,7 @@ async def post_gemini_with_retry(
     url: str,
     headers: Dict[str, str],
     payload: Dict[str, Any],
-    max_retries: int = 8
+    max_retries: int = 4
 ) -> httpx.Response:
     """
     Tự động gửi request đến Gemini API và xử lý thông minh:
@@ -334,7 +334,7 @@ async def execute_llm_call(
     if is_grok_local:
         grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
         full_p = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=20.0)) as client:
             res_data = await post_grok_local_with_retry(client, grok_url, {"text": full_p, "timeout": timeout})
             return (res_data.get("translated_text") or "").strip()
 
@@ -366,7 +366,7 @@ async def execute_llm_call(
         if response_mime_type == "application/json":
             or_body["response_format"] = {"type": "json_object"}
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=20.0)) as client:
             resp = await post_openrouter_with_retry(client, url, or_headers, or_body)
             if resp.status_code != 200:
                 raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
@@ -414,7 +414,7 @@ async def execute_llm_call(
     if response_mime_type:
         payload["generationConfig"]["responseMimeType"] = response_mime_type
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=20.0)) as client:
         # Giãn cách 2.5s để nạp từ từ, chống nghẽn và giảm tải cho Google AI Studio
         await asyncio.sleep(2.5)
         resp = await post_gemini_with_retry(client, url, headers, payload)

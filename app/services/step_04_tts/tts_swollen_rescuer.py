@@ -120,7 +120,7 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
                 model=model,
                 temperature=0.2,
                 response_mime_type="application/json",
-                timeout=30.0
+                timeout=120.0
             )
 
             if not ans_text:

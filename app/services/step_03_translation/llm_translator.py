@@ -116,7 +116,7 @@ async def translate_batch_pass2_llm(
             temperature=trans_temperature,
             response_mime_type=None,
             prompt_file_path=prompt_save_path,
-            timeout=180.0,
+            timeout=240.0,
             system_instruction=system_prompt
         )
 
