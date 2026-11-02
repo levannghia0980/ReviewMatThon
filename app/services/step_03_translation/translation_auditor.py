@@ -189,7 +189,7 @@ Dưới đây là danh sách các câu thoại bị sót chữ Hán trong kịch
 1. 🛑 CẤM TUYỆT ĐỐI CHỮ HÁN & TỪ LẶP:
    - `fixed_sentence` BẮT BUỘC 100% LÀ TIẾNG VIỆT HOÀN CHỈNH, TUYỆT ĐỐI CẤM để sót bất kỳ chữ Hán nào.
    - TUYỆT ĐỐI KHÔNG lặp lại các từ ngữ liền kề do lỗi ghép từ trước đó.
-   - Xóa bỏ triệt để các ký tự rác, mảnh từ bị cắt dở hoặc lỗi dịch máy thô.
+   - BẢO TOÀN 100% CÁC CÂU THOẠI NGẮN & TIẾNG THÉT HÀNH ĐỘNG: Tuyệt đối CẤM tự ý xóa bỏ bất kỳ câu thoại ngắn nào của nhân vật (như 'A!', 'Cút!', 'Dừng tay!', 'Mày dám!', 'Mau chạy!'). Phải dịch đầy đủ và chuốt mượt sang tiếng Việt. Chỉ loại bỏ ký tự nhiễu phi ngôn ngữ.
 
 2. TRÁCH NHIỆM CHUỐT MƯỢT CẢ CÂU VĂN LỒNG TIẾNG (fixed_sentence):
    - Bạn được cung cấp cả câu tiếng Trung gốc (zh_orig) và ngữ cảnh câu thoại tiếng Việt đang dở dang (vi_context).

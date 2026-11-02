@@ -65,7 +65,7 @@ GLOBAL_ANCHOR_MARGIN = 0.25
 MERGE_TH = 0.70
 MERGE_GAIN = 0.15
 LOW_CONF_BAND = 0.05
-JUNK_MAX_LEN = 2
+JUNK_MAX_LEN = 0  # CẤM coi câu ngắn là rác: 1-2 chữ (A!, Cút!, Dừng tay!) đều là thoại hợp lệ 100%
 
 JUNK_PHRASES = {'谢谢观看', '感谢观看', '谢谢收看', '请订阅', '字幕由'}
 
@@ -130,9 +130,9 @@ def norm_zh(text: Any) -> str:
 
 
 def is_junk_text(text: str) -> bool:
-    """Rác = sau chuẩn hóa còn <= 2 chữ (hoặc cụm rác nhận diện). KHÔNG dùng thời lượng:
-    mẩu 3 chữ trở lên dù ngắn vẫn là nội dung."""
-    return (not text) or len(text) <= JUNK_MAX_LEN or text in JUNK_PHRASES
+    """CẤM XÓA NỘI DUNG: Mọi câu thoại 1-2 chữ (A!, Cút!, Dừng tay!) đều là thoại hợp lệ 100%.
+    Chỉ coi là rác nếu chuỗi rỗng HOẶC trùng đúng cụm watermark quảng cáo (JUNK_PHRASES)."""
+    return (not text) or (text in JUNK_PHRASES)
 
 
 def is_junk_segment(seg: Dict[str, Any]) -> bool:

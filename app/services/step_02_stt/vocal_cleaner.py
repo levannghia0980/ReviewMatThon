@@ -85,9 +85,9 @@ except Exception as err:
         try:
             from app.utils.bin_helper import get_ffmpeg_cmd
             ff_cmd = get_ffmpeg_cmd()
-            # Bỏ afftdn và compand gắt (vốn làm méo dạng sóng và mất âm gió/phụ âm tiếng Trung).
-            # Dùng highpass 80Hz, lowpass 7600Hz, EQ nhẹ 3kHz tăng độ rõ phụ âm, speechnorm cân bằng âm thoại và alimiter chống vỡ tiếng.
-            filter_str = "highpass=f=80,lowpass=f=7600,equalizer=f=3000:t=q:w=1.5:g=2.5,speechnorm=e=4:r=0.0001:l=1,alimiter=limit=0.95"
+            # Nới lỏng tối đa: Không bóp méo dạng sóng bằng speechnorm hay equalizer để CapCut ASR nhận diện đủ tiếng thét/quát.
+            # Chỉ lọc hạ âm < 40Hz và đặt alimiter chống vỡ đỉnh để giữ 100% âm sắc tự nhiên.
+            filter_str = "highpass=f=40,alimiter=limit=0.98"
             cmd = [
                 *ff_cmd, "-y",
                 "-i", str(src),

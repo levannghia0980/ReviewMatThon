@@ -2,15 +2,9 @@ import re
 from typing import List
 from app.schemas.transcript import DialogueSegment
 
-# Các từ đệm / thán từ tiếng Trung và tiếng Việt phổ biến cần lọc
-CHINESE_FILLERS = [
-    "呃", "啊", "嗯", "吧", "呢", "啦", "哎", "哇", "呀", "哦", "呐", "哈",
-    "那个", "这个", "就是说"
-]
-
-VIETNAMESE_FILLERS = [
-    "ừm", "à", "ừ", "hả", "nè", "nha", "đấy", "thì", "vậy", "á", "ơ", "ê"
-]
+# BẢO TỒN NGUYÊN VẸN 100% MỌI THÁN TỪ, TIẾNG THÉT CỦA NHÂN VẬT (A, Ơ, DỪNG TAY...). TUYỆT ĐỐI KHÔNG LỌC BỎ.
+CHINESE_FILLERS = []
+VIETNAMESE_FILLERS = []
 
 class TextCleanerService:
     @staticmethod
