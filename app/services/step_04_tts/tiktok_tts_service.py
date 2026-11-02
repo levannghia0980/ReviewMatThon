@@ -554,15 +554,16 @@ class TikTokTTSService:
                 total_v_sec = total_video_ms / 1000.0
                 gap_after = max(0.0, total_v_sec - orig_end_sec)
 
-            # 3. BƯỚC 1: ƯU TIÊN MƯỢN KHOẢNG NGHỈ PHÍA SAU TRƯỚC KHI CẮT (TIẾN VỀ TỐC ĐỘ 1.2X)
+            # 3. BƯỚC 1: MƯỢN KHOẢNG NGHỈ PHÍA SAU (TIẾN VỀ TỐC ĐỘ 1.10X)
+            # Mở khóa 100% khoảng nghỉ phía sau (next_start - orig_end_sec > 0), không tự ý trừ hao 0.25s
             target_dur = base_dur
-            available_gap = max(0.0, gap_after - 0.25)  # Giữ lại 0.25s im lặng an toàn trước câu kế
+            available_gap = gap_after
             raw_ratio = raw_dur_sec / base_dur
 
-            # Nếu tốc độ thô > 1.20x và phía sau có khoảng nghỉ khả dụng:
-            if raw_ratio > 1.20 and available_gap > 0.05:
-                needed_for_1_2 = raw_dur_sec / 1.20
-                deficit = max(0.0, needed_for_1_2 - base_dur)
+            # Nếu tốc độ thô > 1.10x và phía sau có khoảng nghỉ khả dụng:
+            if raw_ratio > 1.10 and available_gap > 0.001:
+                needed_for_1_1 = raw_dur_sec / 1.10
+                deficit = max(0.0, needed_for_1_1 - base_dur)
                 borrow_after = min(deficit, available_gap)
                 if borrow_after > 0:
                     target_dur = base_dur + borrow_after
