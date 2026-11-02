@@ -18,12 +18,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pydub import AudioSegment
 
 from app.config import settings
-from app.models import ProjectTask, DialogueSegmentModel, TTSDialogueSegmentModel
+from app.models import ProjectTask, DialogueSegmentModel, TTSDialogueSegmentModel, SubtitleSegmentModel
 from app.services.task_manager import task_manager
 from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd
 from app.services.step_04_tts.proxy_manager import proxy_manager
 from app.services.step_04_tts.adaptive_trimmer import AdaptiveSilenceTrimmer
 from app.services.step_04_tts.timeline_borrower import TimelineBorrower
+from app.services.step_04_tts.async_tts_engine import AsyncTTSEngine
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +351,7 @@ class CapCutTTSService:
         tts_index_remap = {}  # old_tts_index -> new_tts_index
         chunk_sub_offsets = {}  # target_chunk_idx -> list of {old_tts_index, raw_start_ms, raw_end_ms}
         merged_count = 0
+        engine_sub_timings = AsyncTTSEngine.get_last_sub_timings() or {}
 
         curr = sorted_dialogues[0]
         curr_audio = raw_results_map.get(curr.id)
@@ -414,7 +416,10 @@ class CapCutTTSService:
                 target_chunk_idx = len(merged_dialogues) + 1
                 for old_idx in curr_sub_tts_indices:
                     tts_index_remap[old_idx] = target_chunk_idx
-                chunk_sub_offsets[target_chunk_idx] = curr_sub_offsets
+                if len(curr_sub_tts_indices) == 1 and curr.id in engine_sub_timings and len(engine_sub_timings[curr.id]) > 1:
+                    chunk_sub_offsets[target_chunk_idx] = engine_sub_timings[curr.id]
+                else:
+                    chunk_sub_offsets[target_chunk_idx] = curr_sub_offsets
 
                 merged_dialogues.append(curr)
                 merged_results_map[curr.id] = curr_audio
@@ -435,7 +440,10 @@ class CapCutTTSService:
         target_chunk_idx = len(merged_dialogues) + 1
         for old_idx in curr_sub_tts_indices:
             tts_index_remap[old_idx] = target_chunk_idx
-        chunk_sub_offsets[target_chunk_idx] = curr_sub_offsets
+        if len(curr_sub_tts_indices) == 1 and curr.id in engine_sub_timings and len(engine_sub_timings[curr.id]) > 1:
+            chunk_sub_offsets[target_chunk_idx] = engine_sub_timings[curr.id]
+        else:
+            chunk_sub_offsets[target_chunk_idx] = curr_sub_offsets
         merged_dialogues.append(curr)
         merged_results_map[curr.id] = curr_audio
 
@@ -490,18 +498,26 @@ class CapCutTTSService:
                 db.rollback()
                 logger.warning(f"Lỗi commit fresh_entries cho TTSDialogueSegmentModel: {e}")
 
-            # 3. Cập nhật liên kết tts_index cho DialogueSegmentModel (phụ đề Karaoke)
+            # 3. Cập nhật liên kết tts_index cho DialogueSegmentModel (ASR) và SubtitleSegmentModel (phụ đề Karaoke)
             try:
-                db_subs = db.query(DialogueSegmentModel).filter(
+                db_asrs = db.query(DialogueSegmentModel).filter(
                     DialogueSegmentModel.task_id == project_id
+                ).all()
+                for asr in db_asrs:
+                    if asr.tts_index in tts_index_remap:
+                        asr.tts_index = tts_index_remap[asr.tts_index]
+
+                db_subs = db.query(SubtitleSegmentModel).filter(
+                    SubtitleSegmentModel.task_id == project_id
                 ).all()
                 for sub in db_subs:
                     if sub.tts_index in tts_index_remap:
                         sub.tts_index = tts_index_remap[sub.tts_index]
+
                 db.commit()
             except Exception as e:
                 db.rollback()
-                logger.warning(f"Lỗi cập nhật tts_index cho DialogueSegmentModel: {e}")
+                logger.warning(f"Lỗi cập nhật tts_index cho DialogueSegmentModel / SubtitleSegmentModel: {e}")
 
             # 4. Cập nhật file script_tts.json
             try:
@@ -739,20 +755,27 @@ class CapCutTTSService:
             raise RuntimeError(f"Chưa hoàn thành đủ 100% số câu! Còn thiếu {len(still_missing)} câu: {still_missing[:10]}... Dừng đóng gói để bảo toàn chất lượng phim!")
 
         # =========================================================================
-        # 0. KHÓA CHẶT CÂU TO TỪ HEALER (BẢO TOÀN DANH SÁCH & INDEX TUYỆT ĐỐI)
-        # Không tự ý xóa DB hay gộp lại âm thanh sau TTS để tránh làm loạn index và đứt gãy
-        # liên kết giữa câu kịch bản cha và các câu con (sub_timings) của Subtitle.
+        # 0. GỘP CÁC FILE ÂM THANH CÙNG MỘT NGƯỜI NÓI (Continuous Audio Chunk Merger)
+        # TTS xong mới gộp thành câu to cả text nội dung và âm thanh để cùng 1 nhân vật
+        # có thể đồng bộ tốc độ nói, vừa in vào start và end khi đã gộp xong.
         # =========================================================================
+        dialogues, raw_results_map, chunk_sub_offsets = cls.merge_continuous_audio_dialogues(
+            dialogues=dialogues,
+            raw_results_map=raw_results_map,
+            db=db,
+            project_id=project_id,
+            task_id=task_id,
+            gap_threshold=0.85
+        )
         total_count = len(dialogues)
 
-        # Lấy trực tiếp mốc sóng âm từ các sub-chunks tạo bởi AsyncTTSEngine cho từng câu to
-        chunk_sub_offsets = {}
+        # Hợp nhất các mốc sóng âm từ các sub-chunks tạo bởi AsyncTTSEngine cho từng câu to
         engine_sub_timings = AsyncTTSEngine.get_last_sub_timings()
         if engine_sub_timings:
             for d in dialogues:
                 d_id = getattr(d, 'id', None)
                 tts_idx = getattr(d, 'tts_index', getattr(d, 'index', None))
-                if d_id in engine_sub_timings:
+                if d_id in engine_sub_timings and (tts_idx not in chunk_sub_offsets or len(chunk_sub_offsets.get(tts_idx, [])) <= 1):
                     chunk_sub_offsets[tts_idx] = engine_sub_timings[d_id]
 
         # =========================================================================
