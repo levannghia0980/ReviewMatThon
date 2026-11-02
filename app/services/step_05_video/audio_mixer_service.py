@@ -13,8 +13,8 @@ class AudioMixerService:
         voiceover_mp3: str,
         output_mixed_audio: str,
         dialogue_segments: Optional[List[DialogueSegment]] = None,
-        bgm_volume_when_speaking: float = 0.18,  # [NOTE TEST BGM PHẲNG]: 0.18 (18%) đồng đều xuyên suốt
-        bgm_volume_normal: float = 0.18,          # [NOTE TEST BGM PHẲNG]: 0.18 (18%) đồng đều khi im lặng
+        bgm_volume_when_speaking: float = 0.35,  # [NOTE TEST BGM PHẲNG]: 0.35 (35%) đồng đều xuyên suốt
+        bgm_volume_normal: float = 0.35,          # [NOTE TEST BGM PHẲNG]: 0.35 (35%) đồng đều khi im lặng
         voiceover_volume: float = 1.0,           # 1.0 (100%) chuẩn xác chống biến dạng
         use_flat_bgm_test: bool = True           # [NOTE TEST]: True = giảm âm đều 0.18 siêu tốc; False = bật lại 100% logic ducking timeline cũ
     ) -> str:
@@ -41,7 +41,7 @@ class AudioMixerService:
             # Giảm phẳng âm lượng track gốc xuống 0.18 (18%) trước khi hòa âm với giọng thuyết minh.
             # Tốc độ tạo cực nhanh và âm lượng nền ổn định, đồng đều xuyên suốt.
             # =========================================================================
-            flat_bgm_volume = 0.18  # [NOTE TEST]: Giữ âm nền gốc ở mức 0.18 (18%)
+            flat_bgm_volume = 0.35  # [NOTE TEST]: Giữ âm nền gốc ở mức 0.35 (35%)
             mix_filter = (
                 f"[0:a]volume={flat_bgm_volume}[bgm];"
                 f"[1:a]volume={voiceover_volume}[voice];"
@@ -120,7 +120,7 @@ class AudioMixerService:
         except FileNotFoundError as e:
             # Kiểm tra nếu do lệnh quá dài trên Windows (WinError 206)
             if getattr(e, 'winerror', None) == 206 or "too long" in str(e).lower():
-                fb_bgm_vol = 0.18 if use_flat_bgm_test else bgm_volume_when_speaking
+                fb_bgm_vol = 0.35 if use_flat_bgm_test else bgm_volume_when_speaking
                 fallback_cmd = [
                     *ffmpeg_cmd, "-y",
                     "-i", str(src_orig),
@@ -136,7 +136,7 @@ class AudioMixerService:
 
         if res.returncode != 0 or not out_audio.exists():
             # Fallback an toàn với mức âm lượng thấp khi thoại
-            fb_bgm_vol = 0.18 if use_flat_bgm_test else bgm_volume_when_speaking
+            fb_bgm_vol = 0.35 if use_flat_bgm_test else bgm_volume_when_speaking
             simple_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(src_orig),

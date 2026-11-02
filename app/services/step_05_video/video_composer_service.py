@@ -522,8 +522,8 @@ class VideoComposerService:
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=segments,
-                    bgm_volume_when_speaking=0.036,  # 0.036 (3.6%) khi đang có thuyết minh tiếng Việt
-                    bgm_volume_normal=0.18,  # 0.18 (18%) khi không nói để giữ rõ âm thanh môi trường và BGM êm ái
+                    bgm_volume_when_speaking=0.35,  # 0.35 (35%) đồng đều xuyên suốt
+                    bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM sống động
                     voiceover_volume=1.0
                 )
                 audio_source = str(mixed_path)
