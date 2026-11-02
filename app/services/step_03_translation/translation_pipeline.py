@@ -648,6 +648,7 @@ class TranslationPipelineService:
                 print(f"\n{retry_msg}", flush=True)
                 task_manager.add_log(task_id, retry_msg, "orange")
                 try:
+                    batch_retry_prompt_file = proj_llm_io_dir / f"batch_{b_num:02d}_retry_{_retry_count:02d}_full_prompt.txt"
                     raw_retry = await translate_batch_pass2_llm(
                         tagged_text=tagged_batch_text,
                         genre=genre,
@@ -655,7 +656,7 @@ class TranslationPipelineService:
                         context_text=context_text,
                         entity_table_text=entity_table_text,
                         provider=provider,
-                        prompt_save_path=None
+                        prompt_save_path=str(batch_retry_prompt_file)
                     )
                     batch_retry_resp_file = proj_llm_io_dir / f"batch_{b_num:02d}_retry_{_retry_count:02d}_raw_response.txt"
                     try:

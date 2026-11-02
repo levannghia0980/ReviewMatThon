@@ -160,7 +160,7 @@ COMMON_RULES = """Bạn là chuyên gia chuyển ngữ kịch bản lồng tiế
     [mẩu 1/mẩu 2] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]
 - Nguyên tắc giới hạn gộp và đồng bộ:
   + Chỉ gộp tối đa 2 đến 3 mẩu ASR ngắn thuộc cùng một câu của cùng một người nói (tuyệt đối không gộp từ 4 mẩu trở lên thành đoạn văn dài; hết một câu hoàn chỉnh phải xuống dòng mới).
-  + Tuyệt đối không gộp lời của hai người khác nhau vào chung một dòng (không gộp câu hỏi của người trước với câu trả lời của người sau; không gộp lời dẫn chuyện [DẪN CHUYỆN] với lời thoại nhân vật; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN]; không đặt dấu '/' ở phần dịch tiếng Việt).
+  + Tuyệt đối không gộp lời của hai người khác nhau vào chung một dòng (không gộp câu hỏi của người trước với câu trả lời của người sau; không gộp lời dẫn chuyện [DẪN CHUYỆN] với lời thoại nhân vật; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN]).
   + Trong mỗi dòng, phần chữ Hán nằm trong [...] có nội dung gì thì phần lời dịch tiếng Việt của dòng đó phải dịch trực tiếp thành lời nói tiếng Việt đầy đủ của nội dung ấy. Tuyệt đối CẤM dùng dấu ngoặc đơn () trong bản dịch (cấm ghi chú lỗi ASR, cấm tóm tắt mô tả âm thanh kiểu đóng mở ngoặc đơn).
   + Toàn bộ các khối [...] từ trên xuống dưới phải giữ nguyên văn chữ Hán gốc và bao phủ tuần tự 100% danh sách đầu vào từ đầu đến cuối, không tự ý xóa bỏ bất kỳ mẩu nào.
 
@@ -303,7 +303,7 @@ def build_user_translation_prompt(
         f"  + Câu đơn trọn ý hoặc câu quần chúng / lời hát (1:1): [mẩu ASR gốc] Lời dịch tiếng Việt. -> [Tên vai]\n"
         f"  + Câu của nhân vật đã biết tên (hoặc lời dẫn / phát thanh / hệ thống) bị ASR tách thành 2-3 mảnh ngắn: [mẩu 1/mẩu 2] Lời dịch tiếng Việt hoàn chỉnh liền mạch. -> [Tên vai]\n"
         f"- NGUYÊN TẮC GỘP CÂU CÂN BẰNG (TỐI ĐA 2-3 MẨU) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:\n"
-        f"  + Chủ động gộp 2 đến tối đa 3 mẩu ASR ngắn liền kề của cùng một câu và cùng một người nói bằng dấu '/' trong [...] để tạo thành câu hoàn chỉnh, giúp xác định chính xác tên nhân vật. Tuyệt đối không gộp từ 4 mẩu trở lên thành đoạn văn dài; không gộp lời của 2 người khác nhau; không gộp lời dẫn [DẪN CHUYỆN] với lời thoại nhân vật vào chung 1 dòng; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN]; không đặt dấu '/' ở phần dịch tiếng Việt.\n"
+        f"  + Chủ động gộp 2 đến tối đa 3 mẩu ASR ngắn liền kề của cùng một câu và cùng một người nói bằng dấu '/' trong [...] để tạo thành câu hoàn chỉnh, giúp xác định chính xác tên nhân vật. Tuyệt đối không gộp từ 4 mẩu trở lên thành đoạn văn dài; không gộp lời của 2 người khác nhau; không gộp lời dẫn [DẪN CHUYỆN] với lời thoại nhân vật vào chung 1 dòng; không dùng dấu ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN].\n"
         f"  + Chữ Hán trong [...] của dòng nào phải dịch trực tiếp và đầy đủ sang lời thoại tiếng Việt ở dòng đó; tuyệt đối CẤM dùng dấu ngoặc đơn () để ghi chú lỗi ASR hay tóm tắt âm thanh. Giữ nguyên văn chữ Hán gốc trong [...] và bao phủ tuần tự 100% các mẩu đầu vào từ đầu đến cuối.\n"
         f"- QUY ĐỊNH PHÂN VAI & CHUYỂN TRẠNG THÁI ĐỐI THOẠI (DIALOGUE TRANSITION):\n"
         f"  + Lời kể ngôi thứ ba -> [DẪN CHUYỆN].\n"

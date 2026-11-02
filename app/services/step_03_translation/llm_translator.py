@@ -204,10 +204,7 @@ async def translate_batch_pass2_llm(
             logger.warning(
                 f"⚠️ [Duplicate Check] Lần {attempt}: Phát hiện lặp câu ({duplicate_detail})! Đang yêu cầu dịch lại..."
             )
-            current_prompt = user_prompt + (
-                f"\n\n[LƯU Ý]: Bản dịch trước bị lặp câu ({duplicate_detail}). "
-                f"Hãy dịch chuẩn xác từng câu theo đúng ngữ cảnh và giữ nguyên cấu trúc định dạng chuẩn: [mẩu ASR gốc] Lời dịch -> [Tên vai]."
-            )
+            current_prompt = user_prompt
         else:
             logger.warning(
                 f"⚠️ [Script Format Validation] Lần {attempt}: Định dạng kịch bản chưa hợp lệ! Đang yêu cầu LLM dịch lại..."

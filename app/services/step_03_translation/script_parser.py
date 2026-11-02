@@ -22,7 +22,9 @@ def clean_system_tags_from_text(text: str) -> str:
     s = re.sub(r'\s*\(\s*\d+(?:\.\d+)?s\s*\)[\.\,\;\:\s]*', ' ', s, flags=re.IGNORECASE)
     # 3. Khử cấu trúc nhãn hạn mức từ [max X từ] hoặc (max X từ)
     s = re.sub(r'\s*[\[\(]\s*max\s*\d+\s*(?:từ|words?)\s*[\]\)][\.\,\;\:\s]*', ' ', s, flags=re.IGNORECASE)
-    # 4. Thu gọn khoảng trắng thừa và làm sạch hai đầu
+    # 4. Khử sạch dấu gạch chéo (/ , \ , ／) nếu LLM vô tình để sót trong phần lời thoại tiếng Việt
+    s = re.sub(r'\s*[/／\\]+\s*', ' ', s)
+    # 5. Thu gọn khoảng trắng thừa và làm sạch hai đầu
     s = re.sub(r'\s{2,}', ' ', s).strip()
     return s
 

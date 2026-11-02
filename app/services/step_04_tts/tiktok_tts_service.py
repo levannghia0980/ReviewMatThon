@@ -128,6 +128,7 @@ def normalize_tts_text(text: str) -> str:
     text = re.sub(r'[\r\n\t]+', ' ', text)
     text = re.sub(r'["“”„‟«»]', ' ', text)
     text = re.sub(r'[\(\)\[\]\{\}]', ' ', text)
+    text = re.sub(r'[/／\\]+', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
 
     # 3. Chuẩn hóa dấu câu ở GIỮA chunk: Chuyển toàn bộ các dấu kết câu (. ! ? : ... …) ở giữa câu thành dấu chấm phẩy ";"
