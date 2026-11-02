@@ -431,7 +431,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             except Exception:
                 pass
 
-        mixed_audio_file = p_dirs["temp"] / f"{project.video_id}_mixed_final.mp3"
+        mixed_audio_file = p_dirs["temp"] / f"{project.video_id}_mixed_final.m4a"
         output_final_path = settings.OUTPUT_FINAL_VIDEOS_DIR / f"{project.video_id}_{safe_title}_final.mp4"
 
         audio_res_container = {}
@@ -609,19 +609,30 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         # BƯỚC 4: HỢP NHẤT STREAM COPY / SINGLE-PASS HOÀN TẤT
         task_manager.update_task(task_id, step=4, progress=92)
-        if output_final_path.exists() and output_final_path.stat().st_size > 1000:
+        has_audio = output_final_path.exists() and output_final_path.stat().st_size > 1000 and VideoComposerService.has_audio_stream(output_final_path)
+        if has_audio:
             task_manager.add_log(task_id, "[4/4] ⚡ [Single-Pass Stream] Video và Audio đã hợp nhất hoàn tất (0s overhead, bỏ qua file trung gian 20GB)!", "emerald")
         else:
             task_manager.add_log(task_id, "[4/4] ⚡ Hợp nhất luồng Hình Ảnh GPU & Audio lồng tiếng (Stream Copy)...", "cyan")
             audio_src = audio_res_container.get("audio_path")
+            valid_audio = VideoComposerService._find_valid_audio(audio_src or mixed_audio_file)
+            if not valid_audio:
+                raise RuntimeError("Không tìm thấy file âm thanh hoàn chỉnh để hợp nhất vào video thành phẩm!")
+
+            # Nếu output_final_path đã bị ghi luồng hình ảnh câm bởi concat demuxer, chuyển nó làm visual input
+            if output_final_path.exists() and output_final_path.stat().st_size > 1000:
+                if temp_visual_video.exists():
+                    temp_visual_video.unlink(missing_ok=True)
+                shutil.move(str(output_final_path), str(temp_visual_video))
+
             mux_ok = VideoComposerService.mux_final_video(
                 visual_video_path=str(temp_visual_video),
-                audio_source_path=audio_src,
+                audio_source_path=str(valid_audio),
                 output_final_path=str(output_final_path),
                 task_id=task_id
             )
-            if not mux_ok or not output_final_path.exists():
-                raise RuntimeError(f"Không thể hợp nhất file video thành phẩm: {output_final_path}")
+            if not mux_ok or not output_final_path.exists() or not VideoComposerService.has_audio_stream(output_final_path):
+                raise RuntimeError(f"Không thể hợp nhất luồng âm thanh vào video thành phẩm: {output_final_path}")
 
         # Dọn dẹp file tạm nếu có
         if temp_visual_video.exists():

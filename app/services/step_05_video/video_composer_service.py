@@ -9,7 +9,7 @@ import threading
 import subprocess
 import concurrent.futures
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -222,6 +222,64 @@ class VideoComposerService:
             pass
 
         return 0.0
+
+    @staticmethod
+    def has_audio_stream(file_path: Union[str, Path]) -> bool:
+        """Kiểm tra xem file video có chứa luồng âm thanh (audio stream) hợp lệ hay không."""
+        p = Path(file_path)
+        if not p.exists() or p.stat().st_size < 1000:
+            return False
+        # 1. Kiểm tra qua FFprobe
+        try:
+            ffprobe_cmd = get_ffprobe_cmd()
+            cmd = [
+                *ffprobe_cmd, "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                str(p)
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=6)
+            if res.returncode == 0 and "audio" in res.stdout.lower():
+                return True
+        except Exception:
+            pass
+
+        # 2. Kiểm tra dự phòng qua FFmpeg -i
+        try:
+            ffmpeg_cmd = get_ffmpeg_cmd()
+            p_res = subprocess.run([*ffmpeg_cmd, "-i", str(p)], capture_output=True, text=True, errors="replace", timeout=6)
+            if "Audio:" in p_res.stderr:
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    @staticmethod
+    def _find_valid_audio(audio_source_path: Optional[Union[str, Path]]) -> Optional[Path]:
+        """Tìm file âm thanh hợp lệ trên đĩa, tự động thích ứng các đuôi mở rộng (.m4a, .aac, .mp3, .wav)."""
+        if not audio_source_path:
+            return None
+        p = Path(audio_source_path)
+        candidates = [
+            p,
+            p.with_suffix(".m4a"),
+            p.with_suffix(".aac"),
+            p.with_suffix(".mp3"),
+            p.with_suffix(".wav")
+        ]
+        for cand in candidates:
+            if cand.exists() and cand.stat().st_size > 1000:
+                return cand
+        try:
+            if p.parent.exists():
+                for f in p.parent.glob(f"{p.stem}.*"):
+                    if f.suffix.lower() in (".m4a", ".aac", ".mp3", ".wav") and f.stat().st_size > 1000:
+                        return f
+        except Exception:
+            pass
+        return None
 
     @staticmethod
     def _format_time(seconds: float) -> str:
@@ -1080,34 +1138,36 @@ class VideoComposerService:
 
         # Kiểm tra luồng audio: Nếu có audio_source_path và file hợp lệ -> Single-Pass Concat + Audio Mux
         has_audio = False
+        valid_audio_path = None
         if audio_source_path:
             # Chờ tối đa 60 giây nếu luồng audio mixer chạy song song chưa kịp hoàn tất
             wait_start = time.time()
-            a_p = Path(audio_source_path)
-            while (not a_p.exists() or a_p.stat().st_size < 1000) and (time.time() - wait_start < 60.0):
+            while time.time() - wait_start < 60.0:
+                valid_audio_path = cls._find_valid_audio(audio_source_path)
+                if valid_audio_path:
+                    has_audio = True
+                    break
                 if task_id and task_manager.is_cancelled(task_id):
                     break
                 time.sleep(0.5)
-            if a_p.exists() and a_p.stat().st_size > 1000:
-                has_audio = True
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         out_dest = Path(output_temp_video).resolve()
 
-        if has_audio:
+        if has_audio and valid_audio_path:
             if task_id:
                 task_manager.add_log(task_id, f"⚡ [Single-Pass Concat] Hợp nhất {num_segments} phân đoạn & luồng âm thanh trong 1 lệnh duy nhất...", "cyan")
+            audio_codec_args = ["-c:a", "copy"] if valid_audio_path.suffix.lower() in (".m4a", ".aac") else ["-c:a", "aac", "-b:a", "192k"]
             concat_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", concat_list_file.name,
-                "-i", str(Path(audio_source_path).resolve()),
+                "-i", str(valid_audio_path.resolve()),
                 "-map", "0:v:0",
                 "-map", "1:a?",
                 "-c:v", "copy",
-                "-c:a", "aac",
-                "-b:a", "192k",
+                *audio_codec_args,
                 "-shortest"
             ]
             # Chỉ thêm +faststart với video <= 30 phút; video dài bỏ qua để tránh ghi lại toàn bộ file lần 2
@@ -1243,11 +1303,13 @@ class VideoComposerService:
         has_audio = False
         audio_inputs = []
         audio_maps = ["-an"]
-        if audio_source_path and os.path.exists(audio_source_path) and os.path.getsize(audio_source_path) > 1000:
+        valid_audio = cls._find_valid_audio(audio_source_path) if audio_source_path else None
+        if valid_audio:
             has_audio = True
-            audio_inputs = ["-i", str(Path(audio_source_path).resolve())]
+            audio_inputs = ["-i", str(valid_audio.resolve())]
             a_idx = 1 + (len(logo_inputs) // 2)
-            audio_maps = ["-map", f"{a_idx}:a?", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+            audio_codec_args = ["-c:a", "copy"] if valid_audio.suffix.lower() in (".m4a", ".aac") else ["-c:a", "aac", "-b:a", "192k"]
+            audio_maps = ["-map", f"{a_idx}:a?", *audio_codec_args, "-shortest"]
 
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
         ffmpeg_cmd = get_ffmpeg_cmd()
@@ -1494,8 +1556,9 @@ class VideoComposerService:
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         total_duration = cls.get_video_duration(visual_video_path)
+        actual_audio = cls._find_valid_audio(audio_source_path) or Path(audio_source_path)
         # Kiểm tra nếu audio_source_path đã là AAC/M4A -> Stream Copy 100% không re-encode
-        src_audio_ext = Path(audio_source_path).suffix.lower()
+        src_audio_ext = actual_audio.suffix.lower()
         if src_audio_ext in (".m4a", ".aac"):
             audio_codec_args = ["-c:a", "copy"]
         else:
@@ -1504,7 +1567,7 @@ class VideoComposerService:
         cmd = [
             *ffmpeg_cmd, "-y",
             "-i", str(visual_video_path),
-            "-i", str(audio_source_path),
+            "-i", str(actual_audio.resolve()),
             "-map", "0:v:0",
             "-map", "1:a?",
             "-c:v", "copy",
