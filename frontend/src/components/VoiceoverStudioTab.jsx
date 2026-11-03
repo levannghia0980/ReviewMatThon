@@ -3,7 +3,7 @@ import {
   Volume2, Play, RefreshCw, Sparkles, CheckCircle2, 
   Download, Sliders, ShieldCheck, Clock, Layers
 } from 'lucide-react';
-import { ALL_VOICES } from '../constants/voices';
+import { ALL_VOICES, DEFAULT_VOICE } from '../constants/voices';
 import { startSafePolling } from '../utils/safePolling';
 
 export default function VoiceoverStudioTab({ initialProjectId }) {
@@ -13,7 +13,7 @@ export default function VoiceoverStudioTab({ initialProjectId }) {
   const [dialogues, setDialogues] = useState([]);
 
   // Voice Settings
-  const [voiceCode, setVoiceCode] = useState('BV074_streaming');
+  const [voiceCode, setVoiceCode] = useState(DEFAULT_VOICE);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [autoFitTimeline, setAutoFitTimeline] = useState(true);
   const [applyMastering, setApplyMastering] = useState(true);

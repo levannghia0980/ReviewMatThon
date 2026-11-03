@@ -582,12 +582,26 @@ class AsyncTTSEngine:
                 return_utterances=return_utterances,
             )
             audio_b = res[0] if return_utterances and isinstance(res, tuple) else res
-            # Cứu hộ nhanh qua Edge TTS nếu API chính từ chối câu
+            # Cứu hộ qua Edge TTS nếu API chính từ chối câu sau khi đã thử lại
             if (not audio_b or len(audio_b) < 100) and ("Neural" not in voice_code and "hoaimy" not in voice_code.lower()):
-                rescue_b = await cls.fetch_edge_chunk_async(text=raw_text, voice_code="vi-VN-HoaiMyNeural")
-                if rescue_b and len(rescue_b) > 100:
-                    audio_b = rescue_b
-                    res = (rescue_b, []) if return_utterances else rescue_b
+                retry_res = await cls.synthesize_single_subchunk(
+                    session=session,
+                    sub_text=raw_text,
+                    engine=engine,
+                    voice_code=voice_code,
+                    session_id=session_id,
+                    proxy=proxy,
+                    return_utterances=return_utterances,
+                )
+                retry_b = retry_res[0] if return_utterances and isinstance(retry_res, tuple) else retry_res
+                if retry_b and len(retry_b) > 100:
+                    audio_b = retry_b
+                    res = retry_res
+                else:
+                    rescue_b = await cls.fetch_edge_chunk_async(text=raw_text, voice_code="vi-VN-HoaiMyNeural")
+                    if rescue_b and len(rescue_b) > 100:
+                        audio_b = rescue_b
+                        res = (rescue_b, []) if return_utterances else rescue_b
 
             if return_sub_timings:
                 seg_dur = len(_load_audio_from_bytes(audio_b, "mp3")) if audio_b else 0
@@ -621,10 +635,24 @@ class AsyncTTSEngine:
             a_b = res[0] if return_utterances and isinstance(res, tuple) else res
             u_l = res[1] if return_utterances and isinstance(res, tuple) else []
 
-            # Cứu hộ chunk con nếu lỗi
+            # Cứu hộ chunk con nếu lỗi (ưu tiên thử lại cùng giọng trước)
             if not a_b or len(a_b) < 100:
-                a_b = await cls.fetch_edge_chunk_async(text=sub_c, voice_code="vi-VN-HoaiMyNeural")
-                u_l = []
+                retry_res = await cls.synthesize_single_subchunk(
+                    session=session,
+                    sub_text=sub_c,
+                    engine=engine,
+                    voice_code=voice_code,
+                    session_id=session_id,
+                    proxy=proxy,
+                    return_utterances=return_utterances,
+                )
+                retry_b = retry_res[0] if return_utterances and isinstance(retry_res, tuple) else retry_res
+                if retry_b and len(retry_b) > 100:
+                    a_b = retry_b
+                    u_l = retry_res[1] if return_utterances and isinstance(retry_res, tuple) else []
+                else:
+                    a_b = await cls.fetch_edge_chunk_async(text=sub_c, voice_code="vi-VN-HoaiMyNeural")
+                    u_l = []
 
             if not a_b or len(a_b) < 100:
                 if return_sub_timings:
@@ -934,6 +962,5 @@ class AsyncTTSEngine:
 
     # Alias tương thích ngược cho cả hai cách gọi
     run_batch_priority_queue = batch_synthesize_async
-
 
 

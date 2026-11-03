@@ -5,7 +5,7 @@ import {
   Maximize2, ArrowUp, ArrowDown, MoveVertical, Search, Headphones, Clipboard, Link as LinkIcon, ExternalLink
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
-import { ALL_VOICES } from '../constants/voices';
+import { ALL_VOICES, DEFAULT_VOICE } from '../constants/voices';
 import { startSafePolling } from '../utils/safePolling';
 
 export default function MainStudioView({ onNavigateTab }) {
@@ -58,7 +58,7 @@ export default function MainStudioView({ onNavigateTab }) {
 
   // Voice & Genre
   const [genre, setGenre] = useState(DEFAULT_GENRE);
-  const [voiceCode, setVoiceCode] = useState('BV074_streaming');
+  const [voiceCode, setVoiceCode] = useState(DEFAULT_VOICE);
   const [isPlayingSample, setIsPlayingSample] = useState(false);
 
   // Automation Task State

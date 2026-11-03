@@ -4,13 +4,13 @@ import {
   AlertTriangle, RefreshCw, RotateCcw, Terminal, Eye, Sliders, Music, ShieldCheck
 } from 'lucide-react';
 import { AIREAD_GENRES, DEFAULT_GENRE } from '../constants/genres';
-import { ALL_VOICES } from '../constants/voices';
+import { ALL_VOICES, DEFAULT_VOICE } from '../constants/voices';
 import { startSafePolling } from '../utils/safePolling';
 
 export default function QuickAutoTab({ onNavigateStudio }) {
   const [url, setUrl] = useState('');
   const [genre, setGenre] = useState(DEFAULT_GENRE);
-  const [voiceCode, setVoiceCode] = useState('BV074_streaming');
+  const [voiceCode, setVoiceCode] = useState(DEFAULT_VOICE);
   const [quality, setQuality] = useState('480p');
   const [marginV, setMarginV] = useState(10);
   const [backdropOpacity, setBackdropOpacity] = useState('99');
