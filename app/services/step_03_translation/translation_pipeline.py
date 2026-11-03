@@ -88,7 +88,7 @@ class TranslationPipelineService:
         task_id: str,
         project_id: int,
         db: Session,
-        genre: str = "cophong",
+        genre: str = "auto",
         batch_size: int = 300,
         max_chars: int = 25000,
         provider: str = "gemini",
@@ -222,18 +222,27 @@ class TranslationPipelineService:
             tb_str = "Tự Động" if tb == -1 else ("Tắt" if tb == 0 else f"{tb} token")
             model_info_str = f"⚡ Gemini API ({api_model} • Tư duy: {tb_str})"
 
-        # Tôn trọng 100% thể loại người dùng đã chọn từ giao diện.
-        # CHỈ tự động nhận diện nếu genre hoàn toàn rỗng hoặc không được truyền vào.
-        if not genre:
-            t_low = (project.title or "").lower()
-            if any(k in t_low for k in ["求生", "公路", "末世", "丧尸", "废土", "zombie", "tận thế", "mạt thế"]):
-                genre = "sci_fi_apocalypse"
-            elif any(k in t_low for k in ["系统", "升级", "签到", "hệ thống", "thăng cấp"]):
-                genre = "system_reincarnation"
-            elif any(k in t_low for k in ["诡异", "抓鬼", "灵异", "quỷ dị", "linh dị"]):
-                genre = "urban_supernatural"
+        # Tự động nhận diện thể loại nếu genre là auto, rỗng hoặc giá trị mặc định
+        raw_genre = (genre or "").lower().strip()
+        if raw_genre in ("", "auto", "tienhiep", "cophong", "xianxia"):
+            # Quét tiêu đề và mẫu các câu thoại đầu tiên
+            sample_text = (project.title or "") + " " + " ".join(d.original_text or "" for d in dialogue_models[:35])
+            sample_low = sample_text.lower()
+            if any(k in sample_low for k in ["求生", "公路", "末世", "丧尸", "废土", "zombie", "tận thế", "mạt thế", "避难所", "防空洞", "安全屋"]):
+                detected_genre = "sci_fi_apocalypse"
+            elif any(k in sample_low for k in ["系统", "升级", "签到", "hệ thống", "thăng cấp", "属性面板", "杀戮点"]):
+                detected_genre = "system_reincarnation"
+            elif any(k in sample_low for k in ["序列", "异能", "觉醒", "超能", "诡异", "抓鬼", "灵异", "quỷ dị", "linh dị"]):
+                detected_genre = "urban_supernatural"
+            elif any(k in sample_low for k in ["公司", "集团", "董事长", "总裁", "警官", "巡捕", "医院", "医生", "学校", "大学", "同学"]):
+                detected_genre = "urban"
             else:
-                genre = "xianxia"
+                detected_genre = "xianxia"
+
+            if raw_genre in ("", "auto") or detected_genre != "xianxia":
+                if genre != detected_genre:
+                    task_manager.add_log(task_id, f"🎯 Tự động nhận diện thể loại: '{detected_genre}' (từ tiêu đề & câu thoại mẫu)", "cyan")
+                genre = detected_genre
 
         task_manager.add_log(task_id, f"🚀 BẮT ĐẦU QUY TRÌNH DỊCH THUẬT 2 LLM AIREAD (Project #{project_id}: {project.title})", "purple")
         task_manager.add_log(task_id, f"   Tổng số câu: {len(dialogue_models)} câu | Thể loại: {genre} | Mô hình AI: {model_info_str}", "cyan")

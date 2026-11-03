@@ -101,18 +101,17 @@ WUXIA_PROFILE = {
 def _hien_dai_addressing_block(danh_xung_bo_sung: str = "") -> str:
     extra = f"\n   - Danh xưng thể loại: {danh_xung_bo_sung.strip()}" if danh_xung_bo_sung and danh_xung_bo_sung.strip() else ""
     return f"""QUY CHUẨN XƯNG HÔ THỂ LOẠI HIỆN ĐẠI / ĐÔ THỊ / MẠT THẾ:
+   - CÁCH GỌI TÊN VÀ CHỨC DANH LINH HOẠT:
+     + Chức vụ, nghề nghiệp và danh xưng có thể gọi linh hoạt cả hai chiều: [Chức vụ] + [Tên] hoặc [Tên] + [Chức vụ] (ví dụ: Đội trưởng Đường hoặc Đường đội trưởng, Sếp Trương hoặc Trương trưởng quan, Giáo sư Lý hoặc Lý giáo sư, Bác sĩ Lâm hoặc Lâm bác sĩ).
    - NGUYÊN TẮC KHÓA XƯNG HÔ NHẤT QUÁN (CONSISTENCY LOCK):
-     + Giữa hai nhân vật trong cùng một phân cảnh đối thoại: Đã chọn tầng xưng hô nào thì BẮT BUỘC GIỮ NGUYÊN 100% tầng đó, tuyệt đối CẤM câu trước xưng 'Tôi - Bạn', câu sau nhảy sang 'Ta - Ngươi', câu sau nữa lại 'Mày - Tao'.
+     + Giữa hai nhân vật trong cùng một phân cảnh đối thoại: Đã chọn tầng xưng hô nào thì BẮT BUỘC GIỮ NGUYÊN 100% tầng đó, tuyệt đối CẤM câu trước xưng 'Tôi - Bạn', câu sau nhảy sang 'Ta - Ngươi'.
      + 3 TẦNG XƯNG HÔ LINH HOẠT THEO BỐI CẢNH:
-       1. Tầng Xã giao / Bình thường / Đồng đội: Tôi - Cậu / Anh / Chị / Bạn / Bác / Chú (hoặc Chức danh: Đội trưởng, Chỉ huy, Bác sĩ...).
+       1. Tầng Xã giao / Bình thường / Đồng đội: Tôi - Cậu / Anh / Chị / Bạn / Bác / Chú (hoặc dùng Chức danh, Tên riêng).
        2. Tầng Thân mật / Gia đình: Anh - Em, Chị - Em, Bố/Mẹ - Con, Ông/Bà - Cháu.
-       3. Tầng Đối kháng / Chiến đấu / Lưu manh / Xung đột: Dùng 'Mày - Tao' (khi xô xát, đe dọa, giang hồ) HOẶC 'Ta - Ngươi' (khi giao chiến dị năng, thần khí cổ xưa, khẩu khí áp đảo đối phương).
+       3. Tầng Đối kháng / Chiến đấu / Xung đột / Đe dọa: Dùng 'Ta - Ngươi' (khẩu khí quyết liệt, áp đảo đối phương). TUYỆT ĐỐI CẤM dùng 'Mày - Tao' vì thô tục.
    - LỜI DẪN NGÔI 3 VÀ GỌI NHÂN VẬT: Dùng 'hắn' (nam), 'cô' hoặc 'nàng' (nữ), tên riêng, chàng trai, cô gái, đối phương... Tuyệt đối cấm dùng từ 'y' (cấm cả lời kể lẫn lời thoại).{extra}"""
 
 
-# =====================================================================
-# 3. ĐÔ THỊ HIỆN ĐẠI, THƯƠNG TRƯỜNG, HỌC ĐƯỜNG, GIỚI GIẢI TRÍ
-# =====================================================================
 URBAN_PROFILE = {
     "description": (
         "THỂ LOẠI ĐÔ THỊ HIỆN ĐẠI: Giữ chuẩn thuật ngữ thương trường, học đường, đời sống xã hội hiện đại.\n"
@@ -203,9 +202,12 @@ COMMON_RULES = """Bạn là chuyên gia chuyển ngữ kịch bản lồng tiế
   + Mọi dòng mang nhãn -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D] BẮT BUỘC chỉ chứa DUY NHẤT 1 mẩu chữ Hán gốc trong ngoặc vuông [mẩu ASR đơn] (tuyệt đối CẤM có dấu '/' bên trong [...] ở bất kỳ dòng [Vai A], [Vai B], [Vai C], [Vai D] nào).
   + Khi gặp cảnh nhiều người quần chúng bàn tán, la hét hoặc các câu đồng dao/lời hát: Bắt buộc tách từng mẩu ASR thành từng dòng riêng biệt (1:1), dịch sát chữ từng dòng và đánh nhãn luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]. Ngay khi quay lại lời kể chuyện ngôi thứ ba thì trả về -> [DẪN CHUYỆN].
 
-3. YÊU CẦU DỊCH THUẬT & CHUẨN HÓA LỖI ĐỒNG ÂM ASR:
+3. YÊU CẦU DỊCH THUẬT & XỬ LÝ LỖI ASR / ĐỒNG ÂM HỢP LÝ:
 - Dịch sạch 100% sang tiếng Việt tự nhiên, giữ đúng dấu câu ngắt nghỉ và quy chuẩn xưng hô của thể loại.
-- Đối chiếu ngữ cảnh và Bảng thực thể để dịch thống nhất 100% về đúng tên nhân vật, vật phẩm, địa danh chuẩn xuyên suốt kịch bản (khi sửa lỗi đồng âm trong bản dịch tiếng Việt, phần chữ Hán trong [...] vẫn phải giữ nguyên văn theo đầu vào; tuyệt đối không viết chú thích ASR trong ngoặc đơn).
+- Xử lý hài hòa lỗi nhận diện giọng nói ASR:
+  + Văn bản ASR từ video có thể nghe nhầm các chữ Hán đồng âm hoặc lệch ngữ cảnh (ví dụ: nghe nhầm địa danh '北京' khi đang tả vũ khí bị hỏng; hoặc nghe nhầm '景区' thay vì '禁区').
+  + Hãy căn cứ vào toàn bộ ngữ cảnh đối thoại và Bảng thực thể để dịch nghĩa tiếng Việt đúng, tự nhiên và ăn khớp cốt truyện. Nếu trong bảng thực thể có từ nghe nhầm không phù hợp mạch truyện, hãy dịch theo đúng ngữ cảnh thực tế của câu chuyện mà không bị ép buộc dịch sai.
+  + Đối với tên nhân vật, địa danh, vật phẩm chuẩn: Dịch thống nhất 100% xuyên suốt kịch bản. Phần chữ Hán trong [...] vẫn phải giữ nguyên văn theo đầu vào; tuyệt đối không viết chú thích lỗi ASR trong ngoặc đơn.
 - Tuyệt đối không để sót chữ Hán, Pinyin hay tiếng Anh trong lời dịch tiếng Việt."""
 
 
@@ -340,10 +342,10 @@ def build_user_translation_prompt(
             "[mẩu ASR hệ thống] Kích hoạt thành công hệ thống sinh tồn. -> [HỆ THỐNG]\n"
             "[mẩu thoại người 1] Anh ơi, cho em đi nhờ xe được không? -> [Nữ Sinh]\n"
             "[mẩu thoại người 2] Lên xe đi, tôi chở cô qua trạm cứu hộ. -> [Tô Du]\n"
-            "[mẩu thoại người 3 quát] Đứng lại, để chiếc xe đó lại cho tao! -> [Tên Cướp]\n"
-            "[mẩu thoại người 2 đáp] Muốn cướp xe? Bước qua xác tao đã! -> [Tô Du]\n"
-            "[mẩu đối đáp không rõ tên 1] Chân tao, chân tao gãy rồi! Buông ra! -> [Người Lạ A]\n"
-            "[mẩu đối đáp không rõ tên 2] Đè chết mày, đồ lưu manh! -> [Người Lạ B]\n"
+            "[mẩu thoại người 3 quát] Đứng lại, để chiếc xe đó lại cho ta! -> [Kẻ Cướp]\n"
+            "[mẩu thoại người 2 đáp] Muốn cướp xe? Bước qua xác ta đã! -> [Tô Du]\n"
+            "[mẩu đối đáp không rõ tên 1] Chân ta, chân ta gãy rồi! Mau buông ra! -> [Người Lạ A]\n"
+            "[mẩu đối đáp không rõ tên 2] Đè chết ngươi, đồ khốn kiếp! -> [Người Lạ B]\n"
             "[mẩu ASR quần chúng 1] Tiếng bàn tán thứ nhất tách dòng đơn không có dấu gạch chéo. -> [Vai A]\n"
             "[mẩu ASR quần chúng 2] Tiếng bàn tán thứ hai tách dòng đơn không có dấu gạch chéo. -> [Vai B]"
         )

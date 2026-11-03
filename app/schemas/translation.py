@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Any
 
 class TranslateProjectRequest(BaseModel):
     project_id: int
-    genre: str = "cophong"
+    genre: str = "auto"
     batch_size: Optional[int] = None
     max_chars: Optional[int] = None
     provider: str = "gemini"

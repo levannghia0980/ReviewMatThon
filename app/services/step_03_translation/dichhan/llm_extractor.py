@@ -98,6 +98,53 @@ NGUYÊN TẮC DỊCH TÊN CHUẨN XÁC THEO NGỮ CẢNH VĂN HỌC & BÓC TÁCH
   * "TÊN CỐ ĐỊNH": Cho 'NAME', 'PLACE', 'SECT', 'ITEM' (tên riêng cố định 1-1).
   * "NÊN DÙNG BẢN SẮC": Cho 'SKILL', 'CREATURE', 'OTHER'."""
 
+CO_DAI_EXTRACTION_RULES = FULL_EXTRACTION_RULES
+
+HIEN_DAI_EXTRACTION_RULES = """=== BỘ NGUYÊN TẮC BÓC TÁCH THỰC THỂ HIỆN ĐẠI (ĐÔ THỊ, MẠT THẾ, DỊ NĂNG, KHOA HUYỄN, HỆ THỐNG) ===
+MỆNH LỆNH: Bóc tách đầy đủ các nhóm thực thể chính (NAME, CREATURE, PLACE, SECT/ORGANIZATION, ITEM, SKILL, OTHER) phù hợp hoàn hảo với bối cảnh HIỆN ĐẠI / TẬN THẾ / HỆ THỐNG.
+
+CHI TIẾT CÁC NHÓM THỰC THỂ HIỆN ĐẠI:
+1. 'NAME' (Tên nhân vật):
+   - Tên đầy đủ, tên gọi tắt, biệt danh của nhân vật.
+   - BẮT BUỘC giữ nguyên âm Hán-Việt chuẩn mực, văn học và quen thuộc (ví dụ: 夏凡 -> Hạ Phàm, 强子 -> Cường Tử, 佳佳 -> Giai Giai, 林肖 -> Lâm Tiêu, 楚风 -> Sở Phong...).
+   - Chức danh / Nghề nghiệp đi kèm tên: Có thể đứng trước hoặc sau tên (Đội trưởng Đường / Đường đội trưởng, Sếp Trương / Trương trưởng quan, Giáo sư Lý / Lý giáo sư, Cảnh sát Vương / Vương cảnh quan, Bác sĩ Lâm...). Chỉ bóc tách phần tên riêng vào 'NAME' hoặc bóc tách cả cụm chức vụ nếu là danh xưng cố định.
+
+2. 'SKILL' & 'ABILITY' (Kỹ năng, Năng lực, Dị năng):
+   - Các hệ năng lực, chuỗi siêu phàm, kỹ năng chiến đấu, dị năng thức tỉnh.
+   - QUY CHUẨN ĐẶC BIỆT THUẬT NGỮ 序列 (SEQUENCE / HỆ / CHUỖI):
+     * Trong bối cảnh dị năng, siêu phàm, mạt thế: Từ 序列 BẮT BUỘC dịch là "Hệ" hoặc "Chuỗi" (ví dụ: 剑心序列 -> Hệ Kiếm Tâm, 天师序列 -> Hệ Thiên Sư, 忍者序列 -> Hệ Nhẫn Giả, 视神序列 -> Hệ Thị Thần, 空间序列 -> Hệ Không Gian...).
+     * TUYỆT ĐỐI CẤM dịch thô thành "Tự Liệt" gây khó hiểu cho người nghe và làm hỏng câu dịch!
+
+3. 'ITEM' (Trang bị, Phương tiện, Vật phẩm hiện đại):
+   - Xe cộ, vũ khí, trang bị sinh tồn, thiết bị công nghệ, vật tư tận thế.
+   - Dịch đúng nghĩa đồ vật hiện đại (ví dụ: 装甲战车 -> Xe bọc thép / Chiến xa bọc thép, 越野车 -> Xe địa hình, 步枪 -> Súng trường, 压缩饼干 -> Lương khô nén, 净水器 -> Máy lọc nước...). TUYỆT ĐỐI CẤM biến đồ vật đời thường thành "pháp bảo" hay từ ngữ cổ trang.
+
+4. 'PLACE' (Địa danh, Khu vực hiện đại):
+   - Thành phố, thị trấn, trạm cứu hộ, căn cứ sinh tồn, đường phố, tòa nhà, khu vực hoang phế.
+   - Tên thành phố/địa danh giữ âm Hán-Việt chuẩn (ví dụ: 江城 -> Giang Thành, 临海市 -> Thành phố Lâm Hải...).
+   - Thuật ngữ vùng đặc thù: 无人区 -> Khu vực không người / Vùng hoang phế (CẤM dịch "Vô Nhân Khu").
+
+5. 'SECT' / 'ORGANIZATION' (Tổ chức, Thế lực hiện đại):
+   - Căn cứ sinh tồn, Đội xe, Binh đoàn, Tập đoàn, Công ty, Viện nghiên cứu, Trạm trú ẩn, Quân đoàn.
+
+6. 'CREATURE' (Sinh vật, Quái vật, Dị biến):
+   - Quái vật, dị biến, tang thi, zombie, quỷ dị (ví dụ: 诡异 -> Quỷ Dị, 丧尸 -> Tang thi / Zombie, 变异兽 -> Dị thú / Thú biến dị...).
+
+7. 'OTHER' (Hệ thống, Cơ chế thế giới quan, Chỉ huy):
+   - QUY CHUẨN HỆ THỐNG (SYSTEM):
+     * BẮT BUỘC dịch xuôi theo ngữ pháp tiếng Việt: 升级系统 -> Hệ thống nâng cấp / Hệ thống thăng cấp (TUYỆT ĐỐI CẤM dịch ngược chữ Hán thành "Thăng Cấp Hệ Thống").
+     * 大反派系统 -> Hệ thống đại phản diện; 签到系统 -> Hệ thống điểm danh.
+     * 属性面板 -> Bảng thuộc tính / Bảng trạng thái; 杀戮点 / 积分 -> Điểm sát lục / Điểm tích lũy.
+   - CHỨC DANH QUÂN SỰ / CHỈ HUY:
+     * 长官 trong bối cảnh quân sự, căn cứ, tận thế BẮT BUỘC dịch là "Thủ trưởng", "Chỉ huy", "Sĩ quan" hoặc "Sếp" (TUYỆT ĐỐI CẤM dịch thành "Quan lớn" của thời phong kiến).
+
+CÁC NGUYÊN TẮC LỌC RÁC & SỬA LỖI ASR NGHE SAI (CỰC KỲ QUAN TRỌNG):
+1. LỌC BỎ RÁC DO ASR NGHE NHẦM NGỮ CẢNH:
+   - Nếu một từ/cụm từ xuất hiện do ASR nhận diện sai âm thanh, hoàn toàn lạc quẻ với mạch truyện (ví dụ: trong câu đang tả vũ khí bị vô hiệu hóa mà ASR nghe thành '北京' - Bắc Kinh; hoặc tả cảnh nguy hiểm mà nghe thành '景区' - khu thắng cảnh):
+   - TUYỆT ĐỐI CẤM bóc tách những từ nghe nhầm ngữ cảnh này vào bảng thực thể, để không trói buộc LLM dịch phải dịch theo!
+2. SỬA LỆCH ÂM TÊN NHÂN VẬT & THUẬT NGỮ:
+   - Nếu ASR nghe chệch âm của nhân vật chính hoặc thuật ngữ quen thuộc (ví dụ: ASR nghe '下半' trong câu '下半觉醒了升级系统'): Bắt buộc nhận diện theo ngữ cảnh đó là nhân vật 夏凡 (Hạ Phàm), gán đúng vietnamese_name = 'Hạ Phàm', tuyệt đối KHÔNG trả về từ rác '下半'."""
+
 
 def inject_chapter_extraction_prompts(text: str) -> str:
     """
@@ -204,6 +251,34 @@ MỆNH LỆNH BẮT BUỘC ĐỐI VỚI CÁC THỰC THỂ ĐÃ CÓ NÀY:
 (Chưa có thực thể cũ nào từ trước, đây là các chương đầu tiên. Hãy bóc tách toàn bộ thực thể mới xuất hiện!)
 """
 
+    is_modern = norm_genre in ("urban", "modern_urban", "urban_supernatural", "sci_fi_apocalypse", "system_reincarnation")
+    rules_block = HIEN_DAI_EXTRACTION_RULES if is_modern else CO_DAI_EXTRACTION_RULES
+
+    if is_modern:
+        example_entities = """    {"chinese_name": "夏凡", "vietnamese_name": "Hạ Phàm", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật chính"},
+    {"chinese_name": "强子", "vietnamese_name": "Cường Tử", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "đồng đội / bạn thân"},
+    {"chinese_name": "佳佳", "vietnamese_name": "Giai Giai", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "female", "role": "nhân vật nữ"},
+    {"chinese_name": "剑心序列", "vietnamese_name": "Hệ Kiếm Tâm", "entity_type": "SKILL", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "chuỗi năng lực thức tỉnh"},
+    {"chinese_name": "升级系统", "vietnamese_name": "Hệ thống nâng cấp", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "hệ thống hỗ trợ"},
+    {"chinese_name": "江城", "vietnamese_name": "Giang Thành", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "thành phố"},
+    {"chinese_name": "无人区", "vietnamese_name": "Khu vực không người", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "khu vực hoang phế"},
+    {"chinese_name": "装甲战车", "vietnamese_name": "Xe bọc thép", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "phương tiện di chuyển"},
+    {"chinese_name": "长官", "vietnamese_name": "Thủ trưởng", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "chức vị chỉ huy / sĩ quan"},
+    {"chinese_name": "诡异", "vietnamese_name": "Quỷ Dị", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thực thể quái dị"}"""
+    else:
+        example_entities = """    {"chinese_name": "林冲", "vietnamese_name": "Lâm Xung", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật"},
+    {"chinese_name": "豹子头", "vietnamese_name": "Báo Tử Đầu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "ngoại hiệu của Lâm Xung"},
+    {"chinese_name": "二狗", "vietnamese_name": "Nhị Cẩu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "tên cúng cơm nông thôn"},
+    {"chinese_name": "金翅大鹏", "vietnamese_name": "Kim Sí Đại Bàng", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "chủng loài thần thú"},
+    {"chinese_name": "青云宗", "vietnamese_name": "Thanh Vân Tông", "entity_type": "SECT", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "tông môn"},
+    {"chinese_name": "落霞峰", "vietnamese_name": "Lạc Hà Phong", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "địa danh núi"},
+    {"chinese_name": "青龙偃月刀", "vietnamese_name": "Thanh Long Yển Nguyệt Đao", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh binh khí"},
+    {"chinese_name": "太极拳", "vietnamese_name": "Thái Cực Quyền", "entity_type": "SKILL", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "công pháp võ học"},
+    {"chinese_name": "筑基", "vietnamese_name": "Trúc Cơ", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "cảnh giới tu vi"},
+    {"chinese_name": "大宗师", "vietnamese_name": "Đại Tông Sư", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thứ bậc cao thủ"},
+    {"chinese_name": "灵石", "vietnamese_name": "Linh Thạch", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "tài nguyên tu luyện"},
+    {"chinese_name": "大反派系统", "vietnamese_name": "Đại Phản Phái Hệ Thống", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "hệ thống hỗ trợ"}"""
+
     prompt = f"""Bạn là chuyên gia ngôn ngữ học và dịch thuật tiểu thuyết cao cấp, sở hữu vốn từ vựng Hán - Việt bác học và khả năng phân tích bối cảnh, ngữ pháp sâu sắc.
 
 {genre_guidance}
@@ -213,23 +288,12 @@ MỆNH LỆNH BẮT BUỘC ĐỐI VỚI CÁC THỰC THỂ ĐÃ CÓ NÀY:
 === VĂN BẢN TOÀN BỘ LÔ CHƯƠNG (LIÊN TỤC KHÔNG XUỐNG DÒNG) ===
 {injected_text}
 
-{FULL_EXTRACTION_RULES}
+{rules_block}
 
 Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sau, không kèm bất kỳ lời dẫn nào:
 {{
   "entities": [
-    {{"chinese_name": "林冲", "vietnamese_name": "Lâm Xung", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật"}},
-    {{"chinese_name": "豹子头", "vietnamese_name": "Báo Tử Đầu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "ngoại hiệu của Lâm Xung"}},
-    {{"chinese_name": "二狗", "vietnamese_name": "Nhị Cẩu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "tên cúng cơm nông thôn"}},
-    {{"chinese_name": "金翅大鹏", "vietnamese_name": "Kim Sí Đại Bàng", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "chủng loài thần thú"}},
-    {{"chinese_name": "青云宗", "vietnamese_name": "Thanh Vân Tông", "entity_type": "SECT", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "tông môn"}},
-    {{"chinese_name": "落霞峰", "vietnamese_name": "Lạc Hà Phong", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "địa danh núi"}},
-    {{"chinese_name": "青龙偃月刀", "vietnamese_name": "Thanh Long Yển Nguyệt Đao", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh binh khí"}},
-    {{"chinese_name": "太极拳", "vietnamese_name": "Thái Cực Quyền", "entity_type": "SKILL", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "công pháp võ học"}},
-    {{"chinese_name": "筑基", "vietnamese_name": "Trúc Cơ", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "cảnh giới tu vi"}},
-    {{"chinese_name": "大宗师", "vietnamese_name": "Đại Tông Sư", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thứ bậc cao thủ"}},
-    {{"chinese_name": "灵石", "vietnamese_name": "Linh Thạch", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "tài nguyên tu luyện"}},
-    {{"chinese_name": "大反派系统", "vietnamese_name": "Đại Phản Phái Hệ Thống", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "hệ thống hỗ trợ"}}
+{example_entities}
   ],
   "author_notes": [
     "求月票，求推荐票！",

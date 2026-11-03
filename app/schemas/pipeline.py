@@ -14,7 +14,7 @@ class FullAutoPipelineRequest(BaseModel):
     project_id: Optional[int] = Field(default=None, description="Project ID nếu video đã tải sẵn")
     quality: str = Field(default="480p", description="480p, 720p hoặc 1080p")
     source_language: str = Field(default="zh", description="Ngôn ngữ gốc của video")
-    genre: str = Field(default="tienhiep", description="Thể loại: tienhiep, cophong, kiemhiep, dothi, huyenhuyen")
+    genre: str = Field(default="auto", description="Thể loại: auto, tienhiep, cophong, kiemhiep, dothi, huyenhuyen")
     provider: Optional[str] = Field(default=None, description="gemini_web, gemini hoặc openrouter (None = đọc từ Cài Đặt Hệ Thống)")
     tts_workers: Optional[int] = Field(default=None, description="Số luồng TTS (None = đọc từ Cài Đặt Hệ Thống)")
     voice_code: str = Field(default="BV074_streaming", description="Mã giọng TikTok TTS")
