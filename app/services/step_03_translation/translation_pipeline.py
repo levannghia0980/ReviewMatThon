@@ -29,8 +29,98 @@ def format_timestamp(seconds: float) -> str:
 
 class TranslationPipelineService:
     @classmethod
+    def check_project_batches_completion(
+        cls,
+        project_id: int,
+        db: Session,
+        batch_size: int = 500,
+        max_chars: int = 50000
+    ) -> Dict[str, Any]:
+        """Kiểm định trạng thái hoàn tất dịch chuẩn xác THEO TỪNG ĐƠN VỊ LÔ (Batch-Based Audit).
+        
+        Một lô được công nhận là ĐÃ HOÀN TẤT nếu:
+        1. Đã có các câu kịch bản của lô đó trong bảng TTSDialogueSegmentModel (batch_index == b_num).
+        2. Hoặc đã có file batch_XX_output.json trên ổ đĩa.
+        3. Hoặc >= 95% câu ASR trong lô đã có bản dịch/trạng thái hợp lệ.
+        """
+        from app.config import get_project_dirs
+        p_dirs = get_project_dirs(project_id)
+        proj_llm_io_dir = p_dirs["llm_io"]
+
+        dialogues = db.query(DialogueSegmentModel).filter(
+            DialogueSegmentModel.task_id == project_id
+        ).order_by(DialogueSegmentModel.index.asc()).all()
+
+        if not dialogues:
+            return {
+                "total_batches": 0,
+                "completed_batches": [],
+                "pending_batches": [],
+                "is_fully_translated": False
+            }
+
+        segs = [
+            DialogueSegment(
+                id=d.index,
+                start=d.start_time,
+                end=d.end_time,
+                duration=d.duration,
+                text=d.original_text or "",
+                clean_text=d.clean_text or d.original_text or ""
+            )
+            for d in dialogues
+        ]
+        batches = BatchManager.create_batches(segs, batch_size=batch_size, max_chars=max_chars)
+        total_batches = len(batches)
+
+        completed_batches = []
+        pending_batches = []
+
+        for b_idx, batch in enumerate(batches):
+            b_num = b_idx + 1
+            batch_raw_file = proj_llm_io_dir / f"batch_{b_num:02d}_output.json"
+
+            # 1. Kiểm tra trong DB (TTSDialogueSegmentModel có câu của lô này)
+            has_tts = db.query(TTSDialogueSegmentModel).filter(
+                TTSDialogueSegmentModel.task_id == project_id,
+                TTSDialogueSegmentModel.batch_index == b_num
+            ).first() is not None
+
+            # 2. Kiểm tra file output trên đĩa
+            has_file = batch_raw_file.exists() and batch_raw_file.stat().st_size > 10
+
+            # 3. Kiểm tra tỷ lệ câu ASR đạt chuẩn trong DB
+            batch_indices = [getattr(s, 'id', getattr(s, 'index', 0)) for s in batch]
+            db_batch_segs = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id,
+                DialogueSegmentModel.index.in_(batch_indices)
+            ).all()
+            trans_count = sum(
+                1 for d in db_batch_segs
+                if bool((d.translated_text or '').strip())
+                or getattr(d, 'status', '') in ['TRANSLATED', 'DUBBED', 'SILENT_VALID', 'MERGED_CHILD']
+            )
+            is_all_db_translated = len(batch_indices) > 0 and (trans_count / len(batch_indices)) >= 0.95
+
+            if has_tts or has_file or is_all_db_translated:
+                completed_batches.append(b_num)
+            else:
+                pending_batches.append(b_num)
+
+        is_fully_translated = total_batches > 0 and len(pending_batches) == 0
+
+        return {
+            "total_batches": total_batches,
+            "completed_batches": completed_batches,
+            "pending_batches": pending_batches,
+            "is_fully_translated": is_fully_translated
+        }
+
+    @classmethod
     def _export_partial_transcripts(cls, project: ProjectTask, db: Session, task_id: Optional[str] = None):
-        """Xuất bản thảo phụ đề và kịch bản cho các câu/lô đã hoàn thành tính đến thời điểm dừng/lỗi"""
+        """Xuất bản thảo phụ đề và kịch bản cho các câu/lô đã hoàn thành tính đến thời điểm dừng/lỗi.
+        Tuyệt đối KHÔNG gán project.status = 'TRANSLATED' ở đây để tránh làm sai lệch tiến trình chung.
+        """
         try:
             from app.config import get_project_dirs
             p_dirs = get_project_dirs(project.id)
@@ -74,7 +164,8 @@ class TranslationPipelineService:
 
             project.srt_path = str(srt_path)
             project.txt_path = str(txt_path)
-            project.status = "TRANSLATED"
+            # Chỉ cập nhật đường dẫn file bản thảo, KHÔNG gán project.status = "TRANSLATED"
+            # Status "TRANSLATED" chỉ được gán khi 100% tất cả các lô đã hoàn tất!
             db.commit()
 
             if task_id:

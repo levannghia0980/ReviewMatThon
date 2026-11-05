@@ -264,31 +264,45 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 db.commit()
                 task_manager.add_log(task_id, f"   ✔ Đã lưu {len(dialogues)} câu thoại vào SQLite CSDL.", "emerald")
 
-        # BƯỚC 2: Dịch Thuật AIREAD Đa Tầng (Tự động bỏ qua nếu đã dịch xong trước đó)
+        # BƯỚC 2: Dịch Thuật AIREAD Đa Tầng (Kiểm định chuẩn xác THEO ĐƠN VỊ LÔ)
         total_dialogues = db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project_id).count()
         if total_dialogues == 0:
             raise RuntimeError(f"Project #{project_id} không có câu thoại nào để dịch hoặc lồng tiếng! Vui lòng kiểm tra lại file âm thanh/video gốc.")
 
-        # Kiểm tra xem project đã có kịch bản dịch hoàn tất hay chưa
-        has_tts_dialogues = db.query(TTSDialogueSegmentModel).filter(TTSDialogueSegmentModel.task_id == project_id).count() > 0
-        untranslated_count = db.query(DialogueSegmentModel).filter(
-            DialogueSegmentModel.task_id == project_id,
-            DialogueSegmentModel.status.notin_(["TRANSLATED", "DUBBED", "SILENT_VALID"]),
-            (DialogueSegmentModel.translated_text == None) | (DialogueSegmentModel.translated_text == "")
-        ).count()
+        effective_provider = req.provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")
+        effective_batch = req.batch_size or getattr(settings, "TRANSLATION_BATCH_SIZE", 500)
+        effective_max_chars = getattr(settings, "TRANSLATION_MAX_CHARS", 50000)
 
-        is_already_translated = (project.status in ["TRANSLATED", "DUBBED", "COMPLETED"]) or (has_tts_dialogues and untranslated_count == 0)
+        # KIỂM ĐỊNH HOÀN TẤT THEO ĐƠN VỊ LÔ (BATCH-LEVEL AUDIT): Phù hợp 100% với kiến trúc SmartTimelineHealer
+        batch_audit = TranslationPipelineService.check_project_batches_completion(
+            project_id=project_id,
+            db=db,
+            batch_size=effective_batch,
+            max_chars=effective_max_chars
+        )
+        is_fully_translated = batch_audit["is_fully_translated"]
+        pending_batches = batch_audit["pending_batches"]
+        completed_batches = batch_audit["completed_batches"]
+        total_b_cnt = batch_audit["total_batches"]
 
         trans_res = {}
-        if not is_already_translated and untranslated_count > 0:
+        if not is_fully_translated:
             task_manager.update_task(task_id, step=2, progress=25)
-            task_manager.add_log(task_id, f"[2/5] 🧠 Bắt đầu Dịch thuật AIREAD ({untranslated_count}/{total_dialogues} câu cần dịch)...", "cyan")
+            if completed_batches:
+                task_manager.add_log(
+                    task_id,
+                    f"[2/5] 🧠 Kế thừa {len(completed_batches)}/{total_b_cnt} lô đã dịch xong từ trước. Đang tiếp tục dịch các lô còn lại ({pending_batches})...",
+                    "cyan"
+                )
+            else:
+                task_manager.add_log(
+                    task_id,
+                    f"[2/5] 🧠 Bắt đầu Dịch thuật AIREAD toàn bộ {total_b_cnt} lô ({total_dialogues} câu ASR)...",
+                    "cyan"
+                )
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            effective_provider = req.provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")
-            effective_batch = req.batch_size or getattr(settings, "TRANSLATION_BATCH_SIZE", 500)
-            effective_max_chars = getattr(settings, "TRANSLATION_MAX_CHARS", 50000)
             try:
                 trans_res = loop.run_until_complete(
                     TranslationPipelineService.translate_project_dialogues(
@@ -311,7 +325,11 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             task_manager.add_log(task_id, f"   ✔ Dịch thuật & Quét lỗi Hán hoàn tất ({trans_res.get('total_segments', 0)} câu).", "emerald")
         else:
             task_manager.update_task(task_id, step=2, progress=50)
-            task_manager.add_log(task_id, f"[2/5] ✔ Video đã có bản dịch hoàn chỉnh trong CSDL ({total_dialogues} câu). Bỏ qua dịch lại -> Chuyển sang TTS & Render.", "emerald")
+            task_manager.add_log(
+                task_id,
+                f"[2/5] ✔ Video đã hoàn thành 100% kịch bản dịch theo lô ({total_b_cnt}/{total_b_cnt} lô, {total_dialogues} câu ASR). Kế thừa & Chuyển sang TTS & Render.",
+                "emerald"
+            )
 
         p_dirs = get_project_dirs(project_id)
         # Kịch bản TTS đã được hoàn tất và đóng gói chuẩn hóa từ Bước 3 (Translation).
