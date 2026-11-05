@@ -87,31 +87,63 @@ class TTSSwollenRescuer:
             for i, item in enumerate(batch_items, 1):
                 mapping[i] = item
                 target_dur = float(item.get("target_dur", 2.0))
-                # Tốc độ lồng tiếng chuẩn tự nhiên: 3.4 từ/giây (vừa khít tốc độ ~1.10x, nói xong cùng lúc hết cảnh)
-                target_words = max(3, int(round(target_dur * 3.4)))
+                orig_text = str(item.get("text_vi", "")).strip()
+                orig_word_cnt = len(orig_text.split()) if orig_text else 0
 
-                prompt_payload.append({
+                # Tốc độ lồng tiếng tự nhiên chuẩn: ~3.8 từ/giây (vừa khít tốc độ ~1.15x, nói sống động không bị cụt câu)
+                calc_words = int(round(target_dur * 3.8))
+                
+                # Không ép số từ xuống quá thấp nếu câu gốc vốn dĩ đã ngắn, tránh biến thành câu cộc lốc vô hồn
+                if orig_word_cnt <= 4:
+                    target_words = max(2, min(orig_word_cnt, calc_words))
+                else:
+                    target_words = max(3, min(orig_word_cnt - 1, calc_words))
+
+                payload_entry = {
                     "id": i,
-                    "text": str(item.get("text_vi", "")).strip(),
+                    "text_vi": orig_text,
                     "target_words": target_words
-                })
+                }
+                zh_val = item.get("text_zh") or item.get("original_text")
+                if zh_val:
+                    payload_entry["text_zh"] = str(zh_val).strip()
+                speaker_val = item.get("speaker") or item.get("role")
+                if speaker_val:
+                    payload_entry["speaker"] = str(speaker_val).strip()
+
+                prompt_payload.append(payload_entry)
 
             prompt_str = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
 
-            prompt = f"""Bạn là chuyên gia biên tập kịch bản lồng tiếng phim.
-Dưới đây là danh sách các câu thoại tiếng Việt đang bị dài so với thời lượng cảnh quay.
-Hãy viết gọn lại từng câu sao cho số từ xấp xỉ `target_words` (cho phép chênh lệch ±1 từ), tuân thủ:
-1. Giữ trọn vẹn 100% ý nghĩa, cảm xúc và ngữ khí của nhân vật, đặc biệt là các từ cảm thán, từ ngữ khí cuối câu (nhé, cơ mà, chứ, cả, đấy, hả...).
-2. Câu văn diễn đạt tự nhiên, gãy gọn, xuôi tai, không bị cộc lốc hay cụt nghĩa.
+            prompt = f"""Bạn là bậc thầy biên kịch và biên tập lồng tiếng phim chuyên nghiệp (Dubbing Script Doctor).
+Nhiệm vụ của bạn là viết lại các câu thoại tiếng Việt đang bị dài so với thời lượng cảnh quay sao cho câu ngắn gọn hơn (khoảng `target_words` từ), nhưng VẪN PHẢI GIỮ NGUYÊN 100% ngữ khí, cảm xúc và chất phim.
 
-Danh sách câu cần rút gọn:
+CÁC NGUYÊN TẮC CỐT LÕI (TUYỆT ĐỐI KHÔNG VI PHẠM):
+1. GIỮ NGUYÊN TRỌN VẸN CÁC TỪ NGỮ KHÍ VÀ BIỂU CẢM CUỐI CÂU:
+   - Các từ cảm thán, câu hỏi, phản vấn, khẳng định, mỉa mai bắt buộc phải giữ hoặc thay bằng từ biểu cảm tương đương (ví dụ: "sao", "hả", "chứ", "kìa", "đâu", "nào", "nhé", "đấy", "thế", "ư").
+   - CẤM TUYỆT ĐỐI cắt xén làm mất đuôi biểu cảm khiến câu nói thành cụt ngủn, ngơ ngác!
+2. KHÔNG CẮT BỎ ĐẠI TỪ VÀ ĐỐI TƯỢNG XƯNG HÔ:
+   - Giữ rõ ai đang nói với ai ("anh", "tôi", "ta", "mình", "ngươi", "hắn"). Không biến câu hội thoại thành cụm danh từ vô tri.
+3. KỸ THUẬT RÚT GỌN LỒNG TIẾNG CHUẨN:
+   - Thay thế từ ngữ dài/văn viết rườm rà bằng từ văn nói khẩu ngữ ngắn gọn, đắt giá hơn.
+   - Lược bỏ từ đệm vô nghĩa hoặc trợ từ liên kết dư thừa, KHÔNG lược bỏ vị ngữ hay thái độ nhân vật.
+
+VÍ DỤ ĐỐI CHIẾU CHUẨN:
+- Cũ: "Nâng cấp. Chẳng lẽ ta đã thức tỉnh năng lực hệ siêu phàm rồi sao?" -> Mới: "Nâng cấp. Lẽ nào ta thức tỉnh siêu năng lực rồi sao?" (Tuyệt đối không cắt thành "Mình thức tỉnh năng lực rồi?")
+- Cũ: "Còn có thể cho vay sao?" -> Mới: "Vẫn cho vay được sao?" (Tuyệt đối không cắt thành "Còn cho vay?")
+- Cũ: "Xe này không kém gì mấy chiếc xe nhỏ kia đâu." -> Mới: "Xe này chẳng kém gì mấy xe nhỏ đâu." (Tuyệt đối không cắt thành "Xe này không kém xe nhỏ.")
+- Cũ: "Hừ, nhìn bộ dạng nhát gan của anh kìa." -> Mới: "Hừ, trông anh nhát gan chưa kìa." (Tuyệt đối không cắt thành "Hừ, nhìn bộ dạng nhát gan.")
+- Cũ: "Mặc kệ có Quỷ Dị hay không." -> Mới: "Kệ nó có Quỷ Dị hay không." (Tuyệt đối không cắt thành "Mặc kệ Quỷ Dị.")
+- Cũ: "Đứt ruột." (câu vốn ngắn) -> Giữ nguyên: "Đứt ruột." (Không tự ý thêm bớt từ thừa).
+
+Danh sách câu cần tối ưu:
 {prompt_str}
 
-Chỉ trả về duy nhất mảng JSON thuần hợp lệ (không kèm lời dẫn hay giải thích):
+Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm markdown, không giải thích):
 [
   {{
     "id": 1,
-    "text": "câu đã rút gọn quanh target_words"
+    "text": "câu thoại đã tối ưu"
   }}
 ]"""
 
