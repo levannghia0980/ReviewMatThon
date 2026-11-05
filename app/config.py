@@ -134,16 +134,16 @@ class Settings:
     TRANSLATION_GENRE: str = os.getenv("TRANSLATION_GENRE", "tienhiep")
     TRANSLATION_BATCH_SIZE: int = int(os.getenv("TRANSLATION_BATCH_SIZE", "500"))
     TRANSLATION_MAX_CHARS: int = int(os.getenv("TRANSLATION_MAX_CHARS", "50000"))
-    TRANSLATION_TEMPERATURE: float = float(os.getenv("TRANSLATION_TEMPERATURE", "0.15"))
+    TRANSLATION_TEMPERATURE: float = float(os.getenv("TRANSLATION_TEMPERATURE", "0.25"))
     
-    # STT ASR Settings (Nhận diện giọng nói đa luồng song song: 6 - 8 luồng tối ưu tốc độ)
-    ASR_MAX_WORKERS: int = int(os.getenv("ASR_MAX_WORKERS", "8"))
-    # Độ trễ thời gian STT (mili-giây) trừ về trước để khớp giọng đọc với thoại gốc (Mặc định 80ms)
-    STT_TIME_OFFSET_MS: int = int(os.getenv("STT_TIME_OFFSET_MS", "66"))
+    # STT ASR Settings (Nhận diện giọng nói đa luồng song song: 6 - 10 luồng tối ưu tốc độ)
+    ASR_MAX_WORKERS: int = int(os.getenv("ASR_MAX_WORKERS", "10"))
+    # Độ trễ thời gian STT (mili-giây) trừ về trước để khớp giọng đọc với thoại gốc (Chuẩn 30ms)
+    STT_TIME_OFFSET_MS: int = int(os.getenv("STT_TIME_OFFSET_MS", "30"))
 
     # TTS Voiceover Settings: "capcut" (CapCut Cloud SAMI - Khuyên dùng) | "tiktok" (TikTok Legacy)
     TTS_ENGINE: str = os.getenv("TTS_ENGINE", "capcut")
-    TTS_MAX_WORKERS: int = int(os.getenv("TTS_MAX_WORKERS", "128"))
+    TTS_MAX_WORKERS: int = int(os.getenv("TTS_MAX_WORKERS", "96"))
     CAPCUT_COOKIE: str = os.getenv("CAPCUT_COOKIE", "")
     TIKTOK_SESSION_ID: str = os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
     
@@ -155,8 +155,13 @@ class Settings:
     # =========================================================================
     TTS_MERGE_CHUNKS: bool = os.getenv("TTS_MERGE_CHUNKS", "False").lower() in ("true", "1", "yes")
     
+    # Render Video Settings (Render phân đoạn song song thích ứng phần cứng)
+    VIDEO_RENDER_WORKERS: int = int(os.getenv("VIDEO_RENDER_WORKERS", "3"))
+    VIDEO_SEGMENT_DURATION: int = int(os.getenv("VIDEO_SEGMENT_DURATION", "300"))
+    VIDEO_SINGLE_CHUNK_LIMIT: int = int(os.getenv("VIDEO_SINGLE_CHUNK_LIMIT", "1200"))
+
     # Downloader / Bilibili Cookie Settings (Không dùng proxy, hỗ trợ cookie file để tải HD 1080p 60fps)
-    BILIBILI_COOKIE_FILE: str = os.getenv("BILIBILI_COOKIE_FILE", "")
+    BILIBILI_COOKIE_FILE: str = os.getenv("BILIBILI_COOKIE_FILE", "cookies.txt")
 
     # Paths
     BASE_DIR: Path = BASE_DIR
@@ -212,8 +217,12 @@ class Settings:
         """Đọc lại toàn bộ cấu hình từ file .env vào runtime settings và os.environ ngay lập tức"""
         if not cls.ENV_PATH.exists():
             return
-        bool_fields = {"TTS_MERGE_CHUNKS"}
-        int_fields = {"ASR_MAX_WORKERS", "STT_TIME_OFFSET_MS", "TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS", "GEMINI_THINKING_BUDGET"}
+        bool_fields = {"TTS_MERGE_CHUNKS", "GEMINI_WEB_HEADLESS", "IS_SERVER_HOST"}
+        int_fields = {
+            "ASR_MAX_WORKERS", "STT_TIME_OFFSET_MS", "TTS_MAX_WORKERS",
+            "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS", "GEMINI_THINKING_BUDGET",
+            "VIDEO_RENDER_WORKERS", "VIDEO_SEGMENT_DURATION", "VIDEO_SINGLE_CHUNK_LIMIT"
+        }
         float_fields = {"TRANSLATION_TEMPERATURE"}
         with open(cls.ENV_PATH, "r", encoding="utf-8") as f:
             for line in f:
