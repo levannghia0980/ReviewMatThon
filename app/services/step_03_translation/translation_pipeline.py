@@ -645,8 +645,9 @@ class TranslationPipelineService:
                     logger.warning(f"[Lo #{b_num}] Canh bao timeline: {inv_check.get('errors')}")
 
             # FlowHealer v2: RETRY toi da MAX_RETRIES lan neu lo co qua nhieu loi hoac bo sot cau
-            _max_retries = 3
+            _max_retries = 5
             _retry_count = 0
+            _mega_warning = ""  # cảnh báo bổ sung khi LLM gộp quá nhiều mẩu ASR
             best_candidate = {
                 "healed": healed_items,
                 "inv": inv_check,
@@ -656,7 +657,12 @@ class TranslationPipelineService:
             }
 
             while healed_items and _retry_count < _max_retries:
-                _retry_needed = (not inv_check.get("passed")) or any(item.get("_retry_needed", False) for item in healed_items)
+                _has_mega_summary = any(len(it.get("src", [])) >= 15 for it in healed_items)
+                _retry_needed = (
+                    (not inv_check.get("passed"))
+                    or any(item.get("_retry_needed", False) for item in healed_items)
+                    or _has_mega_summary
+                )
                 if not _retry_needed:
                     best_candidate = {
                         "healed": healed_items,
@@ -667,7 +673,16 @@ class TranslationPipelineService:
                     }
                     break
                 _retry_count += 1
-                missing_info = f" (bị bỏ sót {len(batch_orig_dicts) - inv_check.get('covered_orig', len(batch_orig_dicts))} câu ASR)" if not inv_check.get("passed") else ""
+                if _has_mega_summary:
+                    missing_info = f" (LLM gộp quá nhiều mẩu ASR trong 1 dòng)"
+                    _mega_warning = (
+                        "\n\n⚠️ CẢNH BÁO NGHIÊM TRỌNG: Lần dịch trước bạn đã gộp quá nhiều mẩu ASR vào 1 dòng duy nhất. "
+                        "BẮT BUỘC ngắt dòng riêng cho TỪNG mẩu ASR một, ánh xạ 1:1 với từng mẩu chữ Hán. "
+                        "TUYỆT ĐỐI KHÔNG ĐƯỢC gộp quá 3 mẩu ASR trong một cặp ngoặc vuông!"
+                    )
+                else:
+                    missing_info = f" (bị bỏ sót {len(batch_orig_dicts) - inv_check.get('covered_orig', len(batch_orig_dicts))} câu ASR)" if not inv_check.get("passed") else ""
+                    _mega_warning = ""
                 retry_msg = f"⚠️ [Lô #{b_num}] DỊCH LẠI lần {_retry_count}/{_max_retries}{missing_info} (FlowHealer phát hiện lỗi)..."
                 print(f"\n{retry_msg}", flush=True)
                 task_manager.add_log(task_id, retry_msg, "orange")
@@ -677,7 +692,7 @@ class TranslationPipelineService:
                         tagged_text=tagged_batch_text,
                         genre=genre,
                         project_title=project.title,
-                        context_text=context_text,
+                        context_text=context_text + _mega_warning,
                         entity_table_text=entity_table_text,
                         provider=provider,
                         prompt_save_path=str(batch_retry_prompt_file)
@@ -698,10 +713,15 @@ class TranslationPipelineService:
                         curr_cov = retry_inv.get("covered_orig", 0)
                         curr_errs = len(retry_inv.get("errors", []))
 
-                        # Cập nhật ứng viên tốt nhất: ưu tiên bao phủ ASR tối đa, không chứa tóm tắt
-                        has_mega_summary = any(len(it.get("src", [])) >= 15 for it in retry_healed)
-                        if not has_mega_summary:
-                            if curr_cov > best_candidate["covered"] or (curr_cov == best_candidate["covered"] and curr_errs <= best_candidate["errors"]):
+                        # Cập nhật ứng viên tốt nhất: ưu tiên bao phủ ASR tối đa
+                        # — kể cả retry_healed còn mega_summary, vẫn so sánh coverage để chọn bản tốt hơn
+                        _retry_has_mega = any(len(it.get("src", [])) >= 15 for it in retry_healed)
+                        if curr_cov > best_candidate["covered"] or (
+                            curr_cov == best_candidate["covered"] and curr_errs <= best_candidate["errors"]
+                        ):
+                            # Ưu tiên bản không có mega-summary nếu coverage ngang nhau
+                            _prev_has_mega = any(len(it.get("src", [])) >= 15 for it in (best_candidate["healed"] or []))
+                            if not _retry_has_mega or _prev_has_mega or curr_cov > best_candidate["covered"]:
                                 best_candidate = {
                                     "healed": retry_healed,
                                     "inv": retry_inv,
@@ -713,7 +733,7 @@ class TranslationPipelineService:
                         healed_items = retry_healed
                         inv_check = retry_inv
 
-                        if retry_inv.get("passed") and not any(item.get("_retry_needed", False) for item in retry_healed):
+                        if retry_inv.get("passed") and not any(item.get("_retry_needed", False) for item in retry_healed) and not _retry_has_mega:
                             try:
                                 with open(batch_raw_resp_file, "w", encoding="utf-8") as f_raw_upd:
                                     f_raw_upd.write(raw_retry or "")
@@ -735,9 +755,18 @@ class TranslationPipelineService:
                     except Exception:
                         pass
 
-            # Chốt chặn nghiêm ngặt: Nếu sau retry vẫn dính tóm tắt khổng lồ, dừng tiến trình báo người dùng
+            # Sau tất cả retry: nếu vẫn còn mega-summary, KHÔNG dừng pipeline — log cảnh báo
+            # và để enforce_sequential_asr_locking phân bổ timecode tuần tự (sandwich mechanism)
             if any(len(it.get("src", [])) >= 20 for it in (healed_items or [])):
-                err_msg = f"Lô #{b_num} bị phát hiện tóm tắt nuốt câu bất thường sau {_retry_count} lần thử. Đã dừng an toàn để không làm hỏng kịch bản phim!"
+                warn_msg = (
+                    f"⚠️ [Lô #{b_num}] Vẫn còn gộp câu sau {_retry_count}/{_max_retries} lần thử "
+                    f"— Healer sẽ phân bổ timeline tuần tự. Pipeline tiếp tục."
+                )
+                task_manager.add_log(task_id, warn_msg, "amber")
+                logger.warning(warn_msg)
+                # Chỉ dừng pipeline khi thực sự mất toàn bộ nội dung (healed_items rỗng)
+            if not healed_items:
+                err_msg = f"Lô #{b_num}: Kết quả dịch rỗng hoàn toàn sau {_retry_count} lần thử. Dừng an toàn."
                 task_manager.add_log(task_id, f"❌ {err_msg}", "rose")
                 raise RuntimeError(err_msg)
 
