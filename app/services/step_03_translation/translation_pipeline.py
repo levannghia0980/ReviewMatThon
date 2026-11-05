@@ -645,11 +645,26 @@ class TranslationPipelineService:
                     logger.warning(f"[Lo #{b_num}] Canh bao timeline: {inv_check.get('errors')}")
 
             # FlowHealer v2: RETRY toi da MAX_RETRIES lan neu lo co qua nhieu loi hoac bo sot cau
-            _max_retries = 2
+            _max_retries = 3
             _retry_count = 0
+            best_candidate = {
+                "healed": healed_items,
+                "inv": inv_check,
+                "covered": inv_check.get("covered_orig", 0),
+                "errors": len(inv_check.get("errors", [])),
+                "raw_resp": raw_llm_batch_output
+            }
+
             while healed_items and _retry_count < _max_retries:
                 _retry_needed = (not inv_check.get("passed")) or any(item.get("_retry_needed", False) for item in healed_items)
                 if not _retry_needed:
+                    best_candidate = {
+                        "healed": healed_items,
+                        "inv": inv_check,
+                        "covered": inv_check.get("covered_orig", len(batch_orig_dicts)),
+                        "errors": 0,
+                        "raw_resp": raw_llm_batch_output
+                    }
                     break
                 _retry_count += 1
                 missing_info = f" (bị bỏ sót {len(batch_orig_dicts) - inv_check.get('covered_orig', len(batch_orig_dicts))} câu ASR)" if not inv_check.get("passed") else ""
@@ -676,19 +691,55 @@ class TranslationPipelineService:
 
                     _parsed_retry = parse_ai_script_output(raw_retry)
                     if isinstance(_parsed_retry, list) and len(_parsed_retry) > 0:
-                        healed_items, _, _ = SmartTimelineHealer.audit_and_heal(
+                        retry_healed, _, _ = SmartTimelineHealer.audit_and_heal(
                             batch_orig_dicts, _parsed_retry, entity_table_text
                         )
-                        inv_check = SmartTimelineHealer.verify_3_invariants(healed_items, batch_orig_dicts)
-                        # Đồng bộ cập nhật file thô chính thức khớp 100% với lần retry thành công
-                        try:
-                            with open(batch_raw_resp_file, "w", encoding="utf-8") as f_raw_upd:
-                                f_raw_upd.write(raw_retry or "")
-                        except Exception as e_upd:
-                            logger.warning(f"Lỗi cập nhật file thô cuối cùng {batch_raw_resp_file}: {e_upd}")
+                        retry_inv = SmartTimelineHealer.verify_3_invariants(retry_healed, batch_orig_dicts)
+                        curr_cov = retry_inv.get("covered_orig", 0)
+                        curr_errs = len(retry_inv.get("errors", []))
+
+                        # Cập nhật ứng viên tốt nhất: ưu tiên bao phủ ASR tối đa, không chứa tóm tắt
+                        has_mega_summary = any(len(it.get("src", [])) >= 15 for it in retry_healed)
+                        if not has_mega_summary:
+                            if curr_cov > best_candidate["covered"] or (curr_cov == best_candidate["covered"] and curr_errs <= best_candidate["errors"]):
+                                best_candidate = {
+                                    "healed": retry_healed,
+                                    "inv": retry_inv,
+                                    "covered": curr_cov,
+                                    "errors": curr_errs,
+                                    "raw_resp": raw_retry
+                                }
+
+                        healed_items = retry_healed
+                        inv_check = retry_inv
+
+                        if retry_inv.get("passed") and not any(item.get("_retry_needed", False) for item in retry_healed):
+                            try:
+                                with open(batch_raw_resp_file, "w", encoding="utf-8") as f_raw_upd:
+                                    f_raw_upd.write(raw_retry or "")
+                            except Exception as e_upd:
+                                logger.warning(f"Lỗi cập nhật file thô cuối cùng {batch_raw_resp_file}: {e_upd}")
+                            break
                 except Exception as e_retry:
                     logger.warning(f"[Lo #{b_num}] Dich lai that bai: {e_retry}")
                     break
+
+            # Áp dụng ứng viên tốt nhất để bảo vệ chất lượng kịch bản, chống thoái hóa về bản tóm tắt
+            if best_candidate.get("healed"):
+                healed_items = best_candidate["healed"]
+                inv_check = best_candidate["inv"]
+                if best_candidate.get("raw_resp"):
+                    try:
+                        with open(batch_raw_resp_file, "w", encoding="utf-8") as f_raw_best:
+                            f_raw_best.write(best_candidate["raw_resp"])
+                    except Exception:
+                        pass
+
+            # Chốt chặn nghiêm ngặt: Nếu sau retry vẫn dính tóm tắt khổng lồ, dừng tiến trình báo người dùng
+            if any(len(it.get("src", [])) >= 20 for it in (healed_items or [])):
+                err_msg = f"Lô #{b_num} bị phát hiện tóm tắt nuốt câu bất thường sau {_retry_count} lần thử. Đã dừng an toàn để không làm hỏng kịch bản phim!"
+                task_manager.add_log(task_id, f"❌ {err_msg}", "rose")
+                raise RuntimeError(err_msg)
 
             # Rebuild timecode chinh xac tu src (enforce_sequential_asr_locking da vo hieu hoa chia deu cung)
             if healed_items:

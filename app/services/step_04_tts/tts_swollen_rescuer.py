@@ -87,45 +87,33 @@ class TTSSwollenRescuer:
             for i, item in enumerate(batch_items, 1):
                 mapping[i] = item
                 target_dur = float(item.get("target_dur", 2.0))
-                # Tốc độ lồng tiếng chuẩn tự nhiên ~3.8 từ/giây (vừa khít tỷ lệ 1.10x - 1.28x)
-                # Min words: chặn dưới để câu không bị cắt quá cụt làm tỷ lệ tụt < 1.0
-                min_words = max(2, int(round(target_dur * 3.4)))
-                # Max words: chặn trên an toàn để tốc độ đọc không vượt quá 1.28x
-                max_words = max(min_words + 1, int(round(target_dur * 4.0)))
+                # Tốc độ lồng tiếng chuẩn tự nhiên: 3.4 từ/giây (vừa khít tốc độ ~1.10x, nói xong cùng lúc hết cảnh)
+                target_words = max(3, int(round(target_dur * 3.4)))
 
                 prompt_payload.append({
                     "id": i,
-                    "vi_current": item.get("text_vi", ""),
-                    "target_duration_sec": round(target_dur, 2),
-                    "min_words": min_words,
-                    "max_words": max_words
+                    "text": str(item.get("text_vi", "")).strip(),
+                    "target_words": target_words
                 })
 
             prompt_str = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
 
-            prompt = f"""Bạn là TỔNG BIÊN TẬP VIÊN LỒNG TIẾNG PHIM CAO CẤP.
-Dưới đây là danh sách các câu thoại tiếng Việt đang bị DÀI QUÁ MỨC so với thời lượng nói của nhân vật (target_duration_sec), khiến âm thanh bị nói quá nhanh (> 1.30x).
+            prompt = f"""Bạn là chuyên gia biên tập kịch bản lồng tiếng phim.
+Dưới đây là danh sách các câu thoại tiếng Việt đang bị dài so với thời lượng cảnh quay.
+Hãy viết gọn lại từng câu sao cho số từ xấp xỉ `target_words` (cho phép chênh lệch ±1 từ), tuân thủ:
+1. Giữ trọn vẹn 100% ý nghĩa, cảm xúc và ngữ khí của nhân vật, đặc biệt là các từ cảm thán, từ ngữ khí cuối câu (nhé, cơ mà, chứ, cả, đấy, hả...).
+2. Câu văn diễn đạt tự nhiên, gãy gọn, xuôi tai, không bị cộc lốc hay cụt nghĩa.
 
-=== DANH SÁCH CÂU CẦN ĐIỀU CHỈNH ĐỘ DÀI ===
+Danh sách câu cần rút gọn:
 {prompt_str}
 
-=== QUY TẮC BIÊN TẬP & ĐIỀU CHỈNH (BẮT BUỘC) ===
-1. MỤC TIÊU CỐT LÕI - VỪA VẶN NHỊP NÓI [1.10x - 1.28x]:
-   - Viết lại câu thoại có số từ NẰM TRONG KHOẢNG [min_words - max_words] để giọng đọc khớp tự nhiên với thời lượng cảnh phim.
-   - 🛑 CẤM CẮT XÉN QUÁ CỤT LỦN: Tuyệt đối KHÔNG viết câu ngắn hơn min_words, không được làm câu cộc lốc, vô nghĩa.
-   - 🛑 CẤM VƯỢT QUÁ TRẦN: Tuyệt đối KHÔNG vượt quá max_words để tránh tràn âm thanh sang cảnh sau.
-2. VĂN PHONG & NỘI DUNG:
-   - Bảo toàn 100% ý nghĩa, sắc thái cảm xúc và bối phận nhân vật trong phim.
-   - Lược bỏ các từ đệm rườm rà, chọn lọc động từ mạnh, súc tích, xuôi tai, đậm chất điện ảnh.
-3. ĐỊNH DẠNG ĐẦU RA:
-   - Chỉ trả về duy nhất mảng JSON thuần hợp lệ theo định dạng sau:
+Chỉ trả về duy nhất mảng JSON thuần hợp lệ (không kèm lời dẫn hay giải thích):
 [
   {{
     "id": 1,
-    "shortened_sentence": "Câu tiếng Việt vừa vặn nhịp nói"
+    "text": "câu đã rút gọn quanh target_words"
   }}
-]
-Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ngoài JSON!"""
+]"""
 
             # 2. Gọi LLM cô đọng câu chữ cho lô này
             try:
@@ -165,9 +153,9 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
                     if not orig_item:
                         continue
 
-                    shortened_text = str(resp_item.get("shortened_sentence") or resp_item.get("vi") or "").strip()
+                    shortened_text = str(resp_item.get("text") or resp_item.get("shortened_sentence") or resp_item.get("vi") or "").strip()
                     clean_text = PostProcessor.extract_clean_vietnamese_text(shortened_text)
-                    if not clean_text:
+                    if not clean_text or len(clean_text.split()) < 2:
                         continue
 
                     d_id = orig_item["dialogue_id"]
@@ -182,20 +170,12 @@ Tuyệt đối KHÔNG kèm bất kỳ lời dẫn hay giải thích nào bên ng
                         new_ratio = new_dur_sec / target_dur
                         orig_ratio = float(orig_item.get("ratio", 1.3))
 
-                        # GUARDRAIL KIỂM SOÁT TỶ LỆ ÂM THANH:
-                        is_acceptable = True
-                        reject_reason = ""
-                        if new_ratio < 0.90:
-                            if orig_ratio <= 1.50:
-                                is_acceptable = False
-                                reject_reason = f"Bị cắt quá ngắn ({new_ratio:.2f}x < 0.90x), giữ bản cũ ({orig_ratio:.2f}x) để bảo toàn nghĩa"
-                        elif new_ratio >= orig_ratio:
-                            is_acceptable = False
-                            reject_reason = f"Không giảm được thời lượng ({new_ratio:.2f}x >= cũ {orig_ratio:.2f}x)"
-
-                        if not is_acceptable:
+                        # QUY TẮC CHẤP NHẬN:
+                        # Đã bỏ hoàn toàn chặn sàn 0.65x.
+                        # Miễn là câu mới giảm được tốc độ so với bản cũ (new_ratio < orig_ratio) thì lấy 100%.
+                        if new_ratio >= orig_ratio:
                             _safe_log(
-                                f"  ⚠️ [Bỏ Qua Vá Câu #{orig_item.get('index', d_id)}]: {reject_reason}\n"
+                                f"  ⚠️ [Bỏ Qua Vá Câu #{orig_item.get('index', d_id)}]: Không giảm được thời lượng ({new_ratio:.2f}x >= cũ {orig_ratio:.2f}x)\n"
                                 f"     • Cũ: \"{orig_item.get('text_vi')}\"\n"
                                 f"     • Bị loại: \"{clean_text}\""
                             )

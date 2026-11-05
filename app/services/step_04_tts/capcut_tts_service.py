@@ -107,6 +107,33 @@ def normalize_tts_text(text: str) -> str:
     text = re.sub(r'\bVi\b', 'Vy', text)
     text = re.sub(r'\bvi\b', 'vy', text)
 
+    # 3. Chuẩn hóa phát âm chữ "e" trong từ ghép và thán từ (tránh ByteDance TTS đọc nhầm thành "Em"):
+    text = re.sub(r'\b[eE]\s+ngại\b', 'è ngại', text)
+    text = re.sub(r'\b[eE]\s+rằng\b', 'è rằng', text)
+    text = re.sub(r'\b[eE]\s+là\b', 'è là', text)
+    text = re.sub(r'\b[eE]\s+sợ\b', 'lo sợ', text)
+    text = re.sub(r'\b[eE]\s+dè\b', 'dè dặt', text)
+    text = re.sub(r'\b[eE]\s+thẹn\b', 'thẹn thùng', text)
+    text = re.sub(r'\b[eE]\s*\!+', 'Ê!', text)
+    text = re.sub(r'\b[eE]\s*\?+', 'Ể?', text)
+    text = re.sub(r'\b[eE]\s*(?:\.{2,}|…)', 'Ơ...', text)
+
+    # 4. Chuẩn hóa chuỗi "aa", "aaa", "Aa", "Aaa"... thành "a' a'", "a' a' a'" (theo yêu cầu ngữ âm)
+    def _expand_repeated_a(m):
+        chars = m.group(0)
+        return " ".join([f"{c}'" for c in chars])
+    text = re.sub(r'\b[aA]{2,}\b', _expand_repeated_a, text)
+
+    # 5. Tên riêng tiền tố "A" (A Vân, A Cường, A Bảo, A Dũng...):
+    # Dùng A' để tránh TTS đọc thành "Anh Vân", đồng thời giữ nguyên âm A không dấu
+    text = re.sub(r'\bA\s+([A-ZÀ-Ỹ][a-zà-ỹ]*)', r"A' \1", text)
+
+    # 6. Thán từ "A" độc lập (tránh đọc thành "Anh"):
+    text = re.sub(r'\b[aA]\s+ha\b', 'À ha', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b[aA]\s*\!+', 'Á!', text)
+    text = re.sub(r'\b[aA]\s*(?:\.{2,}|…)', 'À...', text)
+    text = re.sub(r'\b[aA]\s*\,', 'À,', text)
+
     text = re.sub(r'[\r\n\t]+', ' ', text)
     text = re.sub(r'["“”„‟«»]', ' ', text)
     text = re.sub(r'[\(\)\[\]\{\}]', ' ', text)
@@ -798,15 +825,30 @@ class CapCutTTSService:
 
             # Chỉ kích hoạt nếu tỷ lệ thô > ngưỡng (1.30x) VÀ sau khi gọt im lặng vẫn vượt 1.15x
             if ratio > TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD and effective_ratio > 1.15:
-                swollen_items.append({
-                    "dialogue_id": d.id,
-                    "dialogue_obj": d,
-                    "index": getattr(d, 'tts_index', getattr(d, 'index', d.id)),
-                    "text_vi": d.translated_text or "",
-                    "target_dur": target_dur,
-                    "ratio": ratio,
-                    "voice_code": voice_code
-                })
+                vi_text = str(d.translated_text or "").strip()
+                # Đếm số câu bằng các dấu kết câu (. ! ? … ; :)
+                sub_sentences = [s for s in re.split(r'[\.!\?…;:]+', vi_text) if s.strip()]
+                num_sub_sentences = len(sub_sentences)
+                char_count = len(vi_text)
+
+                # BỘ LỌC THÔNG MINH ĐA TIÊU CHÍ (TIME + SỐ CÂU KẾT + KÝ TỰ):
+                # - Chỉ vá những câu ngắn/vừa: target_dur <= 10.0s, tối đa <= 4 câu nhỏ, tối đa <= 200 ký tự.
+                # - Các câu trường thiên đại cảnh (> 10s hoặc > 4 câu hoặc > 200 ký tự): TUYỆT ĐỐI KHÔNG GỌI LLM CẮT XÉN,
+                #   để bảo toàn 100% tình tiết cốt truyện, và nhường cho bước TRIM + Co Giãn Tốc Độ xử lý vừa vặn.
+                if target_dur <= 10.0 and num_sub_sentences <= 4 and char_count <= 200:
+                    zh_text = getattr(d, 'text_zh', None) or getattr(d, 'original_text', '') or ""
+                    speaker_name = getattr(d, 'speaker', None) or getattr(d, 'role', '') or "DẪN CHUYỆN"
+                    swollen_items.append({
+                        "dialogue_id": d.id,
+                        "dialogue_obj": d,
+                        "index": getattr(d, 'tts_index', getattr(d, 'index', d.id)),
+                        "text_vi": vi_text,
+                        "text_zh": zh_text,
+                        "speaker": speaker_name,
+                        "target_dur": target_dur,
+                        "ratio": ratio,
+                        "voice_code": voice_code
+                    })
 
         if swollen_items:
             task_manager.add_log(

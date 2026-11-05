@@ -1,9 +1,10 @@
 import os
+import re
 import logging
 import subprocess
 from pathlib import Path
 from app.config import settings
-from app.utils.bin_helper import get_ffmpeg_cmd
+from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +60,32 @@ class AudioExtractorService:
 
     @staticmethod
     def get_audio_duration(audio_path: str) -> float:
+        """Đọc thời lượng audio chính xác bằng FFprobe hoặc dự phòng FFmpeg."""
+        # 1. Thử qua FFprobe
         try:
-            ffprobe_cmd = get_ffmpeg_cmd()[0].replace("ffmpeg", "ffprobe")
-            cmd = [ffprobe_cmd, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            return float(res.stdout.strip())
+            ffprobe_cmd = get_ffprobe_cmd()
+            cmd = [*ffprobe_cmd, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)]
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=8)
+            if res.returncode == 0 and res.stdout.strip():
+                val = float(res.stdout.strip())
+                if val > 0:
+                    return val
         except Exception:
-            return 0.0
+            pass
+
+        # 2. Thử dự phòng qua FFmpeg -i regex (cực kỳ hữu ích khi máy chỉ có ffmpeg)
+        try:
+            ffmpeg_cmd = get_ffmpeg_cmd()
+            cmd = [*ffmpeg_cmd, "-i", str(audio_path)]
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=8)
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", res.stderr)
+            if m:
+                h, mm, s = int(m.group(1)), int(m.group(2)), float(m.group(3))
+                return h * 3600 + mm * 60 + s
+        except Exception:
+            pass
+
+        return 0.0
 
     @staticmethod
     def split_audio_chunks_with_overlap(audio_path: str, chunk_length_sec: int = 2700, overlap_sec: int = 45) -> list:

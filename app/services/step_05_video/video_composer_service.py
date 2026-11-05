@@ -256,9 +256,33 @@ class VideoComposerService:
 
         return False
 
-    @staticmethod
-    def _find_valid_audio(audio_source_path: Optional[Union[str, Path]]) -> Optional[Path]:
-        """Tìm file âm thanh hợp lệ trên đĩa, tự động thích ứng các đuôi mở rộng (.m4a, .aac, .mp3, .wav)."""
+    @classmethod
+    def _is_file_readable_audio(cls, file_path: Path) -> bool:
+        """Kiểm tra file âm thanh có đọc được và không bị thiếu moov atom (đang ghi dở)."""
+        if not file_path or not file_path.exists() or file_path.stat().st_size < 1000:
+            return False
+        try:
+            ffprobe_bin = get_ffprobe_cmd()[0]
+            cmd = [
+                ffprobe_bin, "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(file_path.resolve())
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                try:
+                    dur = float(res.stdout.strip().split("\n")[0].strip())
+                    return dur > 0.1
+                except Exception:
+                    return False
+        except Exception:
+            return False
+        return False
+
+    @classmethod
+    def _find_valid_audio(cls, audio_source_path: Optional[Union[str, Path]]) -> Optional[Path]:
+        """Tìm file âm thanh hợp lệ trên đĩa, tự động thích ứng các đuôi mở rộng (.m4a, .aac, .mp3, .wav) và kiểm tra tính toàn vẹn."""
         if not audio_source_path:
             return None
         p = Path(audio_source_path)
@@ -270,12 +294,12 @@ class VideoComposerService:
             p.with_suffix(".wav")
         ]
         for cand in candidates:
-            if cand.exists() and cand.stat().st_size > 1000:
+            if cls._is_file_readable_audio(cand):
                 return cand
         try:
             if p.parent.exists():
                 for f in p.parent.glob(f"{p.stem}.*"):
-                    if f.suffix.lower() in (".m4a", ".aac", ".mp3", ".wav") and f.stat().st_size > 1000:
+                    if f.suffix.lower() in (".m4a", ".aac", ".mp3", ".wav") and cls._is_file_readable_audio(f):
                         return f
         except Exception:
             pass
@@ -522,8 +546,8 @@ class VideoComposerService:
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=segments,
-                    bgm_volume_when_speaking=0.35,  # 0.35 (35%) đồng đều xuyên suốt
-                    bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM sống động
+                    bgm_volume_when_speaking=0.23,  # 0.23 (23%) đồng đều xuyên suốt
+                    bgm_volume_normal=0.23,  # 0.23 (23%) khi không nói để giữ rõ âm thanh môi trường và BGM sống động
                     voiceover_volume=1.0
                 )
                 audio_source = str(mixed_path)
@@ -1190,6 +1214,24 @@ class VideoComposerService:
 
         c_res = subprocess.run(concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir.resolve()))
         out_video = Path(output_temp_video)
+
+        # Nếu Concat kèm Audio thất bại (do audio chưa sẵn sàng hoặc lỗi mux), tự động fallback sang Concat Video thuần túy
+        # để bảo toàn 100% các phân đoạn video đã render cực nhọc, tuyệt đối không hủy bỏ phân đoạn!
+        if (c_res.returncode != 0 or not out_video.exists() or out_video.stat().st_size < 1000) and has_audio:
+            if task_id:
+                task_manager.add_log(task_id, "⚠️ Single-Pass Concat kèm Audio chưa sẵn sàng, chuyển sang Concat Video thuần túy (Bảo toàn 100% phân đoạn)...", "amber")
+            fallback_concat_cmd = [
+                *ffmpeg_cmd, "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_list_file.name,
+                "-c", "copy"
+            ]
+            if total_duration <= 1800.0:
+                fallback_concat_cmd.extend(["-movflags", "+faststart"])
+            fallback_concat_cmd.append(str(out_dest))
+            c_res = subprocess.run(fallback_concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir.resolve()))
+
         if c_res.returncode == 0 and out_video.exists() and out_video.stat().st_size > 1000:
             # Dọn dẹp ngay các phân đoạn tạm để giải phóng ổ đĩa
             try:

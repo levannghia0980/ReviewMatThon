@@ -20,7 +20,7 @@ if %ERRORLEVEL% EQU 0 (
         echo [*] Phat hien Git - Dang dong bo toan bo ma nguon va giao dien moi nhat tu GitHub...
         git fetch origin main
         git reset --hard origin/main
-        git clean -fd -e database -e input -e output -e temp -e .env -e venv
+        git clean -fd -e database -e input -e output -e temp -e .env -e venv -e tools
         echo.
     )
 )
@@ -38,4 +38,3 @@ echo ===========================================================================
 echo [OK] Hoan tat dong bo ma nguon moi nhat! Ban co the chay '2_KHOI_DONG.bat'.
 echo ==============================================================================
 pause
-

@@ -554,14 +554,15 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         def _video_worker():
             try:
-                # Single-Pass Muxing: Truyền audio_source_path (mixed_audio_file) và xuất trực tiếp ra output_final_path.
-                # Khi các phân đoạn video hoàn tất, Concat Demuxer sẽ ghép video & gắn audio trong 1 bước duy nhất!
+                # Single-Pass Muxing: Chỉ truyền audio_source_path nếu luồng Audio Mixer đã hoàn tất 100% (tránh lỗi moov atom dở dang).
+                # Nếu luồng Audio Mixer chưa xong, Video sẽ xuất luồng hình ảnh thuần túy, và Bước 4 sẽ mux lại an toàn.
+                target_audio_for_video = str(mixed_audio_file) if audio_res_container.get("success") else None
                 v_ok = VideoComposerService.render_visual_stream(
                     task_id=task_id,
                     video_input_path=project.video_path,
                     ass_file_path=str(ass_file),
                     output_temp_video=str(output_final_path),
-                    audio_source_path=str(mixed_audio_file),
+                    audio_source_path=target_audio_for_video,
                     logo_position=req.logo_position,
                     logo_size=req.logo_size,
                     channel_name=req.channel_name,

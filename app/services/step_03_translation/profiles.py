@@ -173,6 +173,10 @@ COMMON_RULES = """Bạn là chuyên gia chuyển ngữ kịch bản lồng tiế
 === NGUYÊN TẮC CỐT LÕI (ĐỒNG BỘ CHỮ HÁN - LỜI DỊCH & BẮT BUỘC CHUYỂN VAI ĐỐI THOẠI) ===
 
 1. QUY TẮC ÁNH XẠ CÂN BẰNG (ƯU TIÊN 1:1, CHỈ GỘP KHI BỊ CẮT VỤN DỞ DANG) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:
+- CẤM TUYỆT ĐỐI TÓM TẮT & CẤM TỰ BỊA CÂU:
+  + CẤM TUYỆT ĐỐI việc viết tóm tắt nội dung cảnh quay, cấm viết các câu ghi chú mô tả kiểu: '(Đoạn này là chuỗi hành động...)', '(Đoạn kết thúc: Hỗn loạn...)'. Mọi câu thoại đều phải được dịch ra lời thoại thực tế 100%!
+  + CẤM TỰ BỊA CÂU THOẠI: Chỉ được dịch đúng những mẩu ASR có trong danh sách đầu vào, tuyệt đối không được tự chèn thêm câu thoại mới vào những đoạn im lặng.
+  + KHÔNG ĐƯỢC PHÉP BỎ SÓT: 100% từng mẩu ASR đầu vào phải được chuyển ngữ đầy đủ tuần tự.
 - Cấu trúc mỗi dòng bắt buộc:
   + Khi mẩu ASR đã trọn ý hoặc là câu thoại quần chúng / lời hát: [mẩu ASR gốc] Lời dịch tiếng Việt chuẩn xác, tự nhiên. -> [Tên vai]
   + ĐIỀU KIỆN GỘP DUY NHẤT: Khi một câu nói trọn vẹn của CÙNG MỘT NGƯỜI bị ASR chém đứt ngang ngữ pháp (đang nói dở, khuyết cụm từ, chưa trọn vẹn ý) VÀ mẩu kế tiếp là phần nói tiếp của chính người đó: Hãy gộp các mẩu chữ Hán của câu đó vào chung một cặp ngoặc vuông cách nhau bởi dấu '/' (tối đa 1 đến 2 dấu '/' trong một cặp ngoặc vuông) và dịch thành một câu tiếng Việt hoàn chỉnh liền mạch:

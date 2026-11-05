@@ -1,16 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-SmartTimelineHealer v5.2 — Căn chỉnh zh -> ASR theo TỪNG MẢNH (Neo tuần tự + Đếm thứ tự từ + Kẹp 1-1).
+SmartTimelineHealer v5.3 — Căn chỉnh zh -> ASR theo TỪNG MẢNH & Kẹp Bánh Mì Khoanh Vùng (Sandwich Containment).
 
-NÂNG CẤP CỐT LÕI (v5.2):
-1. Câu ngắn (<= 5 chữ) tại vị trí tuần tự i+1: Không dùng tỷ lệ % phạt kép độ dài; chuyển sang
-   so khớp ĐẾM THỨ TỰ TỪ (Substring / LCS >= 2 chữ, hoặc 1 chữ khớp vị trí/khác hư từ có kiểm tra i+2).
-2. Câu lặp / điệp khúc (verdict == 'tie'): Ưu tiên chốt tuần tự (Monotonic First-Match) vào ngay
-   vị trí đầu con trỏ i+1 nếu không bỏ qua mẩu nội dung nào, giải quyết triệt để lỗi chết chùm câu lặp.
-3. Kẹp bánh mì tuần tự 1-1 (Sandwich 1-to-1): Nếu mảnh k tại i+1 bị đổi chữ nhưng mảnh k+1 khớp chuẩn
-   ngay tại i+2 (kẹp 1-1 tuyệt đối cho câu ngắn), tự động chốt mảnh k vào i+1.
-4. Auto-heal Internal Gap: Tự động hấp thụ mẩu lọt khe bên trong câu gộp (chunks[0]..chunks[-1]) vào src.
-5. MERGE_ACROSS_KHOA chuyển thành cờ mềm (soft_flags), không ép dịch lại cả lô.
+NÂNG CẤP CỐT LÕI (v5.3):
+1. Gỡ bỏ hoàn toàn MERGED_CHUNKS_IN_PIECE, MERGE_ACROSS_GAP, GAP_COLLISION khỏi HARD_FLAG_PREFIXES.
+   LLM gộp câu ASR bị cắt ngang (Ca E) là hành vi thông minh hợp lệ 100%, chỉ ghi nhận vào soft_flags.
+2. Kẹp Bánh Mì Khoanh Vùng (Sandwich Containment) giữa 2 câu Neo chuẩn vị trí gốc:
+   - Nếu 1-2 mẩu ASR ngắn/rác bị LLM bỏ qua nhưng nằm kẹp giữa 2 câu liền kề đã khóa chuẩn vị trí với ASR gốc
+     -> Khoanh vùng thành SANDWICH_SKIPPED_CHUNK (soft_flags), không đánh DROPPED_CHUNK bắt dịch lại.
+   - Nếu 1 câu ở giữa bị LLM viết lại chữ Hán làm mất khớp (NO_SRC / PIECE_UNMATCHED), nhưng câu ngay trước (L)
+     và câu ngay sau (R) đều khớp chuẩn vị trí với ASR gốc, và khe (L..R) có sẵn 1-2 mẩu ASR vừa vặn
+     -> Kẹp thẳng các mẩu lọt khe đó cho câu ở giữa, xóa lỗi cứng, giữ nguyên timeline mượt mà.
+3. Chỉ bắt dịch lại (HARD FAIL) khi:
+   - Mất đoạn nội dung dài (thủng lưới >= 3 mẩu ASR liên tiếp hoặc tổng chữ > 10 chữ / thời lượng > 3.5s).
+   - Hiệu ứng cánh bướm (Butterfly Drift): Trượt neo liên hoàn (UNSYNC_SPAN / NEEDS_REVIEW_UNSYNC / OUT_OF_ORDER).
+   - Lỗi ở biên đầu/cuối lô không có vỏ bánh mì kẹp và vượt ngưỡng an toàn.
 
 API TƯƠNG THÍCH HOÀN TOÀN:
 - audit_and_heal, check_and_heal, check_and_heal_ex, align_sequential, align_zh_to_asr,
@@ -66,6 +70,15 @@ MERGE_TH = 0.70
 MERGE_GAIN = 0.15
 LOW_CONF_BAND = 0.05
 JUNK_MAX_LEN = 0  # CẤM coi câu ngắn là rác: 1-2 chữ (A!, Cút!, Dừng tay!) đều là thoại hợp lệ 100%
+
+# --- NGƯỠNG KẸP BÁNH MÌ KHOANH VÙNG (SANDWICH CONTAINMENT) ---
+SANDWICH_ANCHOR_MIN_RATIO = 0.65   # Độ tin cậy tối thiểu để 1 câu được công nhận là Vỏ Bánh Mì chuẩn gốc
+SANDWICH_SKIP_MAX_CHUNKS = 2       # Tối đa số mẩu ASR ngắn bị LLM lược bỏ nằm giữa 2 vỏ bánh mì
+SANDWICH_SKIP_MAX_CHARS = 10       # Tổng chữ Hán tối đa của khe bị lược bỏ (nếu > 10 chữ = mất câu dài -> bắt dịch lại)
+SANDWICH_SKIP_MAX_DUR = 3.5        # Tổng thời lượng tối đa (giây) của khe bị lược bỏ
+SANDWICH_ORPHAN_MAX_CHUNKS = 2     # Tối đa số mẩu ASR lọt khe gán cho 1 câu mồ côi nằm giữa 2 vỏ bánh mì
+SANDWICH_ORPHAN_MAX_CHARS = 14     # Tổng chữ Hán tối đa cho phép kẹp cứu 1 câu mồ côi
+SANDWICH_ORPHAN_MAX_DUR = 5.0      # Tổng thời lượng tối đa cho phép kẹp cứu 1 câu mồ côi
 
 JUNK_PHRASES = {'谢谢观看', '感谢观看', '谢谢收看', '请订阅', '字幕由'}
 
@@ -261,14 +274,13 @@ def _seg_text(seg: Dict[str, Any]) -> str:
 
 
 class SmartTimelineHealer:
-    """SmartTimelineHealer v5.2."""
+    """SmartTimelineHealer v5.3 — Kẹp Bánh Mì Khoanh Vùng & Miễn Phạt Gộp Câu Hợp Lệ."""
 
-    # Đã loại bỏ MERGE_ACROSS_KHOA và INTERNAL_GAP khỏi HARD_FLAG_PREFIXES để không ép retry cả lô
+    # Đã loại bỏ hoàn toàn MERGED_CHUNKS_IN_PIECE, MERGE_ACROSS_GAP, GAP_COLLISION,
+    # MERGE_ACROSS_KHOA và INTERNAL_GAP khỏi HARD_FLAG_PREFIXES.
     HARD_FLAG_PREFIXES = (
         "DROPPED_CHUNK", "UNSYNC_SPAN", "PIECE_UNMATCHED", "PIECE_UNASSIGNED", "AMBIGUOUS",
-        "MERGED_CHUNKS_IN_PIECE", "OUT_OF_ORDER", "MERGE_ACROSS_GAP",
-        "GAP_COLLISION", "NO_SRC", "INVALID_SRC", "ZH_MISSING", "NEEDS_REVIEW",
-        "ONE2ONE",
+        "OUT_OF_ORDER", "NO_SRC", "INVALID_SRC", "ZH_MISSING", "NEEDS_REVIEW", "ONE2ONE",
     )
 
     # =========================================================================
@@ -307,8 +319,8 @@ class SmartTimelineHealer:
                 + int(tele.get('internal_gaps_healed', 0))
             )
             logs.append(
-                f"[Align v5.2] {tele['matched_pieces']}/{tele['total_pieces']} mảnh khớp | "
-                f"cứu câu ngắn={tele.get('short_seq_rescued', 0)} | kẹp 1-1={tele.get('sandwich_rescued', 0)} | "
+                f"[Align v5.3] {tele['matched_pieces']}/{tele['total_pieces']} mảnh khớp | "
+                f"cứu câu ngắn={tele.get('short_seq_rescued', 0)} | kẹp bánh mì={tele.get('sandwich_rescued', 0)} | "
                 f"lấp khe={tele.get('internal_gaps_healed', 0)} | rác bỏ qua={tele.get('junk_skipped_count', 0)} | "
                 f"mẩu nội dung rơi={len(tele.get('unassigned_real_dropped', []))} | cờ={dict(tele['flags'])}")
         else:
@@ -321,7 +333,7 @@ class SmartTimelineHealer:
                 c['soft_flags'] = []
                 c['_ok'] = False
                 aligned.append(c)
-            logs.append("[Align v5.2] Lô không có trường zh -> ZH_MISSING_ENTIRE_BATCH, yêu cầu dịch lại.")
+            logs.append("[Align v5.3] Lô không có trường zh -> ZH_MISSING_ENTIRE_BATCH, yêu cầu dịch lại.")
 
         # BƯỚC 2: ghi chú mềm cho câu gộp băng qua khoảng lặng cứng ([KHÓA]) — KHÔNG đánh lỗi cứng
         cls.flag_gap_collisions(aligned, seg_map)
@@ -340,7 +352,7 @@ class SmartTimelineHealer:
 
         healed = audited
 
-        # BƯỚC 6: cờ retry CHỈ cho câu lỗi cứng
+        # BƯỚC 6: cờ retry CHỈ cho câu lỗi cứng thực sự (không thể khoanh vùng bằng bánh mì kẹp thịt)
         for it in healed:
             bad = (not it.get('_ok', True)) or bool(it.get('hard_flags')) or not it.get('src')
             it['_retry_needed'] = bad
@@ -349,15 +361,18 @@ class SmartTimelineHealer:
         fails = sum(1 for it in healed if it['_retry_needed'])
         passed = len(healed) - fails
         sep = '=' * 58
-        summary = (f"\n{sep}\nSmartTimelineHealer v5.2 | {len(healed)} câu | {N} mẩu ASR\n"
+        summary = (f"\n{sep}\nSmartTimelineHealer v5.3 | {len(healed)} câu | {N} mẩu ASR\n"
                    f"  PASSED={passed} CẦN_RETRY={fails} TỰ_CỨU={fixes} | CỬA_SỔ_RETRY={len(windows)}\n"
                    f"  KẾT QUẢ: {'CAN DICH LAI (cục bộ)' if windows else 'DAT'}\n{sep}")
         if verbose:
-            print(summary, flush=True)
+            try:
+                print(summary, flush=True)
+            except Exception:
+                pass
         return healed, fixes, [summary] + logs, windows
 
     # =========================================================================
-    # KHỐI 1: CĂN CHỈNH TỪNG MẢNH ZH VÀO ASR (LÕI)
+    # KHỐI 1: CĂN CHỈNH TỪNG MẢNH ZH VÀO ASR & KẸP BÁNH MÌ KHOANH VÙNG
     # =========================================================================
     @staticmethod
     def _extract_pieces(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -381,6 +396,185 @@ class SmartTimelineHealer:
                     'margin': None
                 })
         return pieces
+
+    @classmethod
+    def _is_trusted_anchor_item(cls, it: Dict[str, Any]) -> bool:
+        """
+        Kiểm tra một câu kịch bản có đủ chuẩn làm 'Vỏ Bánh Mì' (Anchor) không:
+        - Có src hợp lệ.
+        - Không mang bất kỳ lỗi trượt cấu trúc hay lỗi cứng nào.
+        - Khớp với ASR gốc ở mức tin cậy cao (match_ratio >= SANDWICH_ANCHOR_MIN_RATIO).
+        """
+        src = it.get('src') or []
+        if not src:
+            return False
+        if it.get('hard_flags'):
+            return False
+        if float(it.get('match_ratio', 0.0) or 0.0) < SANDWICH_ANCHOR_MIN_RATIO:
+            return False
+        return True
+
+    @classmethod
+    def _apply_sandwich_containment(
+        cls,
+        out: List[Dict[str, Any]],
+        order: List[int],
+        pos_of: Dict[int, int],
+        seg_map: Dict[int, Dict[str, Any]],
+        texts: Dict[int, str],
+        junk: Set[int],
+        telemetry: Dict[str, Any],
+    ) -> None:
+        """
+        KẸP BÁNH MÌ KHOANH VÙNG LỖI CỤC BỘ (Sandwich Containment):
+        Nếu câu trước (L) và câu sau (R) đều là các Neo chuẩn vị trí gốc (Trusted Anchors),
+        mọi biến động nhỏ nằm gọn trong khe (L..R) sẽ được khoanh vùng tại chỗ mà không bắt dịch lại:
+          1. Câu mồ côi (NO_SRC / PIECE_UNMATCHED) nằm kẹp giữa L và R:
+             Gán trực tiếp các mẩu ASR chưa ai nhận nằm giữa L và R (nếu <= 2 mẩu, <= 14 chữ, <= 5s).
+          2. Câu đã có src chuẩn nhưng dính cờ PIECE_UNMATCHED / AMBIGUOUS ở mảnh phụ:
+             Nếu src của nó nằm khít tuần tự giữa L và R (không nhảy cóc quá 2 mẩu), hạ cờ cứng xuống cờ mềm.
+        """
+        num_items = len(out)
+        if num_items == 0:
+            return
+
+        all_assigned = {c for o in out for c in (o.get('src') or [])}
+
+        # --- Tầng A: Cứu câu mồ côi (NO_SRC) bị kẹp 1-1 giữa 2 Vỏ Bánh Mì chuẩn ---
+        for idx in range(num_items):
+            it = out[idx]
+            if it.get('src'):
+                continue
+            # Không cứu nếu câu này nằm trong vùng đã mất đồng bộ dây chuyền (cánh bướm)
+            if any(f.startswith(('UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC', 'OUT_OF_ORDER')) for f in it.get('hard_flags', [])):
+                continue
+
+            left_item = out[idx - 1] if idx > 0 else None
+            right_item = out[idx + 1] if idx + 1 < num_items else None
+
+            if left_item is None or right_item is None:
+                continue
+            if not (cls._is_trusted_anchor_item(left_item) and cls._is_trusted_anchor_item(right_item)):
+                continue
+
+            l_end = left_item['src'][-1]
+            r_start = right_item['src'][0]
+            if pos_of[l_end] >= pos_of[r_start]:
+                continue
+
+            # Các mẩu ASR nằm строго giữa Neo Trái và Neo Phải chưa được gán cho ai
+            avail_between = [
+                order[p]
+                for p in range(pos_of[l_end] + 1, pos_of[r_start])
+                if order[p] not in all_assigned and order[p] not in junk
+            ]
+            if not avail_between or len(avail_between) > SANDWICH_ORPHAN_MAX_CHUNKS:
+                continue
+
+            gap_chars = sum(len(texts.get(c, '')) for c in avail_between)
+            gap_dur = sum(
+                max(0.0, float(seg_map[c].get('end', 0.0) or 0.0) - float(seg_map[c].get('start', 0.0) or 0.0))
+                for c in avail_between
+            )
+            if gap_chars <= SANDWICH_ORPHAN_MAX_CHARS and gap_dur <= SANDWICH_ORPHAN_MAX_DUR:
+                it['src'] = sorted(avail_between)
+                it['n_t1'] = len(it['src'])
+                it['match_ratio'] = max(float(it.get('match_ratio', 0.0) or 0.0), 0.70)
+                rescued_flags = [
+                    f for f in it.get('hard_flags', [])
+                    if not f.startswith(('NO_SRC', 'PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                ]
+                demoted = [
+                    f for f in it.get('hard_flags', [])
+                    if f.startswith(('NO_SRC', 'PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                ]
+                it['hard_flags'] = rescued_flags
+                it['soft_flags'] = list(it.get('soft_flags', [])) + [
+                    f'SANDWICH_CONTAINED_ORPHAN_{avail_between}'
+                ] + [f'CONTAINED_{d}' for d in demoted]
+                it['align_ok'] = len(it['hard_flags']) == 0
+                it['_ok'] = it['align_ok']
+                for c in avail_between:
+                    all_assigned.add(c)
+                telemetry['sandwich_rescued'] += 1
+
+        # --- Tầng A2: Khử câu rác do LLM tự bịa/lặp lại (Sandwich Phantom Purge) ---
+        # Nếu câu rỗng src (NO_SRC) kẹp giữa 2 Neo chuẩn LIỀN KỀ (hoặc không còn mẩu ASR nào trống ở giữa),
+        # thì đây là câu ảo do LLM tự chèn (phantom injection). Đánh dấu loại bỏ để bảo toàn 100% câu thật.
+        indices_to_purge = []
+        for idx in range(num_items):
+            it = out[idx]
+            if it.get('src'):
+                continue
+            left_item = out[idx - 1] if idx > 0 else None
+            right_item = out[idx + 1] if idx + 1 < num_items else None
+            if left_item is not None and right_item is not None:
+                if cls._is_trusted_anchor_item(left_item) and cls._is_trusted_anchor_item(right_item):
+                    l_end = left_item['src'][-1]
+                    r_start = right_item['src'][0]
+                    # Nếu giữa 2 neo không còn mẩu ASR nào chưa gán (hoặc chỉ toàn junk)
+                    avail = [
+                        order[p]
+                        for p in range(pos_of[l_end] + 1, pos_of[r_start])
+                        if order[p] not in all_assigned and order[p] not in junk
+                    ]
+                    if not avail:
+                        indices_to_purge.append(idx)
+
+        if indices_to_purge:
+            for purge_idx in sorted(indices_to_purge, reverse=True):
+                purged_it = out.pop(purge_idx)
+                logger.info(
+                    f"🧹 [Sandwich Phantom Purge] Đã loại bỏ câu ảo tự sinh không có trong ASR: "
+                    f"'{purged_it.get('zh', '')}' -> '{purged_it.get('vi', '')}'"
+                )
+            num_items = len(out)
+
+        # --- Tầng B: Câu đã có src hợp lệ, nằm gọn giữa 2 Neo chuẩn nhưng thừa mảnh phụ bị lệch chữ ---
+        for idx in range(num_items):
+            it = out[idx]
+            src = it.get('src') or []
+            h_flags = it.get('hard_flags') or []
+            if not src or not h_flags:
+                continue
+            # Tuyệt đối không hạ cờ nếu dính lỗi cấu trúc / cánh bướm
+            if any(f.startswith(('UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC', 'OUT_OF_ORDER', 'DROPPED_CHUNK', 'ZH_MISSING')) for f in h_flags):
+                continue
+
+            # Kiểm tra biên trái và biên phải
+            left_ok = False
+            if idx == 0 and pos_of[src[0]] <= 1:
+                left_ok = True
+            elif idx > 0 and cls._is_trusted_anchor_item(out[idx - 1]):
+                l_end = out[idx - 1]['src'][-1]
+                if 0 <= pos_of[src[0]] - pos_of[l_end] <= 2:
+                    left_ok = True
+
+            right_ok = False
+            if idx == num_items - 1 and (len(order) - 1 - pos_of[src[-1]]) <= 1:
+                right_ok = True
+            elif idx + 1 < num_items and cls._is_trusted_anchor_item(out[idx + 1]):
+                r_start = out[idx + 1]['src'][0]
+                if 0 <= pos_of[r_start] - pos_of[src[-1]] <= 2:
+                    right_ok = True
+
+            if left_ok and right_ok:
+                kept_hard = [
+                    f for f in h_flags
+                    if not f.startswith(('PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                ]
+                demoted = [
+                    f for f in h_flags
+                    if f.startswith(('PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                ]
+                if demoted:
+                    it['hard_flags'] = kept_hard
+                    it['soft_flags'] = list(it.get('soft_flags', [])) + [
+                        f'SANDWICH_CONTAINED_PARTIAL_{src}'
+                    ] + [f'CONTAINED_{d}' for d in demoted]
+                    it['align_ok'] = len(it['hard_flags']) == 0
+                    it['_ok'] = it['align_ok']
+                    telemetry['sandwich_rescued'] += 1
 
     @classmethod
     def align_sequential(cls, items: List[Dict[str, Any]], orig_segs: List[Dict[str, Any]]
@@ -674,6 +868,7 @@ class SmartTimelineHealer:
                     c_i1, junk_before_i1, c_i2 = first_content_cand(cands)
 
             # Ca E (Nâng cấp): 1 mảnh LLM bao trùm 2 mẩu ASR nội dung liền kề (c_i1 + c_i2)
+            # Đây là hành vi gộp câu đứt ngang hợp lệ 100%, gắn cờ mềm MERGED_CHUNKS_IN_PIECE
             if len(txt) >= 4 and c_i1 is not None and c_i2 is not None:
                 between = [order[p] for p in range(pos_of[c_i1] + 1, pos_of[c_i2])]
                 if all(b in junk for b in between):
@@ -688,6 +883,8 @@ class SmartTimelineHealer:
                         pc['best'], pc['margin'] = s_merged, s_merged - s_single
                         commit(k, [c1 for c1 in (c_i1, c_i2)], junk_before_i1 + between)
                         pc['flags'].append(f'MERGED_CHUNKS_IN_PIECE_[{c_i1},{c_i2}]')
+                        telemetry['best_scores'].append(round(s_merged, 3))
+                        telemetry['margins'].append(round(s_merged - s_single, 3))
                         k += 1
                         continue
 
@@ -941,13 +1138,6 @@ class SmartTimelineHealer:
 
             hard = list(dict.fromkeys(f for f in item_flags if f.startswith(cls.HARD_FLAG_PREFIXES)))
             soft = list(dict.fromkeys(f for f in item_flags if f not in hard))
-            for f in hard + soft:
-                prefix_key = f.split('_[')[0].split('_')[0]
-                if f.startswith(('PIECE_', 'MERGED_', 'SHORT_', 'SANDWICH_', 'INTERNAL_', 'ITEM_')):
-                    parts = f.split('_')
-                    if len(parts) > 1:
-                        prefix_key += '_' + parts[1]
-                telemetry['flags'][prefix_key] += 1
 
             bests = [p['best'] for p in pcs if p['best'] is not None]
             margins = [p['margin'] for p in pcs if p['margin'] is not None]
@@ -967,7 +1157,10 @@ class SmartTimelineHealer:
                 '_ok': align_ok,
             })
 
-        # ---- Cứu hộ Kẹp 0-1 giữa 2 câu liền kề (nếu LLM gộp ngầm câu ngắn sát vách mà không ghi zh_piece) ----
+        # ---- KẸP BÁNH MÌ KHOANH VÙNG LỖI CỤC BỘ CHO CÁC CÂU NẰM GIỮA 2 ĐẦU NEO CHUẨN ----
+        cls._apply_sandwich_containment(out, order, pos_of, seg_map, texts, junk, telemetry)
+
+        # ---- Xử lý các mẩu ASR chưa được gán sau khi đã kẹp câu ----
         all_assigned = {c for o in out for c in o['src']}
         unassigned = [c for c in order if c not in all_assigned]
         real_dropped = [c for c in unassigned if c not in junk]
@@ -985,61 +1178,117 @@ class SmartTimelineHealer:
             if tgt is not None:
                 tgt['junk_covered'].append(j)
 
+        # Gom các mẩu real_dropped liên tiếp thành từng cụm (contiguous runs) để xét kẹp bánh mì
+        dropped_runs: List[List[int]] = []
         for u in real_dropped:
-            i = bisect.bisect_right(starts, u)
-            # 1. Nằm lọt lòng bên trong 1 câu
-            if i > 0 and by_start[i - 1][0] < u < by_start[i - 1][1]:
+            if dropped_runs and pos_of[u] == pos_of[dropped_runs[-1][-1]] + 1:
+                dropped_runs[-1].append(u)
+            else:
+                dropped_runs.append([u])
+
+        for run in dropped_runs:
+            u_first, u_last = run[0], run[-1]
+            i = bisect.bisect_right(starts, u_first)
+
+            # 1. Nằm lọt lòng bên trong 1 câu gộp
+            if len(run) == 1 and i > 0 and by_start[i - 1][0] < u_first < by_start[i - 1][1]:
                 tgt = by_start[i - 1][2]
-                if u not in tgt['src']:
-                    tgt['src'].append(u)
+                if u_first not in tgt['src']:
+                    tgt['src'].append(u_first)
                     tgt['src'].sort()
                     tgt['n_t1'] = len(tgt['src'])
                     telemetry['internal_gaps_healed'] += 1
-                    tgt['soft_flags'].append(f'INTERNAL_GAP_HEALED_[{u}]')
+                    tgt['soft_flags'].append(f'INTERNAL_GAP_HEALED_[{u_first}]')
                 continue
 
-            # 2. Nằm ở biên giữa câu trước và câu sau: kiểm tra xem chữ Hán của u đã được dịch gộp chưa
-            u_txt = texts.get(u, '')
-            rescued_boundary = False
-            if u_txt:
-                cand_neighbors = []
-                if i > 0 and pos_of[u] == pos_of[by_start[i - 1][1]] + 1:
-                    cand_neighbors.append(by_start[i - 1][2])
-                if i < len(by_start) and pos_of[by_start[i][0]] == pos_of[u] + 1:
-                    cand_neighbors.append(by_start[i][2])
-                for nb_item in cand_neighbors:
-                    nb_zh = norm_zh(nb_item.get('zh', '') or ''.join(nb_item.get('zh_pieces', [])))
-                    if u_txt and (u_txt in nb_zh or _longest_contiguous_match(u_txt, nb_zh) >= max(2, len(u_txt) - 1)):
-                        nb_item['src'].append(u)
-                        nb_item['src'].sort()
-                        nb_item['n_t1'] = len(nb_item['src'])
-                        telemetry['internal_gaps_healed'] += 1
-                        nb_item['soft_flags'].append(f'BOUNDARY_CHUNK_ABSORBED_[{u}]')
-                        rescued_boundary = True
-                        break
-            if rescued_boundary:
-                continue
+            # 2. Nằm ở biên câu: kiểm tra xem chữ Hán của mẩu đơn lẻ đã được dịch gộp trong câu láng giềng chưa
+            if len(run) == 1:
+                u_txt = texts.get(u_first, '')
+                rescued_boundary = False
+                if u_txt:
+                    cand_neighbors = []
+                    if i > 0 and pos_of[u_first] == pos_of[by_start[i - 1][1]] + 1:
+                        cand_neighbors.append(by_start[i - 1][2])
+                    if i < len(by_start) and pos_of[by_start[i][0]] == pos_of[u_first] + 1:
+                        cand_neighbors.append(by_start[i][2])
+                    for nb_item in cand_neighbors:
+                        nb_zh = norm_zh(nb_item.get('zh', '') or ''.join(nb_item.get('zh_pieces', [])))
+                        if u_txt and (u_txt in nb_zh or _longest_contiguous_match(u_txt, nb_zh) >= max(2, len(u_txt) - 1)):
+                            nb_item['src'].append(u_first)
+                            nb_item['src'].sort()
+                            nb_item['n_t1'] = len(nb_item['src'])
+                            telemetry['internal_gaps_healed'] += 1
+                            nb_item['soft_flags'].append(f'BOUNDARY_CHUNK_ABSORBED_[{u_first}]')
+                            rescued_boundary = True
+                            break
+                if rescued_boundary:
+                    continue
 
-            # 3. Thực sự bị LLM bỏ sót -> gắn cờ DROPPED_CHUNK
+            # 3. KẸP BÁNH MÌ CHO MẨU ASR BỊ LLM LƯỢC BỎ (Sanctioned Sandwich Skip):
+            # Nếu cụm mẩu bị bỏ qua nằm kẹp giữa 2 câu Neo chuẩn vị trí gốc (left_anchor và right_anchor)
+            # và có kích thước nhỏ (<= 2 mẩu, <= 10 chữ Hán, <= 3.5 giây), đây là từ đệm/câu thừa được LLM chủ động lược bỏ.
+            # Khoanh vùng vào junk_covered để giữ timeline an toàn, KHÔNG đánh DROPPED_CHUNK bắt dịch lại!
+            if 0 < i < len(by_start):
+                left_item = by_start[i - 1][2]
+                right_item = by_start[i][2]
+                is_tightly_bounded = (
+                    pos_of[u_first] == pos_of[by_start[i - 1][1]] + 1
+                    and pos_of[by_start[i][0]] == pos_of[u_last] + 1
+                )
+                if (
+                    is_tightly_bounded
+                    and cls._is_trusted_anchor_item(left_item)
+                    and cls._is_trusted_anchor_item(right_item)
+                    and len(run) <= SANDWICH_SKIP_MAX_CHUNKS
+                ):
+                    run_chars = sum(len(texts.get(x, '')) for x in run)
+                    run_dur = sum(
+                        max(0.0, float(seg_map[x].get('end', 0.0) or 0.0) - float(seg_map[x].get('start', 0.0) or 0.0))
+                        for x in run
+                    )
+                    if run_chars <= SANDWICH_SKIP_MAX_CHARS and run_dur <= SANDWICH_SKIP_MAX_DUR:
+                        for x in run:
+                            left_item['junk_covered'].append(x)
+                            junk_covered.add(x)
+                        left_item['soft_flags'].append(f'SANDWICH_SKIPPED_CHUNK_{run}')
+                        telemetry['sandwich_rescued'] += len(run)
+                        telemetry['junk_skipped_count'] += len(run)
+                        continue
+
+            # 4. Thực sự mất đoạn nội dung dài (Thủng lưới lớn / Không có neo kẹp) -> Bắt buộc đánh DROPPED_CHUNK để dịch lại
             tgt = by_start[i][2] if i < len(by_start) else (by_start[-1][2] if by_start else (out[-1] if out else None))
             if tgt is None:
                 continue
-            tgt['dropped_chunks'].append(u)
-            flag = f'DROPPED_CHUNK_[{u}]'
-            if flag not in tgt['hard_flags']:
-                tgt['hard_flags'].append(flag)
+            for x in run:
+                tgt['dropped_chunks'].append(x)
+                flag = f'DROPPED_CHUNK_[{x}]'
+                if flag not in tgt['hard_flags']:
+                    tgt['hard_flags'].append(flag)
+                telemetry['flags']['DROPPED_CHUNK'] += 1
             tgt['align_ok'] = False
             tgt['_ok'] = False
-            telemetry['flags']['DROPPED_CHUNK'] += 1
 
-        # Cập nhật lại tập đã gán sau khi lấp khe
+        # Thống kê lại telemetry flags từ toàn bộ các câu sau khi đã qua bước kẹp bánh mì
+        for o in out:
+            for f in o.get('hard_flags', []) + o.get('soft_flags', []):
+                if f.startswith('DROPPED_CHUNK'):
+                    continue  # đã cộng ở trên
+                prefix_key = f.split('_[')[0].split('_')[0]
+                if f.startswith(('PIECE_', 'MERGED_', 'SHORT_', 'SANDWICH_', 'INTERNAL_', 'ITEM_')):
+                    parts = f.split('_')
+                    if len(parts) > 1:
+                        prefix_key += '_' + parts[1]
+                telemetry['flags'][prefix_key] += 1
+
+        # Cập nhật lại tập đã gán sau khi lấp khe & kẹp bánh mì
         all_assigned = {c for o in out for c in o['src']}
-        unassigned = [c for c in order if c not in all_assigned]
+        all_junk_cov = junk_covered | set(junk_un) | {c for o in out for c in o.get('junk_covered', [])}
+        unassigned = [c for c in order if c not in all_assigned and c not in all_junk_cov]
         real_dropped = [c for c in unassigned if c not in junk]
 
         telemetry['unassigned_all'] = sorted(unassigned)
         telemetry['unassigned_real_dropped'] = real_dropped
-        telemetry['junk_covered'] = sorted(junk_covered | set(junk_un))
+        telemetry['junk_covered'] = sorted(all_junk_cov)
         telemetry['total_items'] = len(out)
         telemetry['total_segs'] = len(order)
         return out, telemetry
@@ -1342,15 +1591,45 @@ class SmartTimelineHealer:
         """Mốc thời gian: s, e, e_content (chuẩn xác tuyệt đối từ ASR gốc),
         e_max (trần an toàn = đầu mẩu ASR kế tiếp thật - đệm),
         e_max_ext (nới qua mẩu rác thuần túy, có giới hạn chặt chẽ <= 1.0s).
-        Câu không có src => timing_valid=False."""
+        Phân chia thời lượng theo tỷ lệ chữ Hán khi ASR bị cắt dính 2 câu đối thoại (Shared Chunk)."""
         seg_map = {s.get("index", i + 1): s for i, s in enumerate(segs)}
         order = sorted(seg_map.keys())
         pos_of = {c: i for i, c in enumerate(order)}
         junk = {c for c in order if is_junk_segment(seg_map[c])}
         assigned_all = {s for it in items for s in (it.get('src') or []) if s in seg_map}
 
+        # Chống lỗi khi ASR bị cắt dính 2 câu thoại vào 1 mẩu ASR (Shared Chunk Between Dialogue Turns):
+        shared_groups: Dict[int, List[int]] = {}
+        for idx, it in enumerate(items):
+            src = it.get('src') or []
+            if len(src) == 1:
+                shared_groups.setdefault(src[0], []).append(idx)
+
+        shared_splits: Dict[int, Tuple[float, float]] = {}
+        for cid, item_indices in shared_groups.items():
+            if len(item_indices) > 1 and cid in seg_map:
+                seg_s = round(float(seg_map[cid].get('start', 0.0) or 0.0), 2)
+                seg_e = round(float(seg_map[cid].get('end', 0.0) or 0.0), 2)
+                seg_dur = max(0.2, seg_e - seg_s)
+
+                weights = []
+                for idx in item_indices:
+                    zh_len = len(norm_zh(items[idx].get('zh', '')))
+                    if zh_len == 0:
+                        zh_len = max(1, len(str(items[idx].get('vi', '')).split()))
+                    weights.append(zh_len)
+                total_w = sum(weights) or len(weights)
+
+                cur_s = seg_s
+                for i_pos, idx in enumerate(item_indices):
+                    w_ratio = weights[i_pos] / total_w
+                    item_dur = max(0.1, round(seg_dur * w_ratio, 2))
+                    cur_e = seg_e if i_pos == len(item_indices) - 1 else round(cur_s + item_dur, 2)
+                    shared_splits[idx] = (cur_s, cur_e)
+                    cur_s = cur_e
+
         prev_e: Optional[float] = None
-        for it in items:
+        for idx, it in enumerate(items):
             it['role'] = SmartTimelineHealer._norm_role(it.get('role'))
             src = sorted({s for s in (it.get('src') or []) if s in seg_map})
             it['src'] = src
@@ -1358,9 +1637,13 @@ class SmartTimelineHealer:
                 it['timing_valid'] = False
                 continue
 
-            # Mốc thực tế từ ASR kèm kẹp đơn điệu (Monotonic Clamp) khi ASR gốc bị đè mốc thời gian
-            s_val = round(float(seg_map[src[0]].get('start', 0.0) or 0.0), 2)
-            e_val = round(float(seg_map[src[-1]].get('end', 0.0) or 0.0), 2)
+            if idx in shared_splits:
+                s_val, e_val = shared_splits[idx]
+            else:
+                # Mốc thực tế từ ASR kèm kẹp đơn điệu (Monotonic Clamp) khi ASR gốc bị đè mốc thời gian
+                s_val = round(float(seg_map[src[0]].get('start', 0.0) or 0.0), 2)
+                e_val = round(float(seg_map[src[-1]].get('end', 0.0) or 0.0), 2)
+
             if prev_e is not None and s_val < prev_e:
                 s_val = prev_e
             if e_val < s_val:
@@ -1413,30 +1696,69 @@ class SmartTimelineHealer:
     @classmethod
     def verify_3_invariants(cls, items: List[Dict[str, Any]], orig_segments: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Bất biến. structural_errors = lỗi cấu trúc (phủ lặng, trùng, thứ tự, trần, chồng thời gian);
-        quality_errors = câu còn cờ cứng / src rỗng. 'errors' = cả hai (tương thích bản cũ)."""
+        quality_errors = câu còn cờ cứng / src rỗng. 'errors' = cả hai (tương thích bản cũ).
+        NÂNG CẤP v5.3: Kẹp Bánh Mì Sandwich (Sanctioned Gaps) cho mẩu ASR ngắn/rác lọt giữa 2 mẩu hợp lệ."""
         N = len(orig_segments)
         seg_map = {s.get("index", i + 1): s for i, s in enumerate(orig_segments)}
-        valid = set(seg_map.keys())
-        all_src = [x for it in items for x in (it.get('src') or []) if x in valid]
+        order = sorted(seg_map.keys())
+        pos_of = {c: i for i, c in enumerate(order)}
+        valid = set(order)
+
+        all_src_list = [x for it in items for x in (it.get('src') or []) if x in valid]
+        assigned_set = set(all_src_list)
         junk_cov: Set[int] = set()
         flagged_dropped: Set[int] = set()
         for it in items:
             junk_cov.update(it.get('junk_covered', []))
             flagged_dropped.update(it.get('dropped_chunks', []))
 
-        covered = set(all_src) | junk_cov
+        covered = assigned_set | junk_cov
         missing = sorted(valid - covered)
         real_missing = [m for m in missing if not is_junk_segment(seg_map[m])]
-        silent_missing = [m for m in real_missing if m not in flagged_dropped]
+
+        # Phân loại mẩu missing: Nếu được Kẹp Bánh Mì an toàn giữa 2 mẩu hợp lệ (Sandwich Clamping)
+        # và là mẩu ngắn (<= 3.5s hoặc text ngắn <= 10 chữ), đây là mẩu rác/nghỉ hợp lệ (Sanctioned Gap)
+        silent_missing_strict: List[int] = []
+        for m in real_missing:
+            if m in flagged_dropped:
+                continue
+            p = pos_of.get(m, -1)
+            is_sandwiched = False
+            if p > 0 and p + 1 < len(order):
+                left_c = order[p - 1]
+                right_c = order[p + 1]
+                if (left_c in assigned_set or left_c in junk_cov) and (right_c in assigned_set or right_c in junk_cov):
+                    seg_m = seg_map.get(m, {})
+                    dur_m = float(seg_m.get('end', 0.0) or 0.0) - float(seg_m.get('start', 0.0) or 0.0)
+                    txt_m = _seg_text(seg_m)
+                    if dur_m <= SANDWICH_SKIP_MAX_DUR or len(txt_m) <= SANDWICH_SKIP_MAX_CHARS:
+                        is_sandwiched = True
+
+            if not is_sandwiched:
+                silent_missing_strict.append(m)
 
         structural: List[str] = []
         quality: List[str] = []
-        if silent_missing:
-            structural.append(f"Bỏ sót LẶNG {len(silent_missing)} mẩu nội dung (không có cờ): {silent_missing[:10]}")
-        counts = Counter(all_src)
+        if silent_missing_strict:
+            structural.append(f"Bỏ sót LẶNG {len(silent_missing_strict)} mẩu nội dung (không có cờ): {silent_missing_strict[:10]}")
+
+        # Chồng lấn SRC: Chỉ tính nếu khác câu kịch bản VÀ không phải là trường hợp tách câu đối thoại (Shared Chunk)
+        counts = Counter(all_src_list)
         dups = [k for k, v in counts.items() if v > 1]
+        real_inter_item_dups = []
         if dups:
-            structural.append(f"Chồng lấn SRC {len(dups)} mẩu: {dups[:10]}")
+            for d in dups:
+                claiming_items = [idx for idx, it in enumerate(items) if d in (it.get('src') or [])]
+                if len(claiming_items) > 1:
+                    is_consecutive_shared = (
+                        all(len(items[idx].get('src') or []) == 1 for idx in claiming_items)
+                        and claiming_items == list(range(claiming_items[0], claiming_items[0] + len(claiming_items)))
+                    )
+                    if not is_consecutive_shared:
+                        real_inter_item_dups.append(d)
+        if real_inter_item_dups:
+            structural.append(f"Chồng lấn SRC {len(real_inter_item_dups)} mẩu giữa các câu: {real_inter_item_dups[:10]}")
+
         prev_max = 0
         for it in items:
             s = it.get('src', [])
@@ -1444,6 +1766,7 @@ class SmartTimelineHealer:
                 if s[0] < prev_max:
                     structural.append(f"Lệch thứ tự: {s} đi sau {prev_max}")
                 prev_max = max(prev_max, s[-1])
+
         prev_e = None
         for idx, it in enumerate(items):
             if not it.get('timing_valid', bool(it.get('src'))):
@@ -1459,6 +1782,8 @@ class SmartTimelineHealer:
         empty_src = [i + 1 for i, it in enumerate(items) if not it.get('src')]
         if empty_src:
             quality.append(f"{len(empty_src)} câu rỗng src: #{empty_src[:10]}")
+
+        # Failed: Chỉ tính câu lỗi cứng thật sự
         failed = [i + 1 for i, it in enumerate(items)
                   if not it.get('_ok', True) or it.get('hard_flags') or it.get('is_quarantined')]
         if failed:
@@ -1471,10 +1796,10 @@ class SmartTimelineHealer:
             'errors': errs,
             'structural_errors': structural,
             'quality_errors': quality,
-            'covered_orig': len(set(all_src)),
+            'covered_orig': len(assigned_set),
             'covered_total': len(covered),
             'missing_indices': real_missing,
-            'silent_missing_indices': silent_missing,
+            'silent_missing_indices': silent_missing_strict,
             'flagged_dropped_indices': sorted(flagged_dropped),
             'empty_src_items': empty_src,
             'failed_items': failed,

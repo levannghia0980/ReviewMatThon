@@ -40,8 +40,8 @@ def _get_tiktok_session() -> str:
     return settings.TIKTOK_SESSION_ID or "410bfa37bdc185e1c6da82e1afb48409"
 
 def _get_capcut_cookie() -> str:
-    """Luôn đọc runtime từ settings, fallback về TIKTOK_SESSION_ID nếu chưa set."""
-    return settings.CAPCUT_COOKIE or settings.TIKTOK_SESSION_ID or "410bfa37bdc185e1c6da82e1afb48409"
+    """Luôn đọc runtime từ settings."""
+    return settings.CAPCUT_COOKIE or ""
 
 # Alias lấy giá trị runtime chuẩn xác
 DEFAULT_TIKTOK_SESSION_ID: str = _get_tiktok_session()
@@ -432,7 +432,7 @@ class AsyncTTSEngine:
         voice_code: str = "BV074_streaming",
         cookie: Optional[str] = None,
         proxy: Optional[str] = None,
-        timeout_sec: float = 18.0,
+        timeout_sec: float = 60.0,
         return_utterances: bool = False,
     ) -> Any:
         """Tải 1 chunk âm thanh CapCut Cloud SAMI (Create -> Query Polling -> Download CDN)."""
@@ -461,18 +461,19 @@ class AsyncTTSEngine:
                 if not task_id or not token:
                     return (None, []) if return_utterances else None
 
-            # Polling query task status cho đến khi có speech_url
+            # Polling query task status cho đến khi có speech_url (hỗ trợ hàng đợi dài khi tải nhiều luồng)
             start_poll = time.time()
-            max_poll_time = timeout_sec - 4.0
+            max_poll_time = timeout_sec - 3.0
+            poll_interval = 0.8
             while (time.time() - start_poll) < max_poll_time:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(poll_interval)
                 q_url, q_headers, q_body = client.build_query_request(task_id, token, mode="tts")
                 async with session.post(
                     q_url,
                     headers=q_headers,
                     data=q_body.encode("utf-8"),
                     proxy=proxy,
-                    timeout=aiohttp.ClientTimeout(total=6.0),
+                    timeout=aiohttp.ClientTimeout(total=8.0),
                 ) as q_resp:
                     if q_resp.status != 200:
                         continue
@@ -492,7 +493,7 @@ class AsyncTTSEngine:
                             async with session.get(
                                 speech_url,
                                 proxy=proxy,
-                                timeout=aiohttp.ClientTimeout(total=10.0),
+                                timeout=aiohttp.ClientTimeout(total=15.0),
                             ) as dl_resp:
                                 if dl_resp.status == 200:
                                     content = await dl_resp.read()
@@ -503,6 +504,7 @@ class AsyncTTSEngine:
                         return (None, []) if return_utterances else None
                     elif status == "failed":
                         return (None, []) if return_utterances else None
+                    # Nếu status == "queueing", tiếp tục lặp chờ CapCut giải phóng hàng đợi
         except Exception as e:
             logger.debug(f"fetch_capcut_chunk_async exception: {e}")
 
@@ -582,8 +584,8 @@ class AsyncTTSEngine:
                 return_utterances=return_utterances,
             )
             audio_b = res[0] if return_utterances and isinstance(res, tuple) else res
-            # Cứu hộ qua Edge TTS nếu API chính từ chối câu sau khi đã thử lại
-            if (not audio_b or len(audio_b) < 100) and ("Neural" not in voice_code and "hoaimy" not in voice_code.lower()):
+            # Thử lại câu nếu API từ chối câu (tuyệt đối giữ đúng giọng được chỉ định)
+            if (not audio_b or len(audio_b) < 100):
                 retry_res = await cls.synthesize_single_subchunk(
                     session=session,
                     sub_text=raw_text,
@@ -597,11 +599,6 @@ class AsyncTTSEngine:
                 if retry_b and len(retry_b) > 100:
                     audio_b = retry_b
                     res = retry_res
-                else:
-                    rescue_b = await cls.fetch_edge_chunk_async(text=raw_text, voice_code="vi-VN-HoaiMyNeural")
-                    if rescue_b and len(rescue_b) > 100:
-                        audio_b = rescue_b
-                        res = (rescue_b, []) if return_utterances else rescue_b
 
             if return_sub_timings:
                 seg_dur = len(_load_audio_from_bytes(audio_b, "mp3")) if audio_b else 0
@@ -635,7 +632,7 @@ class AsyncTTSEngine:
             a_b = res[0] if return_utterances and isinstance(res, tuple) else res
             u_l = res[1] if return_utterances and isinstance(res, tuple) else []
 
-            # Cứu hộ chunk con nếu lỗi (ưu tiên thử lại cùng giọng trước)
+            # Thử lại chunk con nếu lỗi (tuyệt đối giữ đúng 100% giọng chỉ định)
             if not a_b or len(a_b) < 100:
                 retry_res = await cls.synthesize_single_subchunk(
                     session=session,
@@ -650,9 +647,6 @@ class AsyncTTSEngine:
                 if retry_b and len(retry_b) > 100:
                     a_b = retry_b
                     u_l = retry_res[1] if return_utterances and isinstance(retry_res, tuple) else []
-                else:
-                    a_b = await cls.fetch_edge_chunk_async(text=sub_c, voice_code="vi-VN-HoaiMyNeural")
-                    u_l = []
 
             if not a_b or len(a_b) < 100:
                 if return_sub_timings:
@@ -876,30 +870,15 @@ class AsyncTTSEngine:
                             # 💥 GẶP LỖI
                             next_retry = attempts + 1
                             if next_retry > max_retries_per_item:
-                                # Đã thử vượt ngưỡng retry: Cứu hộ dứt điểm bằng Edge TTS
-                                edge_rescue = await cls.fetch_edge_chunk_async(text=text, voice_code="vi-VN-HoaiMyNeural")
-                                if edge_rescue and len(edge_rescue) > 100:
-                                    results_map[d_id] = edge_rescue
-                                    if return_utterances:
-                                        utterances_map[d_id] = []
-                                    completed_count += 1
-                                    log_msg = f"⚡ TTS: Cứu hộ thành công câu #{chunk_idx + 1:03d} qua Edge TTS an toàn! ✔"
-                                    try:
-                                        if log_callback:
-                                            log_callback(log_msg, "emerald")
-                                    except Exception:
-                                        pass
-                                    continue
-                                else:
-                                    # Fallback cuối: Cấp đệm âm thanh im lặng để không treo hàng đợi
-                                    silent_buf = io.BytesIO()
-                                    AudioSegment.silent(duration=1500).export(silent_buf, format="mp3")
-                                    results_map[d_id] = silent_buf.getvalue()
-                                    if return_utterances:
-                                        utterances_map[d_id] = []
-                                    completed_count += 1
-                                    logger.error(f"Câu #{chunk_idx + 1:03d} đã quá {max_retries_per_item} lần thử -> Cấp đệm im lặng giải phóng queue.")
-                                    continue
+                                # Đã thử vượt ngưỡng retry: Cấp đệm âm thanh im lặng đúng thời lượng để không treo hàng đợi và TUYỆT ĐỐI không nhảy giọng
+                                silent_buf = io.BytesIO()
+                                AudioSegment.silent(duration=1500).export(silent_buf, format="mp3")
+                                results_map[d_id] = silent_buf.getvalue()
+                                if return_utterances:
+                                    utterances_map[d_id] = []
+                                completed_count += 1
+                                logger.error(f"Câu #{chunk_idx + 1:03d} đã quá {max_retries_per_item} lần thử -> Cấp đệm im lặng giải phóng queue.")
+                                continue
 
                             high_prio = priority - 100_000_000
 

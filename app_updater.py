@@ -61,6 +61,7 @@ PROTECTED_PATHS = {
     "output",
     "temp",
     "venv",
+    "tools",
     ".git",
     ".app_version",
     ".pip_hash",
