@@ -27,8 +27,8 @@ def _run_translation_worker(task_id: str, req: TranslateProjectRequest):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        effective_batch_size = req.batch_size or getattr(settings, "TRANSLATION_BATCH_SIZE", 500)
-        effective_max_chars = req.max_chars or getattr(settings, "TRANSLATION_MAX_CHARS", 50000)
+        effective_batch_size = getattr(settings, "TRANSLATION_BATCH_SIZE", 500) or req.batch_size or 500
+        effective_max_chars = getattr(settings, "TRANSLATION_MAX_CHARS", 50000) or req.max_chars or 50000
         effective_provider = (req.provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")).strip()
 
         loop.run_until_complete(

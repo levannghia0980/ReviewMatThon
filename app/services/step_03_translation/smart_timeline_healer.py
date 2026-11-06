@@ -47,8 +47,8 @@ TAIL_CAP = 0.40         # nới tối đa sau đuôi khi gặp khoảng lặng >
 JUNK_EXTEND_CAP = 1.0   # nới tối đa qua mẩu rác thuần túy (e_max_ext)
 
 # --- THAM SỐ CĂN CHỈNH ---
-W_CONTENT = 4           # số mẩu có nội dung trong vùng tìm
-MAX_WINDOW = 12
+W_CONTENT = 8           # số mẩu có nội dung trong vùng tìm (mở rộng để chịu được LLM gộp/lược mẩu ngắn)
+MAX_WINDOW = 16
 TH_NORMAL = 0.58
 TH_SHORT = 0.58         # Hạ bằng TH_NORMAL để không phạt oan câu ngắn
 SHORT_LEN = 3
@@ -72,13 +72,13 @@ LOW_CONF_BAND = 0.05
 JUNK_MAX_LEN = 0  # CẤM coi câu ngắn là rác: 1-2 chữ (A!, Cút!, Dừng tay!) đều là thoại hợp lệ 100%
 
 # --- NGƯỠNG KẸP BÁNH MÌ KHOANH VÙNG (SANDWICH CONTAINMENT) ---
-SANDWICH_ANCHOR_MIN_RATIO = 0.65   # Độ tin cậy tối thiểu để 1 câu được công nhận là Vỏ Bánh Mì chuẩn gốc
-SANDWICH_SKIP_MAX_CHUNKS = 2       # Tối đa số mẩu ASR ngắn bị LLM lược bỏ nằm giữa 2 vỏ bánh mì
-SANDWICH_SKIP_MAX_CHARS = 10       # Tổng chữ Hán tối đa của khe bị lược bỏ (nếu > 10 chữ = mất câu dài -> bắt dịch lại)
-SANDWICH_SKIP_MAX_DUR = 3.5        # Tổng thời lượng tối đa (giây) của khe bị lược bỏ
-SANDWICH_ORPHAN_MAX_CHUNKS = 2     # Tối đa số mẩu ASR lọt khe gán cho 1 câu mồ côi nằm giữa 2 vỏ bánh mì
-SANDWICH_ORPHAN_MAX_CHARS = 14     # Tổng chữ Hán tối đa cho phép kẹp cứu 1 câu mồ côi
-SANDWICH_ORPHAN_MAX_DUR = 5.0      # Tổng thời lượng tối đa cho phép kẹp cứu 1 câu mồ côi
+SANDWICH_ANCHOR_MIN_RATIO = 0.58   # Độ tin cậy tối thiểu để 1 câu được công nhận là Vỏ Bánh Mì chuẩn gốc
+SANDWICH_SKIP_MAX_CHUNKS = 5       # Tối đa số mẩu ASR ngắn bị LLM lược bỏ nằm giữa 2 vỏ bánh mì
+SANDWICH_SKIP_MAX_CHARS = 45       # Tổng chữ Hán tối đa của khe bị lược bỏ (khoanh vùng câu cảm thán/câu phụ ngắn)
+SANDWICH_SKIP_MAX_DUR = 12.0       # Tổng thời lượng tối đa (giây) của khe bị lược bỏ
+SANDWICH_ORPHAN_MAX_CHUNKS = 6     # Tối đa số mẩu ASR lọt khe gán cho cụm câu mồ côi nằm giữa 2 vỏ bánh mì
+SANDWICH_ORPHAN_MAX_CHARS = 60     # Tổng chữ Hán tối đa cho phép kẹp cứu cụm câu mồ côi
+SANDWICH_ORPHAN_MAX_DUR = 15.0     # Tổng thời lượng tối đa cho phép kẹp cứu cụm câu mồ côi
 
 JUNK_PHRASES = {'谢谢观看', '感谢观看', '谢谢收看', '请订阅', '字幕由'}
 
@@ -402,13 +402,14 @@ class SmartTimelineHealer:
         """
         Kiểm tra một câu kịch bản có đủ chuẩn làm 'Vỏ Bánh Mì' (Anchor) không:
         - Có src hợp lệ.
-        - Không mang bất kỳ lỗi trượt cấu trúc hay lỗi cứng nào.
+        - Không mang lỗi trượt cấu trúc nghiêm trọng (OUT_OF_ORDER, NO_SRC, INVALID_SRC, ZH_MISSING).
         - Khớp với ASR gốc ở mức tin cậy cao (match_ratio >= SANDWICH_ANCHOR_MIN_RATIO).
         """
         src = it.get('src') or []
         if not src:
             return False
-        if it.get('hard_flags'):
+        h_flags = it.get('hard_flags') or []
+        if any(f.startswith(('OUT_OF_ORDER', 'NO_SRC', 'INVALID_SRC', 'ZH_MISSING')) for f in h_flags):
             return False
         if float(it.get('match_ratio', 0.0) or 0.0) < SANDWICH_ANCHOR_MIN_RATIO:
             return False
@@ -426,49 +427,70 @@ class SmartTimelineHealer:
         telemetry: Dict[str, Any],
     ) -> None:
         """
-        KẸP BÁNH MÌ KHOANH VÙNG LỖI CỤC BỘ (Sandwich Containment):
+        KẸP BÁNH MÌ KHOANH VÙNG LỖI CỤC BỘ (Sandwich Containment v2):
         Nếu câu trước (L) và câu sau (R) đều là các Neo chuẩn vị trí gốc (Trusted Anchors),
         mọi biến động nhỏ nằm gọn trong khe (L..R) sẽ được khoanh vùng tại chỗ mà không bắt dịch lại:
-          1. Câu mồ côi (NO_SRC / PIECE_UNMATCHED) nằm kẹp giữa L và R:
-             Gán trực tiếp các mẩu ASR chưa ai nhận nằm giữa L và R (nếu <= 2 mẩu, <= 14 chữ, <= 5s).
-          2. Câu đã có src chuẩn nhưng dính cờ PIECE_UNMATCHED / AMBIGUOUS ở mảnh phụ:
-             Nếu src của nó nằm khít tuần tự giữa L và R (không nhảy cóc quá 2 mẩu), hạ cờ cứng xuống cờ mềm.
+          1. Cụm 1..4 câu mồ côi (NO_SRC / PIECE_UNMATCHED / UNSYNC_SPAN) nằm kẹp giữa L và R:
+             Phân bổ đơn điệu các mẩu ASR chưa ai nhận nằm giữa L và R cho các câu mồ côi.
+          2. Câu ảo tự sinh (Phantom Injection) khi giữa L và R không còn mẩu ASR nào trống:
+             Tự động gọt bỏ để không làm gãy timeline.
+          3. Câu đã có src chuẩn và nằm khít tuần tự giữa L và R nhưng còn vướng cờ phụ
+             (PIECE_UNMATCHED / PIECE_UNASSIGNED / AMBIGUOUS / UNSYNC_SPAN / NEEDS_REVIEW_UNSYNC):
+             Hạ cờ cứng xuống cờ mềm (CONTAINED_*).
         """
         num_items = len(out)
-        if num_items == 0:
+        if num_items == 0 or not order:
             return
 
         all_assigned = {c for o in out for c in (o.get('src') or [])}
 
-        # --- Tầng A: Cứu câu mồ côi (NO_SRC) bị kẹp 1-1 giữa 2 Vỏ Bánh Mì chuẩn ---
-        for idx in range(num_items):
-            it = out[idx]
-            if it.get('src'):
+        # --- Tầng A: Cứu cụm câu mồ côi (1..4 câu liên tiếp rỗng src) bị kẹp giữa 2 Vỏ Bánh Mì chuẩn ---
+        idx = 0
+        while idx < num_items:
+            if out[idx].get('src'):
+                idx += 1
                 continue
-            # Không cứu nếu câu này nằm trong vùng đã mất đồng bộ dây chuyền (cánh bướm)
-            if any(f.startswith(('UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC', 'OUT_OF_ORDER')) for f in it.get('hard_flags', [])):
-                continue
-
-            left_item = out[idx - 1] if idx > 0 else None
-            right_item = out[idx + 1] if idx + 1 < num_items else None
-
-            if left_item is None or right_item is None:
-                continue
-            if not (cls._is_trusted_anchor_item(left_item) and cls._is_trusted_anchor_item(right_item)):
+            if any(f.startswith('OUT_OF_ORDER') for f in out[idx].get('hard_flags', [])):
+                idx += 1
                 continue
 
-            l_end = left_item['src'][-1]
-            r_start = right_item['src'][0]
-            if pos_of[l_end] >= pos_of[r_start]:
+            run_start = idx
+            while idx < num_items and not out[idx].get('src') and not any(
+                f.startswith('OUT_OF_ORDER') for f in out[idx].get('hard_flags', [])
+            ):
+                idx += 1
+            run_end = idx - 1
+            run_len = run_end - run_start + 1
+            if run_len > 4:
                 continue
 
-            # Các mẩu ASR nằm строго giữa Neo Trái và Neo Phải chưa được gán cho ai
+            left_item = out[run_start - 1] if run_start > 0 else None
+            right_item = out[run_end + 1] if run_end + 1 < num_items else None
+
+            if left_item is not None and not cls._is_trusted_anchor_item(left_item):
+                continue
+            if right_item is not None and not cls._is_trusted_anchor_item(right_item):
+                continue
+            if left_item is None and right_item is None:
+                continue
+
+            l_pos = (pos_of[left_item['src'][-1]] + 1) if left_item is not None else 0
+            r_pos = pos_of[right_item['src'][0]] if right_item is not None else len(order)
+            if l_pos > r_pos:
+                continue
+
             avail_between = [
                 order[p]
-                for p in range(pos_of[l_end] + 1, pos_of[r_start])
+                for p in range(l_pos, r_pos)
                 if order[p] not in all_assigned and order[p] not in junk
             ]
-            if not avail_between or len(avail_between) > SANDWICH_ORPHAN_MAX_CHUNKS:
+            if not avail_between:
+                avail_between = [
+                    order[p]
+                    for p in range(l_pos, r_pos)
+                    if order[p] not in all_assigned
+                ]
+            if not avail_between or len(avail_between) > SANDWICH_ORPHAN_MAX_CHUNKS * run_len:
                 continue
 
             gap_chars = sum(len(texts.get(c, '')) for c in avail_between)
@@ -476,96 +498,125 @@ class SmartTimelineHealer:
                 max(0.0, float(seg_map[c].get('end', 0.0) or 0.0) - float(seg_map[c].get('start', 0.0) or 0.0))
                 for c in avail_between
             )
-            if gap_chars <= SANDWICH_ORPHAN_MAX_CHARS and gap_dur <= SANDWICH_ORPHAN_MAX_DUR:
-                it['src'] = sorted(avail_between)
-                it['n_t1'] = len(it['src'])
-                it['match_ratio'] = max(float(it.get('match_ratio', 0.0) or 0.0), 0.70)
-                rescued_flags = [
-                    f for f in it.get('hard_flags', [])
-                    if not f.startswith(('NO_SRC', 'PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
-                ]
-                demoted = [
-                    f for f in it.get('hard_flags', [])
-                    if f.startswith(('NO_SRC', 'PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
-                ]
-                it['hard_flags'] = rescued_flags
-                it['soft_flags'] = list(it.get('soft_flags', [])) + [
-                    f'SANDWICH_CONTAINED_ORPHAN_{avail_between}'
-                ] + [f'CONTAINED_{d}' for d in demoted]
-                it['align_ok'] = len(it['hard_flags']) == 0
-                it['_ok'] = it['align_ok']
-                for c in avail_between:
-                    all_assigned.add(c)
-                telemetry['sandwich_rescued'] += 1
+            if gap_chars <= SANDWICH_ORPHAN_MAX_CHARS * run_len and gap_dur <= SANDWICH_ORPHAN_MAX_DUR * run_len:
+                m_cnt = len(avail_between)
+                for offset in range(run_len):
+                    it_orph = out[run_start + offset]
+                    if m_cnt >= run_len:
+                        c_lo = (offset * m_cnt) // run_len
+                        c_hi = ((offset + 1) * m_cnt) // run_len
+                        assigned_slice = sorted(avail_between[c_lo:max(c_lo + 1, c_hi)])
+                    else:
+                        if offset < m_cnt:
+                            assigned_slice = [avail_between[offset]]
+                        else:
+                            assigned_slice = []
+
+                    if assigned_slice:
+                        it_orph['src'] = assigned_slice
+                        it_orph['n_t1'] = len(assigned_slice)
+                        it_orph['match_ratio'] = max(float(it_orph.get('match_ratio', 0.0) or 0.0), 0.70)
+                        rescued_flags = [
+                            f for f in it_orph.get('hard_flags', [])
+                            if not f.startswith((
+                                'NO_SRC', 'PIECE_UNMATCHED', 'PIECE_UNASSIGNED',
+                                'AMBIGUOUS', 'UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC'
+                            ))
+                        ]
+                        demoted = [
+                            f for f in it_orph.get('hard_flags', [])
+                            if f.startswith((
+                                'NO_SRC', 'PIECE_UNMATCHED', 'PIECE_UNASSIGNED',
+                                'AMBIGUOUS', 'UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC'
+                            ))
+                        ]
+                        it_orph['hard_flags'] = rescued_flags
+                        it_orph['soft_flags'] = list(it_orph.get('soft_flags', [])) + [
+                            f'SANDWICH_CONTAINED_ORPHAN_{assigned_slice}'
+                        ] + [f'CONTAINED_{d}' for d in demoted]
+                        it_orph['align_ok'] = len(it_orph['hard_flags']) == 0
+                        it_orph['_ok'] = it_orph['align_ok']
+                        for c in assigned_slice:
+                            all_assigned.add(c)
+                        telemetry['sandwich_rescued'] += 1
 
         # --- Tầng A2: Khử câu rác do LLM tự bịa/lặp lại (Sandwich Phantom Purge) ---
-        # Nếu câu rỗng src (NO_SRC) kẹp giữa 2 Neo chuẩn LIỀN KỀ (hoặc không còn mẩu ASR nào trống ở giữa),
-        # thì đây là câu ảo do LLM tự chèn (phantom injection). Đánh dấu loại bỏ để bảo toàn 100% câu thật.
+        # Nếu câu rỗng src (NO_SRC) kẹp giữa 2 Neo chuẩn (hoặc biên lô) mà không còn mẩu ASR nào trống ở giữa,
+        # thì đây là câu ảo do LLM tự chèn (phantom injection). Loại bỏ để bảo toàn 100% câu thật.
         indices_to_purge = []
         for idx in range(num_items):
             it = out[idx]
             if it.get('src'):
                 continue
-            left_item = out[idx - 1] if idx > 0 else None
-            right_item = out[idx + 1] if idx + 1 < num_items else None
-            if left_item is not None and right_item is not None:
-                if cls._is_trusted_anchor_item(left_item) and cls._is_trusted_anchor_item(right_item):
-                    l_end = left_item['src'][-1]
-                    r_start = right_item['src'][0]
-                    # Nếu giữa 2 neo không còn mẩu ASR nào chưa gán (hoặc chỉ toàn junk)
-                    avail = [
-                        order[p]
-                        for p in range(pos_of[l_end] + 1, pos_of[r_start])
-                        if order[p] not in all_assigned and order[p] not in junk
-                    ]
-                    if not avail:
-                        indices_to_purge.append(idx)
+            left_item = next((out[p] for p in range(idx - 1, -1, -1) if out[p].get('src')), None)
+            right_item = next((out[p] for p in range(idx + 1, num_items) if out[p].get('src')), None)
+            if left_item is None and right_item is None:
+                continue
+            if left_item is not None and not cls._is_trusted_anchor_item(left_item):
+                continue
+            if right_item is not None and not cls._is_trusted_anchor_item(right_item):
+                continue
+
+            l_pos = (pos_of[left_item['src'][-1]] + 1) if left_item is not None else 0
+            r_pos = pos_of[right_item['src'][0]] if right_item is not None else len(order)
+            avail = [
+                order[p]
+                for p in range(l_pos, min(len(order), max(l_pos, r_pos)))
+                if order[p] not in all_assigned and order[p] not in junk
+            ]
+            if not avail:
+                indices_to_purge.append(idx)
 
         if indices_to_purge:
             for purge_idx in sorted(indices_to_purge, reverse=True):
                 purged_it = out.pop(purge_idx)
+                telemetry['sandwich_rescued'] += 1
                 logger.info(
                     f"🧹 [Sandwich Phantom Purge] Đã loại bỏ câu ảo tự sinh không có trong ASR: "
                     f"'{purged_it.get('zh', '')}' -> '{purged_it.get('vi', '')}'"
                 )
             num_items = len(out)
 
-        # --- Tầng B: Câu đã có src hợp lệ, nằm gọn giữa 2 Neo chuẩn nhưng thừa mảnh phụ bị lệch chữ ---
+        # --- Tầng B: Câu đã có src hợp lệ, nằm gọn đơn điệu giữa 2 Neo nhưng thừa mảnh phụ / UNSYNC cục bộ ---
         for idx in range(num_items):
             it = out[idx]
             src = it.get('src') or []
             h_flags = it.get('hard_flags') or []
             if not src or not h_flags:
                 continue
-            # Tuyệt đối không hạ cờ nếu dính lỗi cấu trúc / cánh bướm
-            if any(f.startswith(('UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC', 'OUT_OF_ORDER', 'DROPPED_CHUNK', 'ZH_MISSING')) for f in h_flags):
+            if any(f.startswith(('OUT_OF_ORDER', 'DROPPED_CHUNK', 'ZH_MISSING', 'INVALID_SRC')) for f in h_flags):
                 continue
 
-            # Kiểm tra biên trái và biên phải
             left_ok = False
-            if idx == 0 and pos_of[src[0]] <= 1:
+            if idx == 0 and pos_of[src[0]] <= SANDWICH_SKIP_MAX_CHUNKS:
                 left_ok = True
-            elif idx > 0 and cls._is_trusted_anchor_item(out[idx - 1]):
+            elif idx > 0 and out[idx - 1].get('src'):
                 l_end = out[idx - 1]['src'][-1]
-                if 0 <= pos_of[src[0]] - pos_of[l_end] <= 2:
+                if 0 <= pos_of[src[0]] - pos_of[l_end] <= SANDWICH_SKIP_MAX_CHUNKS + 1:
                     left_ok = True
 
             right_ok = False
-            if idx == num_items - 1 and (len(order) - 1 - pos_of[src[-1]]) <= 1:
+            if idx == num_items - 1 and (len(order) - 1 - pos_of[src[-1]]) <= SANDWICH_SKIP_MAX_CHUNKS:
                 right_ok = True
-            elif idx + 1 < num_items and cls._is_trusted_anchor_item(out[idx + 1]):
+            elif idx + 1 < num_items and out[idx + 1].get('src'):
                 r_start = out[idx + 1]['src'][0]
-                if 0 <= pos_of[r_start] - pos_of[src[-1]] <= 2:
+                if 0 <= pos_of[r_start] - pos_of[src[-1]] <= SANDWICH_SKIP_MAX_CHUNKS + 1:
                     right_ok = True
 
             if left_ok and right_ok:
                 kept_hard = [
                     f for f in h_flags
-                    if not f.startswith(('PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                    if not f.startswith((
+                        'PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS',
+                        'UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC'
+                    ))
                 ]
                 demoted = [
                     f for f in h_flags
-                    if f.startswith(('PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                    if f.startswith((
+                        'PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS',
+                        'UNSYNC_SPAN', 'NEEDS_REVIEW_UNSYNC'
+                    ))
                 ]
                 if demoted:
                     it['hard_flags'] = kept_hard
@@ -796,14 +847,56 @@ class SmartTimelineHealer:
             found = find_anchor(k + 1)
             fs = st['fail_start'] if st['fail_start'] is not None else k
             if found is None:
-                for r in range(fs, n):
-                    if not pieces[r]['chunks']:
-                        pieces[r]['flags'].append('NEEDS_REVIEW_UNSYNC')
+                unmatched_tail = [r for r in range(fs, n) if not pieces[r]['chunks']]
+                avail_tail = [c for c in order[st['ptr']:] if c not in assigned and c not in junk]
+                if unmatched_tail and avail_tail and len(unmatched_tail) <= 4 and len(avail_tail) <= SANDWICH_ORPHAN_MAX_CHUNKS:
+                    m_cnt = len(avail_tail)
+                    u_cnt = len(unmatched_tail)
+                    for idx_u, r in enumerate(unmatched_tail):
+                        c_pick = avail_tail[min(idx_u, m_cnt - 1)]
+                        pieces[r]['chunks'] = [c_pick]
+                        pieces[r]['best'] = max(pieces[r].get('best') or 0.0, 0.70)
+                        pieces[r]['flags'] = [
+                            f for f in pieces[r]['flags']
+                            if not f.startswith(('PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                        ]
+                        pieces[r]['flags'].append(f'SANDWICH_TAIL_HEALED_[{c_pick}]')
+                        assigned.add(c_pick)
+                    telemetry['matched_pieces'] += u_cnt
+                    telemetry['sandwich_rescued'] += u_cnt
+                else:
+                    for r in range(fs, n):
+                        if not pieces[r]['chunks']:
+                            pieces[r]['flags'].append('NEEDS_REVIEW_UNSYNC')
                 return 'stop'
             j, a = found
-            for r in range(fs, j):
-                if not pieces[r]['chunks']:
-                    pieces[r]['flags'].append('UNSYNC_SPAN')
+            unmatched_span = [r for r in range(fs, j) if not pieces[r]['chunks']]
+            avail_span = [c for c in order[st['ptr']:pos_of[a]] if c not in assigned and c not in junk]
+            if unmatched_span and avail_span and len(avail_span) <= SANDWICH_ORPHAN_MAX_CHUNKS * max(1, len(unmatched_span)):
+                m_cnt = len(avail_span)
+                u_cnt = len(unmatched_span)
+                for idx_u, r in enumerate(unmatched_span):
+                    if m_cnt >= u_cnt:
+                        c_lo = (idx_u * m_cnt) // u_cnt
+                        c_hi = ((idx_u + 1) * m_cnt) // u_cnt
+                        c_slice = avail_span[c_lo:max(c_lo + 1, c_hi)]
+                    else:
+                        c_slice = [avail_span[min(idx_u, m_cnt - 1)]]
+                    pieces[r]['chunks'] = list(c_slice)
+                    pieces[r]['best'] = max(pieces[r].get('best') or 0.0, 0.70)
+                    pieces[r]['flags'] = [
+                        f for f in pieces[r]['flags']
+                        if not f.startswith(('PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
+                    ]
+                    pieces[r]['flags'].append(f'SANDWICH_RESYNC_HEALED_{c_slice}')
+                    for c_x in c_slice:
+                        assigned.add(c_x)
+                telemetry['matched_pieces'] += u_cnt
+                telemetry['sandwich_rescued'] += u_cnt
+            else:
+                for r in range(fs, j):
+                    if not pieces[r]['chunks']:
+                        pieces[r]['flags'].append('UNSYNC_SPAN')
             for c in order[st['ptr']:pos_of[a]]:
                 if c not in assigned and c not in junk:
                     telemetry['unsync_chunks'].append(c)
@@ -984,6 +1077,27 @@ class SmartTimelineHealer:
                     telemetry['ambig_resolved'] += 1
                     k += 1
                     continue
+                if c_i1 is not None and is_sequential_short_match(txt, texts[c_i1], texts[c_i2] if c_i2 else None):
+                    if confirm_sandwich_1to1(k, c_i1):
+                        commit(k, [c_i1], junk_before_i1)
+                        pc['flags'].append(f'SHORT_SEQ_MATCH_[{c_i1}]')
+                        telemetry['short_seq_rescued'] += 1
+                        k += 1
+                        continue
+                for c in plausible:
+                    if confirm(k, pos_of[c] + 1) or confirm_sandwich_1to1(k, c):
+                        tentative = c
+                        break
+                if tentative is not None:
+                    skipped_t = [x for x in cands if x < tentative]
+                    content_skipped_t = [x for x in skipped_t if x not in junk]
+                    junk_skipped_t = [x for x in skipped_t if x in junk]
+                    commit(k, [tentative], junk_skipped_t)
+                    telemetry['dropped_by_confirm'].extend(content_skipped_t)
+                    pc['flags'].append('AMBIG_RESOLVED_BY_CONFIRM')
+                    telemetry['ambig_resolved'] += 1
+                    k += 1
+                    continue
                 pc['flags'].append(f'AMBIGUOUS_{txt}')
                 note_fail(k)
 
@@ -1132,6 +1246,11 @@ class SmartTimelineHealer:
                     item_flags.append(f'ITEM_SPAN_LOCKED_{span_sim:.0%}')
 
             if chunks:
+                if len(chunks) > 1 and chunks[0] == prev_max_src:
+                    chunks = chunks[1:]
+                elif len(chunks) == 1 and chunks[0] == prev_max_src and out and len(out[-1].get('src') or []) > 1 and out[-1]['src'][-1] == prev_max_src:
+                    out[-1]['src'] = out[-1]['src'][:-1]
+                    out[-1]['n_t1'] = len(out[-1]['src'])
                 if chunks[0] < prev_max_src:
                     item_flags.append('OUT_OF_ORDER')
                 prev_max_src = max(prev_max_src, chunks[-1])
@@ -1147,7 +1266,7 @@ class SmartTimelineHealer:
                 'src': chunks,
                 'junk_covered': [],
                 'dropped_chunks': [],
-                'match_ratio': round(min(bests), 2) if bests else 0.0,
+                'match_ratio': round(sum(bests) / len(bests), 2) if bests else 0.0,
                 'min_margin': round(min(margins), 2) if margins else 0.0,
                 'n_t1': len(chunks),
                 'k_t2': len(pcs),
@@ -1191,14 +1310,15 @@ class SmartTimelineHealer:
             i = bisect.bisect_right(starts, u_first)
 
             # 1. Nằm lọt lòng bên trong 1 câu gộp
-            if len(run) == 1 and i > 0 and by_start[i - 1][0] < u_first < by_start[i - 1][1]:
+            if len(run) <= SANDWICH_SKIP_MAX_CHUNKS and i > 0 and by_start[i - 1][0] < u_first and u_last < by_start[i - 1][1]:
                 tgt = by_start[i - 1][2]
-                if u_first not in tgt['src']:
-                    tgt['src'].append(u_first)
-                    tgt['src'].sort()
-                    tgt['n_t1'] = len(tgt['src'])
-                    telemetry['internal_gaps_healed'] += 1
-                    tgt['soft_flags'].append(f'INTERNAL_GAP_HEALED_[{u_first}]')
+                for u_x in run:
+                    if u_x not in tgt['src']:
+                        tgt['src'].append(u_x)
+                tgt['src'].sort()
+                tgt['n_t1'] = len(tgt['src'])
+                telemetry['internal_gaps_healed'] += len(run)
+                tgt['soft_flags'].append(f'INTERNAL_GAP_HEALED_{run}')
                 continue
 
             # 2. Nằm ở biên câu: kiểm tra xem chữ Hán của mẩu đơn lẻ đã được dịch gộp trong câu láng giềng chưa
@@ -1225,35 +1345,49 @@ class SmartTimelineHealer:
                     continue
 
             # 3. KẸP BÁNH MÌ CHO MẨU ASR BỊ LLM LƯỢC BỎ (Sanctioned Sandwich Skip):
-            # Nếu cụm mẩu bị bỏ qua nằm kẹp giữa 2 câu Neo chuẩn vị trí gốc (left_anchor và right_anchor)
-            # và có kích thước nhỏ (<= 2 mẩu, <= 10 chữ Hán, <= 3.5 giây), đây là từ đệm/câu thừa được LLM chủ động lược bỏ.
+            # Nếu cụm mẩu bị bỏ qua nằm kẹp giữa 2 câu có src hợp lệ (left_anchor và right_anchor)
+            # và có kích thước nhỏ (<= SANDWICH_SKIP_MAX_CHUNKS, <= SANDWICH_SKIP_MAX_CHARS, <= SANDWICH_SKIP_MAX_DUR),
+            # đây là từ đệm/câu cảm thán/câu thừa được LLM chủ động lược bỏ.
             # Khoanh vùng vào junk_covered để giữ timeline an toàn, KHÔNG đánh DROPPED_CHUNK bắt dịch lại!
+            run_chars = sum(len(texts.get(x, '')) for x in run)
+            run_dur = sum(
+                max(0.0, float(seg_map[x].get('end', 0.0) or 0.0) - float(seg_map[x].get('start', 0.0) or 0.0))
+                for x in run
+            )
             if 0 < i < len(by_start):
                 left_item = by_start[i - 1][2]
                 right_item = by_start[i][2]
                 is_tightly_bounded = (
-                    pos_of[u_first] == pos_of[by_start[i - 1][1]] + 1
-                    and pos_of[by_start[i][0]] == pos_of[u_last] + 1
+                    pos_of[u_first] >= pos_of[by_start[i - 1][1]] + 1
+                    and pos_of[by_start[i][0]] >= pos_of[u_last] + 1
                 )
                 if (
                     is_tightly_bounded
                     and cls._is_trusted_anchor_item(left_item)
                     and cls._is_trusted_anchor_item(right_item)
                     and len(run) <= SANDWICH_SKIP_MAX_CHUNKS
+                    and run_chars <= SANDWICH_SKIP_MAX_CHARS
+                    and run_dur <= SANDWICH_SKIP_MAX_DUR
                 ):
-                    run_chars = sum(len(texts.get(x, '')) for x in run)
-                    run_dur = sum(
-                        max(0.0, float(seg_map[x].get('end', 0.0) or 0.0) - float(seg_map[x].get('start', 0.0) or 0.0))
-                        for x in run
-                    )
-                    if run_chars <= SANDWICH_SKIP_MAX_CHARS and run_dur <= SANDWICH_SKIP_MAX_DUR:
-                        for x in run:
-                            left_item['junk_covered'].append(x)
-                            junk_covered.add(x)
-                        left_item['soft_flags'].append(f'SANDWICH_SKIPPED_CHUNK_{run}')
-                        telemetry['sandwich_rescued'] += len(run)
-                        telemetry['junk_skipped_count'] += len(run)
-                        continue
+                    for x in run:
+                        left_item['junk_covered'].append(x)
+                        junk_covered.add(x)
+                    left_item['soft_flags'].append(f'SANDWICH_SKIPPED_CHUNK_{run}')
+                    telemetry['sandwich_rescued'] += len(run)
+                    telemetry['junk_skipped_count'] += len(run)
+                    continue
+
+            # 3b. Kẹp biên đầu/cuối lô (Intro/Outro ngắn bị LLM lược bỏ <= 3 mẩu)
+            if (i == 0 or i == len(by_start)) and by_start and len(run) <= 3 and run_chars <= 35 and run_dur <= 10.0:
+                edge_item = by_start[0][2] if i == 0 else by_start[-1][2]
+                if cls._is_trusted_anchor_item(edge_item):
+                    for x in run:
+                        edge_item['junk_covered'].append(x)
+                        junk_covered.add(x)
+                    edge_item['soft_flags'].append(f'BOUNDARY_SKIPPED_CHUNK_{run}')
+                    telemetry['sandwich_rescued'] += len(run)
+                    telemetry['junk_skipped_count'] += len(run)
+                    continue
 
             # 4. Thực sự mất đoạn nội dung dài (Thủng lưới lớn / Không có neo kẹp) -> Bắt buộc đánh DROPPED_CHUNK để dịch lại
             tgt = by_start[i][2] if i < len(by_start) else (by_start[-1][2] if by_start else (out[-1] if out else None))

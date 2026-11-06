@@ -269,8 +269,13 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         if total_dialogues == 0:
             raise RuntimeError(f"Project #{project_id} không có câu thoại nào để dịch hoặc lồng tiếng! Vui lòng kiểm tra lại file âm thanh/video gốc.")
 
-        effective_provider = req.provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")
-        effective_batch = req.batch_size or getattr(settings, "TRANSLATION_BATCH_SIZE", 500)
+        try:
+            settings.reload_from_env()
+        except Exception:
+            pass
+
+        effective_provider = (req.provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")).strip()
+        effective_batch = getattr(settings, "TRANSLATION_BATCH_SIZE", 500) or req.batch_size or 500
         effective_max_chars = getattr(settings, "TRANSLATION_MAX_CHARS", 50000)
 
         # KIỂM ĐỊNH HOÀN TẤT THEO ĐƠN VỊ LÔ (BATCH-LEVEL AUDIT): Phù hợp 100% với kiến trúc SmartTimelineHealer

@@ -196,10 +196,10 @@ _AUDIO_CACHE: Dict[str, AudioSegment] = {}
 
 class CapCutTTSService:
     VOICE_MAP = {
-        "vi-VN-HoaiMyNeural": "Hoài My (Nữ Truyền Cảm - Chuẩn Review)",
-        "hoaimy": "Hoài My (Nữ Truyền Cảm - Chuẩn Review)",
-        "BV074_streaming": "Nam Miền Bắc (Chuẩn Audio Truyện)",
-        "BV075_streaming": "Nữ Miền Bắc (Truyền Cảm)",
+        "BV074_streaming": "Nữ: Cô Gái Hoạt Ngôn (Trẻ trung, Review Trend - Mặc định)",
+        "vi-VN-HoaiMyNeural": "Nữ: Hoài My (Truyền cảm, Ngọt ngào - Mới)",
+        "hoaimy": "Nữ: Hoài My (Truyền cảm, Ngọt ngào - Mới)",
+        "BV075_streaming": "Nam: Hào Sảng (Trầm ấm, Thuyết minh phim)",
         "BV076_streaming": "Nam Miền Nam (Trầm Ấm)",
         "BV077_streaming": "Nữ Miền Nam (Ngọt Ngào)",
         "vi_male_standard": "Nam Tiêu Chuẩn",
@@ -297,6 +297,23 @@ class CapCutTTSService:
                 err_str = str(exc)
                 if attempt == max_retries:
                     logger.error(f"[CapCut Global TTS] Thất bại câu: {clean_text[:40]} -> {err_str}")
+
+        # Fallback đồng giọng sang TikTok TTS API nếu là mã giọng BV* (giữ nguyên 100% giọng Cô Gái Hoạt Ngôn BV074_streaming)
+        if "multi_" not in voice_code and "Neural" not in voice_code:
+            try:
+                from app.services.step_04_tts.tiktok_tts_service import TikTokTTSService
+                tt_seg = TikTokTTSService.synthesize_sentence(
+                    text=clean_text,
+                    voice_code=voice_code,
+                    apply_mastering=False,
+                    playback_speed=1.0,
+                    max_retries=2
+                )
+                if tt_seg and len(tt_seg) > 100:
+                    _AUDIO_CACHE[cache_key] = tt_seg
+                    return tt_seg
+            except Exception:
+                pass
         return None
 
     @classmethod
@@ -807,23 +824,41 @@ class CapCutTTSService:
                     chunk_sub_offsets[tts_idx] = engine_sub_timings[d_id]
 
         # =========================================================================
-        # 0.5. CỨU HỘ CÂU PHÌNH QUÁ TẢI (> 1.6x) (TTS Swollen Rescuer)
-        # Quét các câu có tốc độ thực tế > 1.60x, gọi LLM cô đọng và sinh lại TTS
+        # 0.5. CỨU HỘ CÂU PHÌNH QUÁ TẢI (> 1.30x) (TTS Swollen Rescuer)
+        # Quét các câu có tốc độ thực tế > 1.30x (SAU KHI đã tính khoảng nghỉ khả dụng phía sau gap_after),
+        # gọi LLM cô đọng và sinh lại TTS đa luồng siêu tốc.
         # =========================================================================
         from app.services.step_04_tts.tts_swollen_rescuer import TTSSwollenRescuer
         swollen_items = []
-        for d in dialogues:
+        total_v_sec_est = total_video_ms / 1000.0
+        for idx_d, d in enumerate(dialogues):
             audio_seg = raw_results_map.get(d.id)
             if not audio_seg or len(audio_seg) < 100:
                 continue
-            target_dur = max(0.1, float(d.end_time) - float(d.start_time))
+            start_sec = float(d.start_time)
+            orig_end_sec = float(d.end_time) if (d.end_time and d.end_time > start_sec) else (start_sec + len(audio_seg) / 1000.0)
+            base_dur = max(0.1, orig_end_sec - start_sec)
             raw_dur_sec = len(audio_seg) / 1000.0
+
+            if idx_d < len(dialogues) - 1:
+                next_start = float(dialogues[idx_d + 1].start_time)
+                gap_after = max(0.0, next_start - orig_end_sec)
+            else:
+                gap_after = max(0.0, total_v_sec_est - orig_end_sec)
+
+            # Tính thời lượng đích thực tế sau khi mượn khoảng nghỉ phía sau (đồng bộ 100% với Bước 1)
+            target_dur = base_dur
+            if (raw_dur_sec / base_dur) > 1.10 and gap_after > 0.001:
+                needed_for_1_1 = raw_dur_sec / 1.10
+                borrow_after = min(max(0.0, needed_for_1_1 - base_dur), gap_after)
+                target_dur = base_dur + borrow_after
+
             ratio = raw_dur_sec / target_dur
             # Ước lượng thời lượng nói thực tế sau khi trừ khoảng im lặng mặc định (~250ms)
             effective_dur = max(0.1, raw_dur_sec - 0.25)
             effective_ratio = effective_dur / target_dur
 
-            # Chỉ kích hoạt nếu tỷ lệ thô > ngưỡng (1.30x) VÀ sau khi gọt im lặng vẫn vượt 1.15x
+            # Chỉ kích hoạt nếu tỷ lệ sau khi mượn khoảng nghỉ vẫn > ngưỡng (1.30x) VÀ sau khi gọt im lặng vẫn vượt 1.15x
             if ratio > TTSSwollenRescuer.RESCUE_RATIO_THRESHOLD and effective_ratio > 1.15:
                 vi_text = str(d.translated_text or "").strip()
                 # Đếm số câu bằng các dấu kết câu (. ! ? … ; :)

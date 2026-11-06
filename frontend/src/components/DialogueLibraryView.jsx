@@ -27,6 +27,7 @@ export default function DialogueLibraryView() {
   // AIREAD Translation Engine Settings
   const [genre, setGenre] = useState(DEFAULT_GENRE);
   const [batchSize, setBatchSize] = useState(500); // Default large batch (Mỗi lô = 1 chương lớn)
+  const [maxChars, setMaxChars] = useState(50000);
   
   // Translation Task State
   const [isTranslating, setIsTranslating] = useState(false);
@@ -45,6 +46,7 @@ export default function DialogueLibraryView() {
       .then(r => r.json())
       .then(d => {
         if (d.translation_batch_size) setBatchSize(d.translation_batch_size);
+        if (d.translation_max_chars) setMaxChars(d.translation_max_chars);
       })
       .catch(() => {});
 
@@ -52,6 +54,9 @@ export default function DialogueLibraryView() {
       const d = e?.detail;
       if (d && d.translation_batch_size) {
         setBatchSize(d.translation_batch_size);
+      }
+      if (d && d.translation_max_chars) {
+        setMaxChars(d.translation_max_chars);
       }
     };
     window.addEventListener('settings-updated', handleSettingsUpdated);
@@ -300,7 +305,7 @@ export default function DialogueLibraryView() {
           project_id: selectedProject.id,
           genre: genre,
           batch_size: batchSize,
-          max_chars: 22000
+          max_chars: maxChars
         })
       });
 

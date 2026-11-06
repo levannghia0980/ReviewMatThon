@@ -213,8 +213,9 @@ _AUDIO_CACHE: Dict[str, AudioSegment] = {}
 
 class TikTokTTSService:
     VOICE_MAP = {
-        "vi-VN-HoaiMyNeural": "Hoài My (Nữ Truyền Cảm - Chuẩn Review)",
-        "hoaimy": "Hoài My (Nữ Truyền Cảm - Chuẩn Review)",
+        "BV074_streaming": "Nữ: Cô Gái Hoạt Ngôn (Trẻ trung, Review Trend - Mặc định)",
+        "vi-VN-HoaiMyNeural": "Nữ: Hoài My (Truyền cảm, Ngọt ngào - Mới)",
+        "hoaimy": "Nữ: Hoài My (Truyền cảm, Ngọt ngào - Mới)",
         "vi_male_standard": "Nam Tiêu Chuẩn (Giọng đọc truyện)",
         "vi_female_standard": "Nữ Tiêu Chuẩn (Truyền Cảm)",
         "vi_female_huong": "Nữ Hương (Ngọt Ngào)",
@@ -245,7 +246,7 @@ class TikTokTTSService:
     def synthesize_sentence(
         cls,
         text: str,
-        voice_code: str = "vi_female_standard",
+        voice_code: str = "BV074_streaming",
         session_id: str = None,
         apply_mastering: bool = True,
         playback_speed: float = 1.0,

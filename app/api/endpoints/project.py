@@ -432,9 +432,15 @@ def get_project_stats(project_id: int, db: Session = Depends(get_db)):
 @router.get("/{project_id}/batches", summary="Lấy danh mục các Lô (Chương) cực nhẹ chuẩn AIREAD")
 def get_project_batches(
     project_id: int,
-    batch_size: int = Query(default=500, ge=10, le=1000),
+    batch_size: Optional[int] = Query(default=None, ge=10, le=1000),
     db: Session = Depends(get_db)
 ):
+    if not batch_size:
+        try:
+            settings.reload_from_env()
+        except Exception:
+            pass
+        batch_size = getattr(settings, "TRANSLATION_BATCH_SIZE", 500) or 500
     total_count = db.query(func.count(DialogueSegmentModel.id)).filter(
         DialogueSegmentModel.task_id == project_id
     ).scalar() or 0

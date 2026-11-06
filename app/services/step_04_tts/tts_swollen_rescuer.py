@@ -171,7 +171,12 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
                 if not isinstance(parsed, list):
                     continue
 
-                # 3. Ánh xạ và sinh lại audio TTS
+                # 3. Ánh xạ và sinh lại audio TTS ĐA LUỒNG SIÊU TỐC (Parallel Batch TTS)
+                from app.services.step_04_tts.async_tts_engine import AsyncTTSEngine, _load_audio_from_bytes
+                candidates_map: Dict[int, Dict[str, Any]] = {}
+                tts_batch_data = []
+                batch_voice_code = "BV074_streaming"
+
                 for resp_item in parsed:
                     if not isinstance(resp_item, dict):
                         continue
@@ -191,12 +196,47 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
                         continue
 
                     d_id = orig_item["dialogue_id"]
-                    d_obj = orig_item.get("dialogue_obj")
-                    voice_code = orig_item.get("voice_code", "BV074_streaming")
-                    target_dur = orig_item.get("target_dur", 2.0)
+                    batch_voice_code = orig_item.get("voice_code", "BV074_streaming") or "BV074_streaming"
+                    candidates_map[d_id] = {
+                        "orig_item": orig_item,
+                        "clean_text": clean_text,
+                    }
+                    tts_batch_data.append((d_id, clean_text))
 
-                    # Sinh lại âm thanh CapCut TTS riêng cho câu đã rút gọn
-                    new_audio = CapCutTTSService.synthesize_sentence(text=clean_text, voice_code=voice_code)
+                if not tts_batch_data:
+                    continue
+
+                _safe_log(f"   ⚡ [TTS Swollen Rescuer] Đang tổng hợp song song {len(tts_batch_data)} câu đã cô đọng bằng giọng {batch_voice_code}...")
+                saved_sub_timings = dict(getattr(AsyncTTSEngine, "_last_sub_timings_map", {}))
+                synth_bytes_map = await AsyncTTSEngine.batch_synthesize_async(
+                    dialogues_data=tts_batch_data,
+                    engine=getattr(settings, "TTS_ENGINE", "capcut"),
+                    voice_code=batch_voice_code,
+                    concurrency_limit=min(32, max(8, len(tts_batch_data))),
+                    max_retries_per_item=3,
+                    return_utterances=False,
+                )
+                AsyncTTSEngine._last_sub_timings_map = saved_sub_timings
+
+                for d_id, cand in candidates_map.items():
+                    orig_item = cand["orig_item"]
+                    clean_text = cand["clean_text"]
+                    d_obj = orig_item.get("dialogue_obj")
+                    target_dur = orig_item.get("target_dur", 2.0)
+                    voice_code = orig_item.get("voice_code", batch_voice_code)
+
+                    new_audio = None
+                    a_bytes = synth_bytes_map.get(d_id)
+                    if a_bytes and len(a_bytes) > 100:
+                        try:
+                            seg = _load_audio_from_bytes(a_bytes, "mp3")
+                            new_audio = CapCutTTSService.trim_audio_silence(seg)
+                        except Exception:
+                            new_audio = None
+
+                    if not new_audio or len(new_audio) <= 100:
+                        new_audio = CapCutTTSService.synthesize_sentence(text=clean_text, voice_code=voice_code)
+
                     if new_audio and len(new_audio) > 100:
                         new_dur_sec = len(new_audio) / 1000.0
                         new_ratio = new_dur_sec / target_dur

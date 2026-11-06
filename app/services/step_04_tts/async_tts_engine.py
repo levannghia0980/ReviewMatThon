@@ -521,13 +521,13 @@ class AsyncTTSEngine:
         proxy: Optional[str] = None,
         return_utterances: bool = False
     ) -> Any:
-        """Tải 1 mẩu câu đơn qua đúng Engine/Voice được chỉ định."""
+        """Tải 1 mẩu câu đơn qua đúng Engine/Voice được chỉ định, kèm dự phòng chéo kênh đồng giọng (CapCut <-> TikTok)."""
         if "Neural" in voice_code or "hoaimy" in voice_code.lower():
             actual_voice = "vi-VN-HoaiMyNeural" if "hoaimy" in voice_code.lower() else voice_code
             audio_bytes = await cls.fetch_edge_chunk_async(text=sub_text, voice_code=actual_voice)
             return (audio_bytes, []) if return_utterances else audio_bytes
         elif engine.lower() == "capcut" or "multi_" in voice_code:
-            return await cls.fetch_capcut_chunk_async(
+            res = await cls.fetch_capcut_chunk_async(
                 session=session,
                 text=sub_text,
                 voice_code=voice_code,
@@ -535,6 +535,19 @@ class AsyncTTSEngine:
                 proxy=proxy,
                 return_utterances=return_utterances,
             )
+            audio_b = res[0] if return_utterances and isinstance(res, tuple) else res
+            if (not audio_b or len(audio_b) < 100) and "multi_" not in voice_code:
+                # Fallback đồng giọng sang TikTok TTS API (giữ nguyên 100% mã giọng, ví dụ BV074_streaming)
+                tt_bytes = await cls.fetch_tiktok_chunk_async(
+                    session=session,
+                    text=sub_text,
+                    voice_code=voice_code,
+                    session_id=_get_tiktok_session(),
+                    proxy=proxy,
+                )
+                if tt_bytes and len(tt_bytes) > 100:
+                    return (tt_bytes, []) if return_utterances else tt_bytes
+            return res
         else:
             audio_bytes = await cls.fetch_tiktok_chunk_async(
                 session=session,
@@ -543,6 +556,19 @@ class AsyncTTSEngine:
                 session_id=session_id or _get_tiktok_session(),
                 proxy=proxy,
             )
+            if not audio_bytes or len(audio_bytes) < 100:
+                # Fallback đồng giọng sang CapCut SAMI (giữ nguyên 100% mã giọng, ví dụ BV074_streaming)
+                cc_res = await cls.fetch_capcut_chunk_async(
+                    session=session,
+                    text=sub_text,
+                    voice_code=voice_code,
+                    cookie=_get_capcut_cookie(),
+                    proxy=proxy,
+                    return_utterances=return_utterances,
+                )
+                cc_b = cc_res[0] if return_utterances and isinstance(cc_res, tuple) else cc_res
+                if cc_b and len(cc_b) > 100:
+                    return cc_res
             return (audio_bytes, []) if return_utterances else audio_bytes
 
     _last_sub_timings_map: Dict[int, List[Dict[str, Any]]] = {}

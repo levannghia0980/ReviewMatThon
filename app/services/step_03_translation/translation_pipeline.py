@@ -735,6 +735,35 @@ class TranslationPipelineService:
                 if not inv_check.get("passed"):
                     logger.warning(f"[Lo #{b_num}] Canh bao timeline: {inv_check.get('errors')}")
 
+            def _is_true_mega_summary(items_list):
+                """Chỉ coi là Mega-Summary thật sự nếu gộp >= 15 mẩu ASR VÀ văn bản tiếng Việt bị tóm tắt cụt (< 35% độ dài chữ Hán)."""
+                for it in (items_list or []):
+                    src_ids = it.get("src", []) or []
+                    if len(src_ids) >= 15:
+                        vi_words = len(str(it.get("vi", "") or "").split())
+                        zh_raw = str(it.get("zh", "") or "").replace("/", "").replace("／", "").strip()
+                        zh_len = max(len(zh_raw), len(src_ids) * 4)
+                        if vi_words < zh_len * 0.35 or len(src_ids) >= 35:
+                            return True
+                return False
+
+            def _should_retry_batch(items_list, inv_res):
+                """Quyết định có cần gọi LLM dịch lại cả lô 500 câu hay không (tránh bắt dịch lại oan khi lỗi cục bộ đã kẹp bánh mì)."""
+                if _is_true_mega_summary(items_list):
+                    return True
+                total_orig_cnt = max(1, len(batch_orig_dicts))
+                cov_total = inv_res.get("covered_total", inv_res.get("covered_orig", 0))
+                struct_errs = inv_res.get("structural_errors", []) or []
+                empty_items = inv_res.get("empty_src_items", []) or []
+                failed_items = inv_res.get("failed_items", []) or []
+                if struct_errs or empty_items:
+                    return True
+                if (cov_total / total_orig_cnt) < 0.95:
+                    return True
+                if len(failed_items) > 3:
+                    return True
+                return False
+
             # FlowHealer v2: RETRY toi da MAX_RETRIES lan neu lo co qua nhieu loi hoac bo sot cau
             _max_retries = 5
             _retry_count = 0
@@ -742,30 +771,26 @@ class TranslationPipelineService:
             best_candidate = {
                 "healed": healed_items,
                 "inv": inv_check,
-                "covered": inv_check.get("covered_orig", 0),
+                "covered": inv_check.get("covered_total", inv_check.get("covered_orig", 0)),
                 "errors": len(inv_check.get("errors", [])),
                 "raw_resp": raw_llm_batch_output
             }
 
             while healed_items and _retry_count < _max_retries:
-                _has_mega_summary = any(len(it.get("src", [])) >= 15 for it in healed_items)
-                _retry_needed = (
-                    (not inv_check.get("passed"))
-                    or any(item.get("_retry_needed", False) for item in healed_items)
-                    or _has_mega_summary
-                )
+                _has_mega_summary = _is_true_mega_summary(healed_items)
+                _retry_needed = _should_retry_batch(healed_items, inv_check)
                 if not _retry_needed:
                     best_candidate = {
                         "healed": healed_items,
                         "inv": inv_check,
-                        "covered": inv_check.get("covered_orig", len(batch_orig_dicts)),
+                        "covered": inv_check.get("covered_total", inv_check.get("covered_orig", len(batch_orig_dicts))),
                         "errors": 0,
                         "raw_resp": raw_llm_batch_output
                     }
                     break
                 _retry_count += 1
                 if _has_mega_summary:
-                    missing_info = f" (LLM gộp quá nhiều mẩu ASR trong 1 dòng)"
+                    missing_info = f" (LLM tóm tắt gộp quá nhiều mẩu ASR trong 1 dòng)"
                     _mega_warning = (
                         "\n\n⚠️ CẢNH BÁO NGHIÊM TRỌNG: Lần dịch trước bạn đã gộp quá nhiều mẩu ASR vào 1 dòng duy nhất. "
                         "BẮT BUỘC ngắt dòng riêng cho TỪNG mẩu ASR một, ánh xạ 1:1 với từng mẩu chữ Hán. "
@@ -801,17 +826,15 @@ class TranslationPipelineService:
                             batch_orig_dicts, _parsed_retry, entity_table_text
                         )
                         retry_inv = SmartTimelineHealer.verify_3_invariants(retry_healed, batch_orig_dicts)
-                        curr_cov = retry_inv.get("covered_orig", 0)
+                        curr_cov = retry_inv.get("covered_total", retry_inv.get("covered_orig", 0))
                         curr_errs = len(retry_inv.get("errors", []))
 
                         # Cập nhật ứng viên tốt nhất: ưu tiên bao phủ ASR tối đa
-                        # — kể cả retry_healed còn mega_summary, vẫn so sánh coverage để chọn bản tốt hơn
-                        _retry_has_mega = any(len(it.get("src", [])) >= 15 for it in retry_healed)
+                        _retry_has_mega = _is_true_mega_summary(retry_healed)
                         if curr_cov > best_candidate["covered"] or (
                             curr_cov == best_candidate["covered"] and curr_errs <= best_candidate["errors"]
                         ):
-                            # Ưu tiên bản không có mega-summary nếu coverage ngang nhau
-                            _prev_has_mega = any(len(it.get("src", [])) >= 15 for it in (best_candidate["healed"] or []))
+                            _prev_has_mega = _is_true_mega_summary(best_candidate["healed"] or [])
                             if not _retry_has_mega or _prev_has_mega or curr_cov > best_candidate["covered"]:
                                 best_candidate = {
                                     "healed": retry_healed,
@@ -824,7 +847,7 @@ class TranslationPipelineService:
                         healed_items = retry_healed
                         inv_check = retry_inv
 
-                        if retry_inv.get("passed") and not any(item.get("_retry_needed", False) for item in retry_healed) and not _retry_has_mega:
+                        if not _should_retry_batch(retry_healed, retry_inv):
                             try:
                                 with open(batch_raw_resp_file, "w", encoding="utf-8") as f_raw_upd:
                                     f_raw_upd.write(raw_retry or "")

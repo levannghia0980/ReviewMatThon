@@ -69,7 +69,7 @@ export default function MainStudioView({ onNavigateTab }) {
   const [logs, setLogs] = useState([]);
   const [result, setResult] = useState(null);
   const [videoViewMode, setVideoViewMode] = useState('final');
-  const [batchSize, setBatchSize] = useState(300);
+  const [batchSize, setBatchSize] = useState(500);
   const [downloadQuality, setDownloadQuality] = useState('480p');
 
   const containerRef = useRef(null);
