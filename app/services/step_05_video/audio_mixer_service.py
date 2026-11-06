@@ -13,19 +13,19 @@ class AudioMixerService:
         voiceover_mp3: str,
         output_mixed_audio: str,
         dialogue_segments: Optional[List[DialogueSegment]] = None,
-        bgm_volume_when_speaking: float = 0.23,  # [NOTE TEST BGM PHẲNG]: 0.23 (23%) đồng đều xuyên suốt
-        bgm_volume_normal: float = 0.23,          # [NOTE TEST BGM PHẲNG]: 0.23 (23%) đồng đều khi im lặng
+        bgm_volume_when_speaking: float = 0.04,  # Khi có giọng thuyết minh Việt: dập tắt 96% tiếng gốc
+        bgm_volume_normal: float = 0.23,          # Khi khoảng nghỉ / im lặng: giữ BGM và âm thanh môi trường
         voiceover_volume: float = 1.0,           # 1.0 (100%) chuẩn xác chống biến dạng
-        use_flat_bgm_test: bool = True           # [NOTE TEST]: True = giảm âm đều 0.23 siêu tốc; False = bật lại 100% logic ducking timeline cũ
+        use_flat_bgm_test: bool = False          # False = bật Ducking thông minh; True = ép phẳng BGM
     ) -> str:
         """
-        Kỹ thuật Smart Audio Mixing:
-        - [NOTE TEST BGM PHẲNG ĐỒNG ĐỀU & TĂNG TỐC]: Khi use_flat_bgm_test=True, tắt dò âm timeline/sidechain phức tạp.
-          Chỉ cần giảm tổng thể âm lượng BGM gốc về 0.18 (18%) phẳng đều trước khi amix với voiceover.
-          Tăng tốc độ xử lý FFmpeg lên tối đa và giữ âm thanh nền đồng đều, không bị phập phồng.
-        - [BẢO TỒN NGUYÊN VẸN LOGIC CŨ]: Toàn bộ code tính toán timeline expr và sidechaincompress cũ được giữ nguyên 100%
-          trong nhánh else, chỉ cần đổi use_flat_bgm_test=False là khôi phục lại tức thì.
-        - Giọng lồng tiếng tiếng Việt to rõ, áp dụng bộ lọc Alimiter chống vỡ tiếng 100%.
+        Kỹ thuật Smart Audio Mixing (Tối ưu Song Song & Stream Copy .m4a):
+        - Tự động nhận diện chế độ: Nếu use_flat_bgm_test=True hoặc 2 mức âm lượng bằng nhau -> Chạy BGM phẳng siêu tốc.
+        - Khi use_flat_bgm_test=False -> Tự động bật Ducking thông minh:
+          + Nới biên khoảng lặng (-0.25s đầu / +0.55s cuối) gộp các câu nghỉ ngắn < 0.80s thành 1 khối dập âm liên tục.
+          + Tự động fallback sang Studio Auto Sidechain Ducking (sidechaincompress) khi danh sách câu dài.
+        - Thêm cờ -vn trước video gốc để FFmpeg không giải mã hình ảnh, tăng tốc gấp đôi luồng Audio.
+        - Hỗ trợ xuất trực tiếp .m4a (AAC 192k) để kích hoạt -c:a copy trong 0.5s ở bước mux final.
         """
         src_orig = Path(original_video_or_audio)
         src_voice = Path(voiceover_mp3)
@@ -34,14 +34,12 @@ class AudioMixerService:
 
         ffmpeg_cmd = get_ffmpeg_cmd()
 
-        if use_flat_bgm_test:
+        if use_flat_bgm_test or abs(bgm_volume_when_speaking - bgm_volume_normal) < 0.001:
             # =========================================================================
-            # [NOTE TEST BGM PHẲNG ĐỒNG ĐỀU & TĂNG TỐC TẠO VIDEO]
-            # Không dùng dò âm timeline/sidechain phức tạp.
-            # Giảm phẳng âm lượng track gốc xuống 0.18 (18%) trước khi hòa âm với giọng thuyết minh.
-            # Tốc độ tạo cực nhanh và âm lượng nền ổn định, đồng đều xuyên suốt.
+            # [CHẾ ĐỘ BGM PHẲNG ĐỒNG ĐỀU SIÊU TỐC]
+            # Giảm phẳng âm lượng track gốc theo bgm_volume_when_speaking trước khi hòa âm.
             # =========================================================================
-            flat_bgm_volume = 0.23  # [NOTE TEST]: Giữ âm nền gốc ở mức 0.23 (23%)
+            flat_bgm_volume = bgm_volume_when_speaking
             mix_filter = (
                 f"[0:a]volume={flat_bgm_volume}[bgm];"
                 f"[1:a]volume={voiceover_volume}[voice];"
@@ -49,11 +47,9 @@ class AudioMixerService:
             )
         else:
             # =========================================================================
-            # [CODE LOGIC DUCKING GỐC ĐƯỢC BẢO TỒN NGUYÊN VẸN 100% - KHÔI PHỤC KHI CẦN]
+            # [CHẾ ĐỘ DUCKING THÔNG MINH - NỚI BIÊN GỘP KHOẢNG NGHỈ]
             # =========================================================================
             timeline_expr = ""
-            # An toàn trên Windows: Biểu thức timeline dùng khi số khoảng thoại sau khi gộp hợp lý
-            # Giúp triệt tiêu hoàn toàn tiếng Trung gốc (xuống 3%) khi có thoại và giữ nguyên BGM khi im lặng.
             if dialogue_segments:
                 merged_intervals = []
                 def _extract_t(item, field_names, fallback=0.0):
@@ -67,8 +63,9 @@ class AudioMixerService:
                 for seg in sorted(dialogue_segments, key=lambda s: _extract_t(s, ['start', 'start_time'])):
                     s_val = _extract_t(seg, ['start', 'start_time'])
                     e_val = _extract_t(seg, ['end', 'end_time'])
-                    s = max(0.0, s_val - 0.05)
-                    e = e_val + 0.05
+                    # Nới biên gộp khoảng nghỉ: -0.25s đầu / +0.55s cuối -> gộp mọi khoảng ngắt < 0.80s
+                    s = max(0.0, s_val - 0.25)
+                    e = e_val + 0.55
                     if merged_intervals and s <= merged_intervals[-1][1]:
                         merged_intervals[-1] = (merged_intervals[-1][0], max(merged_intervals[-1][1], e))
                     else:
@@ -81,8 +78,6 @@ class AudioMixerService:
                         timeline_expr = candidate_expr
 
             if timeline_expr:
-                # Khi có lời thoại Việt: Ép âm thanh gốc xuống 3% để triệt tiêu tiếng Trung
-                # Khi hết thoại: Trả nhạc nền BGM về mức 70% tự nhiên
                 mix_filter = (
                     f"[0:a]volume='if({timeline_expr},{bgm_volume_when_speaking},{bgm_volume_normal})':eval=frame[bgm];"
                     f"[1:a]volume={voiceover_volume}[voice];"
@@ -90,8 +85,6 @@ class AudioMixerService:
                 )
             else:
                 # Thuật toán Auto Sidechain Ducking thông minh tiêu chuẩn phòng thu:
-                # BẮT BUỘC dùng asplit=2 để [voice] vừa làm tín hiệu kích hoạt Sidechain Ducking,
-                # vừa giữ lại luồng sạch để trộn vào amix (tránh bị FFmpeg nuốt mất luồng tiếng Việt).
                 mix_filter = (
                     f"[0:a]volume={bgm_volume_normal}[bgm];"
                     f"[1:a]volume={voiceover_volume},asplit=2[voice_sc][voice_mix];"
@@ -107,7 +100,7 @@ class AudioMixerService:
 
         cmd = [
             *ffmpeg_cmd, "-y",
-            "-i", str(src_orig),
+            "-vn", "-i", str(src_orig),
             "-i", str(src_voice),
             "-filter_complex", mix_filter,
             "-map", "[a_out]",
@@ -118,12 +111,11 @@ class AudioMixerService:
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         except FileNotFoundError as e:
-            # Kiểm tra nếu do lệnh quá dài trên Windows (WinError 206)
             if getattr(e, 'winerror', None) == 206 or "too long" in str(e).lower():
-                fb_bgm_vol = 0.23 if use_flat_bgm_test else bgm_volume_when_speaking
+                fb_bgm_vol = bgm_volume_when_speaking
                 fallback_cmd = [
                     *ffmpeg_cmd, "-y",
-                    "-i", str(src_orig),
+                    "-vn", "-i", str(src_orig),
                     "-i", str(src_voice),
                     "-filter_complex", f"[0:a]volume={fb_bgm_vol}[a0];[1:a]volume={voiceover_volume}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95:attack=5:release=50[a_out]",
                     "-map", "[a_out]",
@@ -135,17 +127,15 @@ class AudioMixerService:
                 raise RuntimeError(f"Không thể khởi chạy công cụ FFmpeg ({ffmpeg_cmd}): {e}")
 
         if res.returncode != 0 or not out_audio.exists():
-            # Fallback an toàn với mức âm lượng thấp khi thoại
-            fb_bgm_vol = 0.23 if use_flat_bgm_test else bgm_volume_when_speaking
+            fb_bgm_vol = bgm_volume_when_speaking
+            fallback_codec_args = ["-c:a", "aac", "-b:a", "192k", "-ar", "44100"] if out_ext in (".m4a", ".aac") else ["-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100"]
             simple_cmd = [
                 *ffmpeg_cmd, "-y",
-                "-i", str(src_orig),
+                "-vn", "-i", str(src_orig),
                 "-i", str(src_voice),
                 "-filter_complex", f"[0:a]volume={fb_bgm_vol}[a0];[1:a]volume={voiceover_volume}[a1];[a0][a1]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.95:attack=5:release=50[a_out]",
                 "-map", "[a_out]",
-                "-c:a", "libmp3lame",
-                "-b:a", "192k",
-                "-ar", "44100",
+                *fallback_codec_args,
                 str(out_audio)
             ]
             res_simple = subprocess.run(simple_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")

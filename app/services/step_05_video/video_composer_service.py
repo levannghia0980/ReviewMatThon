@@ -511,10 +511,33 @@ class VideoComposerService:
                 task_manager.add_log(task_id, f"   ⚠️ Không tạo được source mask ASS: {e_mask}", "amber")
                 source_mask_ass = None
 
-        # Kiểm tra nếu đã có file mixed sẵn hoặc file voiceover
+        # =========================================================================
+        # TÁCH RIÊNG 2 NGUỒN TIMELINE (DUAL-TIMELINE ARCHITECTURE)
+        # 1. Timeline Subtitle: Dùng SubtitleSegmentModel (chi tiết từng từ cho Karaoke ASS)
+        # 2. Timeline Audio Ducking: Dùng DialogueSegmentModel (các câu đã gộp hoàn chỉnh sau TTS)
+        # =========================================================================
+        tts_dialogues_db = db.query(DialogueSegmentModel).filter(
+            DialogueSegmentModel.task_id == project_id
+        ).order_by(DialogueSegmentModel.index.asc()).all()
+
+        tts_audio_segments = [
+            DialogueSegment(
+                id=d.index,
+                start=d.start_time,
+                end=d.end_time if (d.end_time and d.end_time > d.start_time) else round(d.start_time + d.duration, 3),
+                duration=round((d.end_time - d.start_time) if (d.end_time and d.end_time > d.start_time) else d.duration, 3),
+                text=d.original_text,
+                clean_text=d.clean_text or d.original_text,
+                translated_text=d.translated_text or d.clean_text or d.original_text,
+                confidence=d.confidence
+            )
+            for d in (tts_dialogues_db or dialogues_db)
+        ]
+
         from app.config import get_project_dirs
         p_dirs = get_project_dirs(project.id)
-        mixed_audio_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_mixed_final.mp3"
+        # Ưu tiên xuất chuẩn AAC .m4a để kích hoạt -c:a copy trong 0.5s ở bước mux
+        mixed_audio_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_mixed_final.m4a"
         proj_root_vo = p_dirs["root"] / f"{project.video_id}_voiceover.mp3"
         voiceover_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"
         if proj_root_vo.exists():
@@ -526,24 +549,29 @@ class VideoComposerService:
             else:
                 voiceover_file = None
 
+        audio_source = str(mixed_audio_file)
+        audio_mix_thread = None
+        audio_mix_error = [None]
+
         if voiceover_file and Path(voiceover_file).exists():
-            task_manager.add_log(task_id, "   🎵 Đang hòa trộn BGM gốc & lồng tiếng Việt (Vocal Ducking)...", "cyan")
-            try:
-                from app.services.step_05_video.audio_mixer_service import AudioMixerService
-                mixed_path = AudioMixerService.mix_bgm_and_voiceover(
-                    original_video_or_audio=project.video_path,
-                    voiceover_mp3=str(voiceover_file),
-                    output_mixed_audio=str(mixed_audio_file),
-                    dialogue_segments=segments,
-                    bgm_volume_when_speaking=0.23,  # 0.23 (23%) đồng đều xuyên suốt
-                    bgm_volume_normal=0.23,  # 0.23 (23%) khi không nói để giữ rõ âm thanh môi trường và BGM sống động
-                    voiceover_volume=1.0
-                )
-                audio_source = str(mixed_path)
-                task_manager.add_log(task_id, "   ✔ Đã hòa trộn BGM & giọng Việt thành công.", "emerald")
-            except Exception as e:
-                task_manager.add_log(task_id, f"   ⚠️ Mix BGM lỗi, dùng trực tiếp file voiceover: {e}", "amber")
-                audio_source = str(voiceover_file)
+            task_manager.add_log(task_id, "   ⚡ [Zero-Wait Concurrency] Khởi chạy luồng hòa âm ngầm (.m4a AAC) song song với GPU render...", "cyan")
+            def _async_mix_audio():
+                try:
+                    AudioMixerService.mix_bgm_and_voiceover(
+                        original_video_or_audio=project.video_path,
+                        voiceover_mp3=str(voiceover_file),
+                        output_mixed_audio=str(mixed_audio_file),
+                        dialogue_segments=tts_audio_segments,
+                        bgm_volume_when_speaking=0.04,  # Triệt tiêu 96% tiếng Trung gốc
+                        bgm_volume_normal=0.23,         # Giữ 23% BGM khi im lặng
+                        voiceover_volume=1.0,
+                        use_flat_bgm_test=False
+                    )
+                except Exception as e:
+                    audio_mix_error[0] = e
+
+            audio_mix_thread = threading.Thread(target=_async_mix_audio, daemon=True)
+            audio_mix_thread.start()
         elif mixed_audio_file.exists():
             audio_source = str(mixed_audio_file)
         else:
@@ -598,7 +626,13 @@ class VideoComposerService:
             render_subtitles=render_subtitles
         )
 
+        # Đảm bảo luồng hòa âm ngầm hoàn tất trước khi kiểm tra file kết quả
+        if audio_mix_thread is not None and audio_mix_thread.is_alive():
+            audio_mix_thread.join(timeout=60.0)
+
         if not v_ok or not output_video_path.exists() or output_video_path.stat().st_size < 1000:
+            if audio_mix_error[0]:
+                task_manager.add_log(task_id, f"   ⚠️ Luồng hòa âm ngầm gặp sự cố: {audio_mix_error[0]}", "amber")
             # Fallback an toàn nếu cần hợp nhất lại qua file tạm
             if temp_visual_video.exists() and temp_visual_video.stat().st_size > 1000:
                 task_manager.add_log(task_id, "   ⚡ [Stream Mux Fallback] Hợp nhất video và âm thanh thành phẩm...", "cyan")
@@ -1338,7 +1372,17 @@ class VideoComposerService:
         has_audio = False
         audio_inputs = []
         audio_maps = ["-an"]
-        valid_audio = cls._find_valid_audio(audio_source_path) if audio_source_path else None
+        valid_audio = None
+        if audio_source_path:
+            wait_start = time.time()
+            while time.time() - wait_start < 60.0:
+                valid_audio = cls._find_valid_audio(audio_source_path)
+                if valid_audio:
+                    break
+                if task_id and task_manager.is_cancelled(task_id):
+                    break
+                time.sleep(0.5)
+
         if valid_audio:
             has_audio = True
             audio_inputs = ["-i", str(valid_audio.resolve())]
