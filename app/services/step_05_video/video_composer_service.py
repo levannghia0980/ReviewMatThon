@@ -726,21 +726,25 @@ class VideoComposerService:
         # Khớp pha sóng liên tục tuyệt đối giữa các phân đoạn (Zero-Jump Phase Continuity): dùng (t + start_sec)
         t_expr = f"(t+{start_sec:.3f})" if start_sec > 0.0 else "t"
 
-        # Trôi ngang siêu êm +-16px (tổng hành trình 32px > 1 ô lưới 32x32 của YouTube) với chu kỳ dài 60s (~1.67px/s)
+        # Trôi ngang siêu êm +-16px (tổng hành trình 32px > 1 ô lưới 32x32 của YouTube) với chu kỳ số nguyên tố 59s
         # Bật exact=1 để dịch chuyển mịn từng 1 pixel trên yuv420p, khóa tĩnh trục dọc y=crop_y để 0% gây chóng mặt!
         pan_x = min(16, int(crop_x)) if crop_x >= 4 else 0
 
-        crop_x_expr = f"'{crop_x}+{pan_x}*sin(2*PI*{t_expr}/60)'" if pan_x > 0 else str(crop_x)
+        crop_x_expr = f"'{crop_x}+{pan_x}*sin(2*PI*{t_expr}/59)'" if pan_x > 0 else str(crop_x)
         filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x_expr}:y={crop_y}:exact=1[v_clean]")
         last_v = "v_clean"
 
-        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG BẢN QUYỀN HÌNH ẢNH ĐỘNG THUẦN YUV420P C-SIMD (SIÊU TỐC ĐỘ 14.4X)
+        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG QUÉT SÂU DEEP CNN & PHÁ HỆ SỐ DCT 8x8 THUẦN YUV420P C-SIMD (SIÊU TỐC ĐỘ 10.2X)
         # Đặt TRƯỚC khi vẽ Phụ đề Tiếng Việt và Logo để chỉ biến đổi cảnh phim gốc, giữ chữ Việt & Logo xuôi chiều 100%:
-        # - hflip: Lật gương ngang toàn bộ tọa độ không gian cảnh quay gốc
-        # - eq: Tinh chỉnh nhẹ độ tương phản (+4%), bão hòa màu (+6%), gamma (+2%), độ sáng (+1%) -> Đổi 100% mã băm YUV pixel
-        # - hue: Dịch pha màu (h), độ bão hòa (s) và độ sáng vi mô (b) đa chu kỳ (24s & 30s) chạy trực tiếp trên YUV420p (không tốn CPU chuyển hệ màu RGB)
+        # 1. hflip: Lật gương ngang toàn bộ tọa độ không gian cảnh quay gốc
+        # 2. unsharp: lx=3:ly=3:la=0.18 vi biến thiên gradient nét viền nhân vật 2D/3D (phá vỡ CNN Edge/SIFT descriptors)
+        # 3. eq: Tinh chỉnh nhẹ tương phản (+4%), bão hòa (+6%), gamma phi tuyến (1.04), độ sáng (+1%)
+        # 4. hue: Lệch pha Hue (chu kỳ 23s), Saturation (chu kỳ 19s) và Luma Brightness (chu kỳ 29s) - Hệ chu kỳ số nguyên tố bất khả ước
+        # 5. noise: Bơm vi nhiễu thời gian trên Luma (c0s=3:c0f=t+u) và Chroma (c1s=2:c1f=t) -> Phá phẳng mã băm DCT khối 8x8 mà mắt người vẫn trong vắt
         filter_chains.append(
-            f"[{last_v}]hflip,eq=contrast=1.04:saturation=1.06:gamma=1.02:brightness=0.01,hue=h='2+2.5*sin(2*PI*{t_expr}/24)':s='1.03+0.02*cos(2*PI*{t_expr}/24)':b='0.08*sin(2*PI*{t_expr}/30)'[v_shield]"
+            f"[{last_v}]hflip,unsharp=lx=3:ly=3:la=0.18,eq=contrast=1.04:saturation=1.06:gamma=1.04:brightness=0.01,"
+            f"hue=h='2.5+3*sin(2*PI*{t_expr}/23)':s='1.04+0.03*cos(2*PI*{t_expr}/19)':b='0.08*sin(2*PI*{t_expr}/29)',"
+            f"noise=c0s=3:c0f=t+u:c1s=2:c1f=t[v_shield]"
         )
         last_v = "v_shield"
 
