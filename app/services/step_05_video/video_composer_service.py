@@ -679,7 +679,9 @@ class VideoComposerService:
         top_cut_percent: Optional[float] = 0.0,
         blur_height: Optional[float] = 13.0,
         sub_bottom_offset: Optional[float] = 0.0,
-        render_subtitles: bool = True
+        render_subtitles: bool = True,
+        start_sec: float = 0.0,
+        cached_res: Optional[Tuple[int, int]] = None
     ) -> Tuple[str, List[str], int, int]:
         """Tạo chuỗi filter_complex chuẩn xác dùng chung cho cả render đơn luồng và song song."""
         # Chuẩn hóa đường dẫn file ASS an toàn tuyệt đối cho FFmpeg trên mọi hệ điều hành (kể cả ổ C:, D:, E: trên Windows hoặc Linux)
@@ -707,7 +709,7 @@ class VideoComposerService:
         filter_chains = []
         last_v = "0:v"
 
-        vw, vh = cls.get_video_resolution(video_input_path)
+        vw, vh = cached_res if cached_res else cls.get_video_resolution(video_input_path)
         cut_pct = max(4.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0))
         t_cut_pct = max(0.0, float(top_cut_percent if top_cut_percent is not None else 0.0))
 
@@ -719,12 +721,15 @@ class VideoComposerService:
         crop_y = crop_info["y"]
         cut_bot_px = crop_info["cut_h"]
 
+        # Khớp pha sóng liên tục tuyệt đối giữa các phân đoạn (Zero-Jump Phase Continuity): dùng (t + start_sec)
+        t_expr = f"(t+{start_sec:.3f})" if start_sec > 0.0 else "t"
+
         # 2D Lissajous Micro-Orbit: Lia ngang +-20px (chu kỳ 12s) kết hợp nhấp nhô dọc +-4px (chu kỳ 9s) trong vùng viền an toàn
         pan_x = min(20, int(crop_x)) if crop_x >= 4 else 0
         pan_y = min(4, int(cut_bot_px // 5)) if cut_bot_px >= 20 else 0
 
-        crop_x_expr = f"'{crop_x}+{pan_x}*sin(2*PI*t/12)'" if pan_x > 0 else str(crop_x)
-        crop_y_expr = f"'{crop_y + pan_y}+{pan_y}*cos(2*PI*t/9)'" if pan_y > 0 else str(crop_y)
+        crop_x_expr = f"'{crop_x}+{pan_x}*sin(2*PI*{t_expr}/12)'" if pan_x > 0 else str(crop_x)
+        crop_y_expr = f"'{crop_y + pan_y}+{pan_y}*cos(2*PI*{t_expr}/9)'" if pan_y > 0 else str(crop_y)
         filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x_expr}:y={crop_y_expr}[v_clean]")
         last_v = "v_clean"
 
@@ -732,9 +737,9 @@ class VideoComposerService:
         # Đặt TRƯỚC khi vẽ Phụ đề Tiếng Việt và Logo để chỉ biến đổi cảnh phim gốc, giữ chữ Việt & Logo xuôi chiều 100%:
         # - hflip: Lật gương ngang toàn bộ tọa độ không gian cảnh quay gốc
         # - eq: Tinh chỉnh nhẹ độ tương phản (+4%), bão hòa màu (+6%), gamma (+2%), độ sáng (+1%) -> Đổi 100% mã băm YUV pixel
-        # - hue=h='2+2.5*sin(2*PI*t/15)': Dịch pha màu hình sin biến thiên theo thời gian thực t -> Phá vỡ hoàn toàn Temporal Color Histogram
+        # - hue=h='2+2.5*sin(2*PI*(t+start_sec)/15)': Dịch pha màu hình sin biến thiên liên tục theo thời gian thực -> Phá vỡ hoàn toàn Temporal Color Histogram
         filter_chains.append(
-            f"[{last_v}]hflip,eq=contrast=1.04:saturation=1.06:gamma=1.02:brightness=0.01,hue=h='2+2.5*sin(2*PI*t/15)'[v_shield]"
+            f"[{last_v}]hflip,eq=contrast=1.04:saturation=1.06:gamma=1.02:brightness=0.01,hue=h='2+2.5*sin(2*PI*{t_expr}/15)'[v_shield]"
         )
         last_v = "v_shield"
 
@@ -904,6 +909,9 @@ class VideoComposerService:
         workers = min(workers, num_segments)
         threads_per_worker = max(1, cpu_cores // workers)
 
+        # Đo độ phân giải 1 lần duy nhất cho toàn bộ tiến trình phân đoạn (tránh gọi ffprobe lặp lại N lần)
+        cached_video_res = cls.get_video_resolution(video_input_path)
+
         full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
             video_input_path=video_input_path,
             ass_file_path=ass_file_path,
@@ -922,9 +930,12 @@ class VideoComposerService:
             target_ratio=target_ratio,
             source_mask_ass=source_mask_ass,
             bottom_cut_percent=bottom_cut_percent,
+            top_cut_percent=top_cut_percent,
             blur_height=blur_height,
             sub_bottom_offset=sub_bottom_offset,
-            render_subtitles=render_subtitles
+            render_subtitles=render_subtitles,
+            start_sec=0.0,
+            cached_res=cached_video_res
         )
 
         # Tự động nhận diện FPS gốc và cấu hình bitrate thích ứng độ phân giải để chất lượng video y nguyên bản gốc
@@ -977,7 +988,7 @@ class VideoComposerService:
                     dur_sec=dur_sec
                 )
 
-            # Tạo filter_complex riêng cho phân đoạn với file ASS tương ứng
+            # Tạo filter_complex riêng cho phân đoạn với file ASS tương ứng + khớp pha sóng (t + start_sec)
             seg_filter_complex, seg_logo_inputs, _, _ = cls._build_visual_filter_complex(
                 video_input_path=video_input_path,
                 ass_file_path=seg_ass_path,
@@ -999,7 +1010,9 @@ class VideoComposerService:
                 top_cut_percent=top_cut_percent,
                 blur_height=blur_height,
                 sub_bottom_offset=sub_bottom_offset,
-                render_subtitles=render_subtitles
+                render_subtitles=render_subtitles,
+                start_sec=start_sec,
+                cached_res=cached_video_res
             )
 
             segments_info.append({
@@ -1158,6 +1171,7 @@ class VideoComposerService:
                 target_ratio=target_ratio,
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
+                top_cut_percent=top_cut_percent,
                 blur_height=blur_height,
                 sub_bottom_offset=sub_bottom_offset,
                 render_subtitles=render_subtitles
@@ -1281,6 +1295,7 @@ class VideoComposerService:
                 target_ratio=target_ratio,
                 source_mask_ass=source_mask_ass,
                 bottom_cut_percent=bottom_cut_percent,
+                top_cut_percent=top_cut_percent,
                 blur_height=blur_height,
                 sub_bottom_offset=sub_bottom_offset,
                 render_subtitles=render_subtitles
