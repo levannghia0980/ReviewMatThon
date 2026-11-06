@@ -7,7 +7,41 @@ class TaskManager:
     _tasks: Dict[str, Dict[str, Any]] = {}
     _project_logs: Dict[int, List[Dict[str, Any]]] = {}
     _subscribers: Set[asyncio.Queue] = set()
+    _active_subprocesses: Dict[str, Set[Any]] = {}
     _lock = threading.Lock()
+
+    @classmethod
+    def register_subprocess(cls, task_id: str, proc: Any):
+        """Đăng ký tiến trình con (FFmpeg, Python CLI) để sẵn sàng kill tức thì khi hủy task"""
+        if not task_id or not proc:
+            return
+        with cls._lock:
+            if task_id not in cls._active_subprocesses:
+                cls._active_subprocesses[task_id] = set()
+            cls._active_subprocesses[task_id].add(proc)
+
+    @classmethod
+    def unregister_subprocess(cls, task_id: str, proc: Any):
+        """Hủy đăng ký khi tiến trình con kết thúc bình thường"""
+        if not task_id or not proc:
+            return
+        with cls._lock:
+            if task_id in cls._active_subprocesses:
+                cls._active_subprocesses[task_id].discard(proc)
+                if not cls._active_subprocesses[task_id]:
+                    cls._active_subprocesses.pop(task_id, None)
+
+    @classmethod
+    def get_active_task_for_project(cls, project_id: int) -> Optional[str]:
+        """Tìm task đang chạy của một project để chống chạy đè nhiều task"""
+        if not project_id:
+            return None
+        with cls._lock:
+            for tid, t in cls._tasks.items():
+                if t.get("status") in ("running", "pending"):
+                    if t.get("meta", {}).get("project_id") == project_id:
+                        return tid
+        return None
 
     @classmethod
     def create_task(cls, task_id: str, meta: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -99,6 +133,7 @@ class TaskManager:
     @classmethod
     def cancel_task(cls, task_id: str):
         p_id = None
+        procs_to_kill = []
         with cls._lock:
             if task_id in cls._tasks:
                 cls._tasks[task_id]["status"] = "cancelled"
@@ -107,9 +142,20 @@ class TaskManager:
                 p_id = cls._tasks[task_id].get("meta", {}).get("project_id")
                 cls._tasks[task_id]["logs"].append({
                     "time": time.strftime("%H:%M:%S"),
-                    "text": "🛑 Tiến trình đã bị người dùng hủy bỏ. Đang tự động dọn dẹp các file rác tạm thời...",
+                    "text": "🛑 Tiến trình đã bị người dùng hủy bỏ. Đang cưỡng chế dừng mọi tiến trình ngầm (FFmpeg/Worker)...",
                     "type": "amber"
                 })
+            procs_to_kill = list(cls._active_subprocesses.pop(task_id, set()))
+
+        # CƯỠNG CHẾ KILL NGAY LẬP TỨC TẤT CẢ TIẾN TRÌNH CON ĐANG CHẠY (FFMPEG, AUDIO MIXER, WORKER)
+        for p in procs_to_kill:
+            try:
+                if hasattr(p, "poll") and p.poll() is None:
+                    p.kill()
+                    print(f"🛑 [TaskManager] Đã cưỡng chế kill tiến trình PID {getattr(p, 'pid', 'N/A')} của task {task_id}")
+            except Exception as e_kill:
+                print(f"⚠️ [TaskManager] Lỗi khi kill tiến trình {getattr(p, 'pid', 'N/A')}: {e_kill}")
+
         cls._broadcast_event("task_cancelled", {"task_id": task_id})
 
         # DỌN DẸP SẠCH BÓNG FILE RÁC TẠM TRONG FOLDER TEMP

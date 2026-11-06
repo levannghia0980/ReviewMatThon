@@ -264,6 +264,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 db.commit()
                 task_manager.add_log(task_id, f"   ✔ Đã lưu {len(dialogues)} câu thoại vào SQLite CSDL.", "emerald")
 
+        if task_manager.is_cancelled(task_id):
+            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình sau STT theo yêu cầu người dùng.", "amber")
+            return
+
         # BƯỚC 2: Dịch Thuật AIREAD Đa Tầng (Kiểm định chuẩn xác THEO ĐƠN VỊ LÔ)
         total_dialogues = db.query(DialogueSegmentModel).filter(DialogueSegmentModel.task_id == project_id).count()
         if total_dialogues == 0:
@@ -335,6 +339,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 f"[2/5] ✔ Video đã hoàn thành 100% kịch bản dịch theo lô ({total_b_cnt}/{total_b_cnt} lô, {total_dialogues} câu ASR). Kế thừa & Chuyển sang TTS & Render.",
                 "emerald"
             )
+
+        if task_manager.is_cancelled(task_id):
+            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình sau Dịch thuật theo yêu cầu người dùng.", "amber")
+            return
 
         p_dirs = get_project_dirs(project_id)
         # Kịch bản TTS đã được hoàn tất và đóng gói chuẩn hóa từ Bước 3 (Translation).
@@ -463,6 +471,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         # =====================================================================
         # BƯỚC 1: SẢN XUẤT GIỌNG LỒNG TIẾNG MASTER & ĐỒNG BỘ PHỤ ĐỀ KARAOKE
         # =====================================================================
+        if task_manager.is_cancelled(task_id):
+            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình trước khi tạo TTS theo yêu cầu người dùng.", "amber")
+            return
+
         task_manager.add_log(task_id, "[2/4] 🎙️ Bắt đầu sản xuất giọng lồng tiếng & cân bằng Timeline...", "cyan")
         db_tts = SessionLocal()
         voiceover_file = None
@@ -498,6 +510,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             raise
         finally:
             db_tts.close()
+
+        if task_manager.is_cancelled(task_id):
+            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình sau khi tạo TTS theo yêu cầu người dùng.", "amber")
+            return
 
         # Tái sinh file ASS chuẩn theo sóng âm thực tế sau TTS với đầy đủ cấu hình giao diện
         if render_subs:
@@ -549,6 +565,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         def _mixer_worker():
             try:
+                if task_manager.is_cancelled(task_id):
+                    return
                 task_manager.add_log(task_id, "   🎵 Đang hòa trộn BGM gốc & lồng tiếng Việt (Vocal Ducking)...", "cyan")
                 db_mix = SessionLocal()
                 try:
@@ -577,6 +595,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
 
         def _video_worker():
             try:
+                if task_manager.is_cancelled(task_id):
+                    return
                 # Single-Pass Muxing: Chỉ truyền audio_source_path nếu luồng Audio Mixer đã hoàn tất 100% (tránh lỗi moov atom dở dang).
                 # Nếu luồng Audio Mixer chưa xong, Video sẽ xuất luồng hình ảnh thuần túy, và Bước 4 sẽ mux lại an toàn.
                 target_audio_for_video = str(mixed_audio_file) if audio_res_container.get("success") else None
@@ -623,6 +643,10 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             f_video = executor.submit(_video_worker)
             concurrent.futures.wait([f_mix, f_video])
 
+        if task_manager.is_cancelled(task_id):
+            task_manager.add_log(task_id, "🛑 Đã dừng tiến trình sau Video Render theo yêu cầu người dùng.", "amber")
+            return
+
         if audio_res_container.get("error") or not audio_res_container.get("audio_path") or not os.path.exists(audio_res_container.get("audio_path")):
             err_details = audio_res_container.get("error") or "Không tìm thấy file âm thanh tiếng Việt hoàn chỉnh"
             raise RuntimeError(f"Lỗi tạo giọng lồng tiếng tiếng Việt: {err_details}. Đã chặn tiến trình để không xuất video giữ tiếng Trung gốc.")
@@ -632,6 +656,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             raise RuntimeError(f"Lỗi Render Video GPU/CPU: {err_details}. Đã chặn tiến trình gộp video!")
 
         # BƯỚC 4: HỢP NHẤT STREAM COPY / SINGLE-PASS HOÀN TẤT
+        if task_manager.is_cancelled(task_id):
+            return
         task_manager.update_task(task_id, step=4, progress=92)
         has_audio = output_final_path.exists() and output_final_path.stat().st_size > 1000 and VideoComposerService.has_audio_stream(output_final_path)
         if has_audio:
@@ -943,6 +969,14 @@ def run_full_auto_pipeline_async(req: FullAutoPipelineRequest):
     3. Sản xuất giọng đọc TikTok TTS Smart Headroom
     4. Render Video Karaoke phủ hộp nền che phụ đề cũ + BGM Ducking + Logo & Watermark
     """
+    # Khóa chống chạy đè: Nếu project này đang có task chạy ngầm, tự động hủy dứt điểm task cũ
+    if req.project_id:
+        active_tid = task_manager.get_active_task_for_project(req.project_id)
+        if active_tid:
+            task_manager.add_log(active_tid, f"🛑 Phát hiện khởi chạy tác vụ mới cho Project #{req.project_id}. Đang dừng dứt điểm tác vụ cũ {active_tid}...", "amber")
+            task_manager.cancel_task(active_tid)
+            time.sleep(0.3)
+
     task_id = f"task_auto_{uuid.uuid4().hex[:10]}"
     task_manager.create_task(task_id, meta={"url": req.url, "project_id": req.project_id, "genre": req.genre})
     

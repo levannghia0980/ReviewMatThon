@@ -1008,9 +1008,33 @@ class VideoComposerService:
                 str(seg_file)
             ])
 
-            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", cwd=str(settings.BASE_DIR))
+            seg_proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(settings.BASE_DIR)
+            )
+            task_manager.register_subprocess(task_id, seg_proc)
+            stderr_out = ""
+            try:
+                while seg_proc.poll() is None:
+                    if task_id and task_manager.is_cancelled(task_id):
+                        try:
+                            seg_proc.kill()
+                        except Exception:
+                            pass
+                        return idx, False
+                    time.sleep(0.3)
+                _, stderr_out = seg_proc.communicate()
+            finally:
+                task_manager.unregister_subprocess(task_id, seg_proc)
 
-            if res.returncode != 0 or not seg_file.exists() or seg_file.stat().st_size < 1000:
+            if seg_proc.returncode != 0 or not seg_file.exists() or seg_file.stat().st_size < 1000:
+                if task_id and task_manager.is_cancelled(task_id):
+                    return idx, False
                 fb_cmd = [
                     *ffmpeg_cmd, "-y",
                     "-ss", f"{start_sec:.3f}",
@@ -1029,12 +1053,37 @@ class VideoComposerService:
                     "-t", f"{dur_sec:.3f}",
                     str(seg_file)
                 ]
-                res_fb = subprocess.run(fb_cmd, capture_output=True, text=True, errors="replace", cwd=str(settings.BASE_DIR))
-                if res_fb.returncode != 0 or not seg_file.exists() or seg_file.stat().st_size < 1000:
-                    err_msg = (res_fb.stderr or res.stderr or "").strip()
+                fb_proc = subprocess.Popen(
+                    fb_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    cwd=str(settings.BASE_DIR)
+                )
+                task_manager.register_subprocess(task_id, fb_proc)
+                fb_stderr_out = ""
+                try:
+                    while fb_proc.poll() is None:
+                        if task_id and task_manager.is_cancelled(task_id):
+                            try:
+                                fb_proc.kill()
+                            except Exception:
+                                pass
+                            return idx, False
+                        time.sleep(0.3)
+                    _, fb_stderr_out = fb_proc.communicate()
+                finally:
+                    task_manager.unregister_subprocess(task_id, fb_proc)
+
+                if fb_proc.returncode != 0 or not seg_file.exists() or seg_file.stat().st_size < 1000:
+                    if task_id and task_manager.is_cancelled(task_id):
+                        return idx, False
+                    err_msg = (fb_stderr_out or stderr_out or "").strip()
                     err_lines = [l for l in err_msg.splitlines() if l.strip() and not l.startswith("frame=")]
                     summary_err = "\n".join(err_lines[-10:])
-                    print(f"❌ [Segment #{idx+1}] Lỗi render FFmpeg (code={res_fb.returncode}):\n{summary_err}", flush=True)
+                    print(f"❌ [Segment #{idx+1}] Lỗi render FFmpeg (code={fb_proc.returncode}):\n{summary_err}", flush=True)
                     return idx, False
 
             with lock:
@@ -1343,34 +1392,41 @@ class VideoComposerService:
             errors="replace",
             cwd=str(settings.BASE_DIR)
         )
+        task_manager.register_subprocess(task_id, process)
 
         last_progress_time = 0.0
         stderr_tail = []
-        if process.stderr:
-            for line in process.stderr:
-                stderr_tail.append(line)
-                if len(stderr_tail) > 25:
-                    stderr_tail.pop(0)
+        try:
+            if process.stderr:
+                for line in process.stderr:
+                    stderr_tail.append(line)
+                    if len(stderr_tail) > 25:
+                        stderr_tail.pop(0)
 
-                if task_id and task_manager.is_cancelled(task_id):
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
-                    break
+                    if task_id and task_manager.is_cancelled(task_id):
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+                        return False
 
-                if "time=" in line and (time.time() - last_progress_time > 3.0):
-                    last_progress_time = time.time()
-                    m = re.search(r"time=(\d+):(\d+):(\d+)", line)
-                    if m:
-                        h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                        print(f"   🎬 Đang Render Video ({vcodec}): {h:02d}:{mm:02d}:{s:02d}")
-                        if task_id:
-                            task_manager.update_task(task_id, stage=f"Render Video: {h:02d}:{mm:02d}:{s:02d}")
+                    if "time=" in line and (time.time() - last_progress_time > 3.0):
+                        last_progress_time = time.time()
+                        m = re.search(r"time=(\d+):(\d+):(\d+)", line)
+                        if m:
+                            h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                            print(f"   🎬 Đang Render Video ({vcodec}): {h:02d}:{mm:02d}:{s:02d}")
+                            if task_id:
+                                task_manager.update_task(task_id, stage=f"Render Video: {h:02d}:{mm:02d}:{s:02d}")
 
-        process.wait()
+            process.wait()
+        finally:
+            task_manager.unregister_subprocess(task_id, process)
+
         out_p = Path(output_temp_video)
         if process.returncode != 0 or not out_p.exists() or out_p.stat().st_size < 1000:
+            if task_id and task_manager.is_cancelled(task_id):
+                return False
             err_summary = "".join(stderr_tail[-20:])
             print(f"[RenderVisualStream] Lỗi encode ({vcodec}), tự động chuyển CPU Ultrafast:\n{err_summary}")
             if task_id:
@@ -1403,29 +1459,33 @@ class VideoComposerService:
                 errors="replace",
                 cwd=str(settings.BASE_DIR)
             )
+            task_manager.register_subprocess(task_id, fallback_proc)
             last_fb_time = 0.0
             fb_stderr_tail = []
-            if fallback_proc.stderr:
-                for line in fallback_proc.stderr:
-                    fb_stderr_tail.append(line)
-                    if len(fb_stderr_tail) > 25:
-                        fb_stderr_tail.pop(0)
+            try:
+                if fallback_proc.stderr:
+                    for line in fallback_proc.stderr:
+                        fb_stderr_tail.append(line)
+                        if len(fb_stderr_tail) > 25:
+                            fb_stderr_tail.pop(0)
 
-                    if task_id and task_manager.is_cancelled(task_id):
-                        try:
-                            fallback_proc.kill()
-                        except Exception:
-                            pass
-                        break
-                    if "time=" in line and (time.time() - last_fb_time > 3.0):
-                        last_fb_time = time.time()
-                        m = re.search(r"time=(\d+):(\d+):(\d+)", line)
-                        if m:
-                            h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                            print(f"   🎬 Đang Render CPU Ultrafast: {h:02d}:{mm:02d}:{s:02d}")
-                            if task_id:
-                                task_manager.update_task(task_id, stage=f"CPU Render: {h:02d}:{mm:02d}:{s:02d}")
-            fallback_proc.wait()
+                        if task_id and task_manager.is_cancelled(task_id):
+                            try:
+                                fallback_proc.kill()
+                            except Exception:
+                                pass
+                            return False
+                        if "time=" in line and (time.time() - last_fb_time > 3.0):
+                            last_fb_time = time.time()
+                            m = re.search(r"time=(\d+):(\d+):(\d+)", line)
+                            if m:
+                                h, mm, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                                print(f"   🎬 Đang Render CPU Ultrafast: {h:02d}:{mm:02d}:{s:02d}")
+                                if task_id:
+                                    task_manager.update_task(task_id, stage=f"CPU Render: {h:02d}:{mm:02d}:{s:02d}")
+                fallback_proc.wait()
+            finally:
+                task_manager.unregister_subprocess(task_id, fallback_proc)
 
             if fallback_proc.returncode != 0:
                 fb_err_summary = "".join(fb_stderr_tail[-25:])
