@@ -329,7 +329,11 @@ class VideoComposerService:
         cut_top = int(round(vh * (top_pct / 100.0)))
         cut_bot = int(round(vh * (bot_pct / 100.0)))
         
-        h_target = vh - cut_top - cut_bot
+        # Dành sẵn biên độ đung đưa dọc pan_y (4px-6px) nằm GỌN BÊN TRONG vùng sạch [cut_top, vh - cut_bot]
+        # để khi nhún xuống thấp nhất (cos = +1) tuyệt đối không bao giờ thò 1 pixel nào xuống vùng chữ Hán ở đáy!
+        pan_y = max(2, min(6, (vh // 160) * 2))
+        h_clean = vh - cut_top - cut_bot
+        h_target = h_clean - (2 * pan_y)
         h_target = max(120, (h_target // 2) * 2)
 
         ratio_val = 9.0 / 16.0 if target_ratio == "9:16" else 16.0 / 9.0
@@ -341,23 +345,24 @@ class VideoComposerService:
             h_target = int(round(w_target / ratio_val))
             h_target = (h_target // 2) * 2
             x = 0
-            y = cut_top
+            y = cut_top + pan_y
         else:
             x = int(round((vw - w_target) / 2.0))
             x = (x // 2) * 2
-            y = cut_top
+            y = cut_top + pan_y
 
         # Giới hạn an toàn tuyệt đối tránh tràn khung hình
         w_target = max(64, min(vw, (w_target // 2) * 2))
         h_target = max(64, min(vh, (h_target // 2) * 2))
         x = max(0, min(vw - w_target, (x // 2) * 2))
-        y = max(0, min(vh - h_target, (y // 2) * 2))
+        y = max(pan_y, min(vh - h_target - pan_y, (y // 2) * 2))
 
         return {
             "w": w_target,
             "h": h_target,
             "x": x,
             "y": y,
+            "pan_y": pan_y,
             "cut_h": cut_bot,
             "cut_top": cut_top
         }
@@ -719,17 +724,17 @@ class VideoComposerService:
         render_h = crop_info["h"]
         crop_x = crop_info["x"]
         crop_y = crop_info["y"]
-        cut_bot_px = crop_info["cut_h"]
+        pan_y = crop_info.get("pan_y", 4)
 
         # Khớp pha sóng liên tục tuyệt đối giữa các phân đoạn (Zero-Jump Phase Continuity): dùng (t + start_sec)
         t_expr = f"(t+{start_sec:.3f})" if start_sec > 0.0 else "t"
 
-        # 2D Lissajous Micro-Orbit: Lia ngang +-20px (chu kỳ 12s) kết hợp nhấp nhô dọc +-4px (chu kỳ 9s) trong vùng viền an toàn
+        # 2D Lissajous Micro-Orbit: Lia ngang +-20px (chu kỳ 12s) kết hợp nhấp nhô dọc +-4px (chu kỳ 10s)
+        # Tâm dọc crop_y đã lùi sẵn pan_y vào trong vùng sạch nên khi nhún xuống tuyệt đối không bao giờ thò vào vùng chữ Hán đã cắt!
         pan_x = min(20, int(crop_x)) if crop_x >= 4 else 0
-        pan_y = min(4, int(cut_bot_px // 5)) if cut_bot_px >= 20 else 0
 
         crop_x_expr = f"'{crop_x}+{pan_x}*sin(2*PI*{t_expr}/12)'" if pan_x > 0 else str(crop_x)
-        crop_y_expr = f"'{crop_y + pan_y}+{pan_y}*cos(2*PI*{t_expr}/9)'" if pan_y > 0 else str(crop_y)
+        crop_y_expr = f"'{crop_y}+{pan_y}*cos(2*PI*{t_expr}/10)'" if pan_y > 0 else str(crop_y)
         filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x_expr}:y={crop_y_expr}[v_clean]")
         last_v = "v_clean"
 
