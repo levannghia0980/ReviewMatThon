@@ -190,10 +190,24 @@ def get_ffprobe_cmd() -> List[str]:
     return ["ffprobe"]
 
 def get_ytdlp_cmd() -> List[str]:
-    """Trả về lệnh gọi yt-dlp chắc chắn hoạt động (kể cả qua module python)"""
+    """Trả về lệnh gọi yt-dlp chắc chắn hoạt động (ưu tiên qua python -m yt_dlp để chống chặn AppLocker/WinError 4551)"""
+    # 1. Ưu tiên chạy trực tiếp qua module của interpreter hiện tại (Chống WinError 4551 Application Control)
+    try:
+        res = subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3
+        )
+        if res.returncode == 0:
+            return [sys.executable, "-m", "yt_dlp"]
+    except Exception:
+        pass
+
     bin_name = "yt-dlp.exe" if sys.platform == "win32" else "yt-dlp"
     
-    # 1. Kiểm tra trong tools/
+    # 2. Kiểm tra trong tools/ hoặc venv
     for cand in [
         BASE_DIR / "tools" / bin_name,
         BASE_DIR / "tools" / "bin" / bin_name,
@@ -202,19 +216,24 @@ def get_ytdlp_cmd() -> List[str]:
         Path(sys.executable).parent / "Scripts" / bin_name
     ]:
         if cand.exists():
-            return [str(cand)]
+            try:
+                test_r = subprocess.run([str(cand), "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)
+                if test_r.returncode == 0:
+                    return [str(cand)]
+            except Exception:
+                continue
             
-    # 2. Kiểm tra PATH
+    # 3. Kiểm tra PATH
     found = shutil.which("yt-dlp")
     if found:
         return [found]
         
-    # 3. Kiểm tra WinGet packages
+    # 4. Kiểm tra WinGet packages
     winget_bin = _find_winget_package_binary(bin_name)
     if winget_bin:
         return [winget_bin]
         
-    # 4. Fallback qua Python module (cực kỳ an toàn nếu yt-dlp nằm trong venv/pip)
+    # 5. Fallback cuối cùng
     return [sys.executable, "-m", "yt_dlp"]
 
 def get_aria2c_cmd() -> Optional[List[str]]:

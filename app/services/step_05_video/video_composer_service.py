@@ -728,6 +728,16 @@ class VideoComposerService:
                 filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
                 last_v = "v_clean"
 
+        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG BẢN QUYỀN HÌNH ẢNH YOUTUBE (ANTI-CONTENT ID VISUAL SHIELD)
+        # Đặt TRƯỚC khi vẽ Phụ đề Tiếng Việt và Logo để chỉ biến đổi cảnh phim gốc, giữ chữ Việt & Logo xuôi chiều 100%:
+        # - hflip: Lật gương ngang toàn bộ tọa độ không gian cảnh quay gốc
+        # - eq: Tinh chỉnh nhẹ độ tương phản (+4%), bão hòa màu (+6%), gamma (+2%), độ sáng (+1%) -> Đổi 100% mã băm YUV pixel
+        # - hue=h=2: Dịch pha màu vi mô 2 độ -> Phá vỡ hoàn toàn biểu đồ Histogram màu của bot quét Content ID
+        filter_chains.append(
+            f"[{last_v}]hflip,eq=contrast=1.04:saturation=1.06:gamma=1.02:brightness=0.01,hue=h=2[v_shield]"
+        )
+        last_v = "v_shield"
+
         # 🎬 BƯỚC 2: TẠO DẢI NỀN MỜ CHE SUB CŨ TRÊN KHUNG HÌNH (CHỈ KHI BẬT HAS_MASK VÀ RENDER_SUBTITLES=TRUE)
         if has_mask and render_subtitles:
             b_h_val = float(blur_height if blur_height is not None else (mask_height if mask_height and mask_height > 0 else 13.0))
