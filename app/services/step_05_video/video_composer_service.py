@@ -14,12 +14,13 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.project import ProjectTask
-from app.models.dialogue import DialogueSegmentModel
+from app.models.dialogue import DialogueSegmentModel, SubtitleSegmentModel
 from app.schemas.transcript import DialogueSegment
 from app.services.step_05_video.karaoke_subtitle_service import KaraokeSubtitleService
 from app.services.step_05_video.audio_mixer_service import AudioMixerService
 from app.services.task_manager import task_manager
 from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd
+
 
 class VideoComposerService:
     # Bộ nhớ đệm phần cứng GPU & Metadata giúp triệt tiêu thời gian chờ subprocess lặp lại
@@ -29,7 +30,7 @@ class VideoComposerService:
     @classmethod
     def detect_best_encoder(cls) -> Tuple[str, str, str]:
         """
-        Tự động nhận diện Encoder phần cứng nhanh nhất trên máy (Chỉ dò 1 lần duy nhất và lưu Cache):
+        Tự động nhận diện Encoder phần cứng nhanh nhất trên máy (Lưu Cache 1 lần duy nhất):
         1. h264_nvenc  (NVIDIA - preset p2 siêu tốc + spatial_aq giữ nét chữ)
         2. h264_qsv    (Intel GPU QuickSync - phần cứng ASIC siêu tốc)
         3. h264_amf    (AMD RX/RX Vega/RDNA - card rời AMD)
@@ -40,7 +41,6 @@ class VideoComposerService:
             return cls._CACHED_ENCODER
 
         ff_cmd = get_ffmpeg_cmd()
-        # 1. Test NVIDIA NVENC (preset p2 tăng 40% tốc độ so với p4 mà vẫn giữ nguyên độ nét hoạt hình)
         try:
             test_nvenc = subprocess.run(
                 [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-pix_fmt", "yuv420p", "-c:v", "h264_nvenc", "-f", "null", "-"],
@@ -52,7 +52,6 @@ class VideoComposerService:
         except Exception:
             pass
 
-        # 2. Test Intel QuickSync
         try:
             test_qsv = subprocess.run(
                 [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_qsv", "-f", "null", "-"],
@@ -64,7 +63,6 @@ class VideoComposerService:
         except Exception:
             pass
 
-        # 3. Test AMD AMF
         try:
             test_amf = subprocess.run(
                 [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_amf", "-f", "null", "-"],
@@ -76,7 +74,6 @@ class VideoComposerService:
         except Exception:
             pass
 
-        # 4. Test Windows Media Foundation
         try:
             test_mf = subprocess.run(
                 [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_mf", "-f", "null", "-"],
@@ -93,10 +90,7 @@ class VideoComposerService:
 
     @classmethod
     def get_video_metadata(cls, video_path: str) -> Tuple[int, int, float, str, float]:
-        """
-        Đọc gộp (width, height, fps_float, fps_str, duration) chỉ trong 1 lần gọi FFprobe duy nhất
-        và lưu Cache theo mtime của file để tăng tốc khởi tạo tiến trình.
-        """
+        """Đọc gộp (width, height, fps_float, fps_str, duration) trong 1 lần gọi FFprobe và lưu Cache."""
         p_str = str(Path(video_path).resolve()) if video_path else ""
         mtime = 0.0
         try:
@@ -144,7 +138,28 @@ class VideoComposerService:
             pass
 
         if dur <= 0.0 or w <= 0 or h <= 0:
-            # Fallback về các hàm đọc lẻ nếu file đặc biệt
+            try:
+                ffmpeg_cmd = get_ffmpeg_cmd()
+                p = subprocess.run([*ffmpeg_cmd, "-i", str(video_path)], capture_output=True, text=True, errors="replace", timeout=6)
+                for line in p.stderr.splitlines():
+                    if "Video:" in line:
+                        m_res = re.search(r" (\d{2,5})x(\d{2,5})", line)
+                        if m_res:
+                            w, h = int(m_res.group(1)), int(m_res.group(2))
+                        m_fps = re.search(r"(\d+(?:\.\d+)?)\s*fps", line)
+                        if m_fps:
+                            f_v = float(m_fps.group(1))
+                            if 10.0 <= f_v <= 120.0:
+                                fps_val, fps_str = round(f_v, 3), str(round(f_v, 3))
+                    if "Duration:" in line and dur <= 0.0:
+                        m_dur = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.?\d*)", line)
+                        if m_dur:
+                            hh, mm, ss = int(m_dur.group(1)), int(m_dur.group(2)), float(m_dur.group(3))
+                            dur = hh * 3600 + mm * 60 + ss
+            except Exception:
+                pass
+
+        if dur <= 0.0 or w <= 0 or h <= 0:
             try:
                 import cv2
                 cap = cv2.VideoCapture(str(video_path))
@@ -184,11 +199,9 @@ class VideoComposerService:
 
     @staticmethod
     def has_audio_stream(file_path: Union[str, Path]) -> bool:
-        """Kiểm tra xem file video có chứa luồng âm thanh (audio stream) hợp lệ hay không."""
         p = Path(file_path)
         if not p.exists() or p.stat().st_size < 1000:
             return False
-        # 1. Kiểm tra qua FFprobe
         try:
             ffprobe_cmd = get_ffprobe_cmd()
             cmd = [
@@ -204,7 +217,6 @@ class VideoComposerService:
         except Exception:
             pass
 
-        # 2. Kiểm tra dự phòng qua FFmpeg -i
         try:
             ffmpeg_cmd = get_ffmpeg_cmd()
             p_res = subprocess.run([*ffmpeg_cmd, "-i", str(p)], capture_output=True, text=True, errors="replace", timeout=6)
@@ -217,7 +229,6 @@ class VideoComposerService:
 
     @classmethod
     def _is_file_readable_audio(cls, file_path: Path) -> bool:
-        """Kiểm tra file âm thanh có đọc được và không bị thiếu moov atom (đang ghi dở)."""
         if not file_path or not file_path.exists() or file_path.stat().st_size < 1000:
             return False
         try:
@@ -241,7 +252,6 @@ class VideoComposerService:
 
     @classmethod
     def _find_valid_audio(cls, audio_source_path: Optional[Union[str, Path]]) -> Optional[Path]:
-        """Tìm file âm thanh hợp lệ trên đĩa, tự động thích ứng các đuôi mở rộng (.m4a, .aac, .mp3, .wav) và kiểm tra tính toàn vẹn."""
         if not audio_source_path:
             return None
         p = Path(audio_source_path)
@@ -258,7 +268,7 @@ class VideoComposerService:
         try:
             if p.parent.exists():
                 for f in p.parent.glob(f"{p.stem}.*"):
-                    if f.suffix.lower() in (".m4a", ".aac", ".mp3", ".wav") and cls._is_file_readable_audio(f):
+                    if f.suffix.lower() in (".m4a", ".aac", ".mp3", ".wav") and not f.stem.endswith("_tmp") and cls._is_file_readable_audio(f):
                         return f
         except Exception:
             pass
@@ -266,7 +276,6 @@ class VideoComposerService:
 
     @staticmethod
     def _format_time(seconds: float) -> str:
-        """Định dạng số giây thành chuỗi trực quan HH:MM:SS."""
         sec = max(0.0, float(seconds))
         h = int(sec // 3600)
         m = int((sec % 3600) // 60)
@@ -279,74 +288,52 @@ class VideoComposerService:
         vw: int,
         vh: int,
         bottom_cut_percent: float,
-        top_cut_percent: float = 2.5,
+        top_cut_percent: float = 0.0,
         target_ratio: str = "16:9"
     ) -> Dict[str, int]:
         """
-        Tính toán bố cục Khung Kính Điện Ảnh 88% Bất Đối Xứng (Asymmetric Cinema Glass PIP):
-        - Giữ nguyên độ phân giải khung nền chuẩn (1280x720 / 1920x1080 cho 16:9 hoặc 9:16 cho Shorts).
-        - Cắt sạch 100% hardsub tiếng Trung ở đáy (tối thiểu 9.0%) và mép logo ở đỉnh (2.5%).
-        - Cắt lẹm bất đối xứng Trái (4.0%) / Phải (1.5%) để phá vỡ tâm quang học của khung hình gốc.
-        - Thu phóng lớp phim chính về 88% và đặt LỆCH TÂM DỌC lên trên (cách đỉnh 3.2%, chừa đáy 8.8%)
-          để phụ đề Karaoke tiếng Việt đè cắt ngang qua biên dưới (Semantic Occlusion + Phá biên hộp).
-        - Mọi tọa độ đều khóa số chẵn (`// 2 * 2`) giúp không gian màu yuv420p sắc nét tuyệt đối, 0% sôi viền.
+        [KHÔI PHỤC NGUYÊN BẢN 100% CROP FULL MÀN HÌNH]:
+        - Cắt bỏ phần trên theo top_cut_percent (% chiều cao).
+        - Cắt bỏ phần đáy theo bottom_cut_percent (% chiều cao) để xóa bỏ hardsub Trung Quốc cũ.
+        - Cắt đều 2 bên (trái & phải) để video đạt chuẩn tỷ lệ 16:9 hoặc 9:16.
+        - CHỈ CẮT (CROP) FULL MÀN HÌNH - TUYỆT ĐỐI KHÔNG ĐÓNG KHUNG VIỀN BO MỜ PIP.
         """
+        bot_pct = max(4.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0)))
+        top_pct = max(0.0, min(35.0, float(top_cut_percent if top_cut_percent is not None else 0.0)))
+
+        cut_top = int(round(vh * (top_pct / 100.0)))
+        cut_bot = int(round(vh * (bot_pct / 100.0)))
+
+        pan_y = 0
+        h_clean = vh - cut_top - cut_bot
+        h_target = max(120, (h_clean // 2) * 2)
+
         ratio_val = 9.0 / 16.0 if target_ratio == "9:16" else 16.0 / 9.0
-        if target_ratio == "9:16":
-            canvas_h = (vh // 2) * 2
-            canvas_w = (int(round(canvas_h * ratio_val)) // 2) * 2
-            if canvas_w > vw:
-                canvas_w = (vw // 2) * 2
-                canvas_h = (int(round(canvas_w / ratio_val)) // 2) * 2
+        w_target = int(round(h_target * ratio_val))
+        w_target = (w_target // 2) * 2
+
+        if w_target > vw:
+            w_target = (vw // 2) * 2
+            h_target = int(round(w_target / ratio_val))
+            h_target = (h_target // 2) * 2
+            x = 0
+            y = cut_top
         else:
-            canvas_w = (vw // 2) * 2
-            canvas_h = (int(round(canvas_w / ratio_val)) // 2) * 2
-            if canvas_h > vh:
-                canvas_h = (vh // 2) * 2
-                canvas_w = (int(round(canvas_h * ratio_val)) // 2) * 2
+            x = int(round((vw - w_target) / 2.0))
+            x = (x // 2) * 2
+            y = cut_top
 
-        canvas_w = max(128, canvas_w)
-        canvas_h = max(128, canvas_h)
-
-        # Cắt sạch đáy (tối thiểu 9.0% để nuốt trọn hardsub Trung), cắt đỉnh 2.5%, cắt lẹm trái 4.0% & phải 1.5%
-        bot_pct = max(9.0, min(40.0, float(bottom_cut_percent if bottom_cut_percent is not None else 9.5)))
-        top_pct = max(2.2, min(25.0, float(top_cut_percent if top_cut_percent and top_cut_percent > 0 else 2.5)))
-        left_pct = 4.0
-        right_pct = 1.5
-
-        cut_top = (int(round(vh * (top_pct / 100.0))) // 2) * 2
-        cut_bot = (int(round(vh * (bot_pct / 100.0))) // 2) * 2
-        cut_left = (int(round(vw * (left_pct / 100.0))) // 2) * 2
-        cut_right = (int(round(vw * (right_pct / 100.0))) // 2) * 2
-
-        fg_crop_w = max(64, ((vw - cut_left - cut_right) // 2) * 2)
-        fg_crop_h = max(64, ((vh - cut_top - cut_bot) // 2) * 2)
-        fg_crop_x = max(0, min(vw - fg_crop_w, cut_left))
-        fg_crop_y = max(0, min(vh - fg_crop_h, cut_top))
-
-        # Khung Kính 88% đặt lệch tâm dọc (cách mép trên 3.2%, chừa phần đáy 8.8% cho phụ đề đè phá biên)
-        fg_scale = 0.88
-        fg_w = max(64, (int(round(canvas_w * fg_scale)) // 2) * 2)
-        fg_h = max(64, (int(round(canvas_h * fg_scale)) // 2) * 2)
-
-        margin_x_center = (canvas_w - fg_w) // 2
-        fg_x = max(0, min(canvas_w - fg_w, ((margin_x_center + 6) // 2) * 2))
-        fg_y = max(0, min(canvas_h - fg_h, (int(round(canvas_h * 0.032)) // 2) * 2))
+        w_target = max(64, min(vw, (w_target // 2) * 2))
+        h_target = max(64, min(vh, (h_target // 2) * 2))
+        x = max(0, min(vw - w_target, (x // 2) * 2))
+        y = max(0, min(vh - h_target, (y // 2) * 2))
 
         return {
-            "w": canvas_w,
-            "h": canvas_h,
-            "x": fg_crop_x,
-            "y": fg_crop_y,
-            "fg_crop_w": fg_crop_w,
-            "fg_crop_h": fg_crop_h,
-            "fg_crop_x": fg_crop_x,
-            "fg_crop_y": fg_crop_y,
-            "fg_w": fg_w,
-            "fg_h": fg_h,
-            "fg_x": fg_x,
-            "fg_y": fg_y,
-            "pan_y": 0,
+            "w": w_target,
+            "h": h_target,
+            "x": x,
+            "y": y,
+            "pan_y": pan_y,
             "cut_h": cut_bot,
             "cut_top": cut_top
         }
@@ -362,34 +349,31 @@ class VideoComposerService:
         project_id: int,
         db: Session,
         logo_path: Optional[str] = None,
-        logo_position: str = "top_left",        # top_left, top_right, bottom_left, bottom_right
-        logo_size: int = 120,                   # Kích thước gọn nhỏ (~120px) sát góc
+        logo_position: str = "top_left",
+        logo_size: int = 120,
         logo_opacity: float = 0.90,
-        channel_name: str = "@Mắt Thần Review",  # Tên kênh watermark mờ
-        channel_opacity: float = 0.25,          # Độ mờ kênh chống clone
-        karaoke_highlight_color: str = "&H0000D7FF", # Vàng kim sang trọng
-        has_mask: bool = True,                  # Bật hộp che mờ chữ cũ
+        channel_name: str = "@Mắt Thần Review",
+        channel_opacity: float = 0.25,
+        karaoke_highlight_color: str = "&H0000D7FF",
+        has_mask: bool = True,
         mask_left: float = 0.0,
-        mask_top: float = 83.5,                 # Tự động che chuẩn xác vùng phụ đề đáy 83.5%
+        mask_top: float = 83.5,
         mask_width: float = 100.0,
-        mask_height: float = 16.5,              # Dải đen cao 16.5% ôm trọn mọi cỡ chữ cũ
-        backdrop_opacity_hex: str = "FF",       # 100% Solid Black chống lộ chữ
-        margin_v: int = 30,                     # Khoảng cách đáy màn hình
-        crop_ratio: str = "16:9",               # 16:9 (YouTube Ngang) hoặc 9:16 (Shorts/TikTok)
-        font_size: Optional[int] = None,        # Cỡ chữ phụ đề nhỏ gọn (px)
-        box_style: str = "white_box",           # "white_box" | "dark_box" | "outline_only"
-        box_padding: int = 8,                   # Độ to theo chiều dọc / padding của hộp che chữ gốc (px)
-        blur_height: Optional[float] = None,    # Chiều cao dải mờ (%)
-        sub_bottom_offset: Optional[float] = None, # Khoảng cách dải mờ từ đáy (%)
-        render_subtitles: bool = True           # True = Chèn Karaoke ASS & che sub; False = Không Sub, chỉ crop & lồng tiếng
+        mask_height: float = 16.5,
+        backdrop_opacity_hex: str = "FF",
+        margin_v: int = 30,
+        crop_ratio: str = "16:9",
+        font_size: Optional[int] = None,
+        box_style: str = "white_box",
+        box_padding: int = 8,
+        blur_height: Optional[float] = None,
+        sub_bottom_offset: Optional[float] = None,
+        render_subtitles: bool = True
     ) -> Dict[str, Any]:
         """
         Sản xuất Video Review Hoàn Thiện:
-        1. Đọc kích thước video gốc MP4 để căn chỉnh tọa độ crop khớp 100%.
-        2. Tạo phụ đề Karaoke ASS chuẩn độ phân giải và font chữ (nếu render_subtitles=True).
-        3. Che sạch phụ đề tiếng Trung cũ (nếu render_subtitles=True).
-        4. Hòa trộn Vocal Ducking (giữ BGM, triệt tiêu tiếng gốc, lồng tiếng Việt).
-        5. Render 1-pass NVENC / CPU xuất file `output/final_videos/{video_id}_final.mp4`.
+        - Khôi phục 100% giao diện Crop Full Khung + Dải mờ Frosted Glass che sub Trung chuẩn CapCut.
+        - Bỏ noise & sin(t) gây nhòe/sôi viền, giữ tốc độ Render GPU Turbo & trộn Audio .m4a song song.
         """
         project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
         if not project:
@@ -401,23 +385,39 @@ class VideoComposerService:
             raise FileNotFoundError(f"Không tìm thấy file video gốc: {project.video_path}")
 
         from app.models.dialogue import SubtitleSegmentModel
-        dialogues_db = db.query(SubtitleSegmentModel).filter(
+        sub_rows = db.query(SubtitleSegmentModel).filter(
             SubtitleSegmentModel.task_id == project_id
         ).order_by(SubtitleSegmentModel.index.asc()).all()
 
-        if not dialogues_db:
-            dialogues_db = db.query(DialogueSegmentModel).filter(
-                DialogueSegmentModel.task_id == project_id
-            ).order_by(DialogueSegmentModel.index.asc()).all()
+        tts_merged_rows = db.query(DialogueSegmentModel).filter(
+            DialogueSegmentModel.task_id == project_id
+        ).order_by(DialogueSegmentModel.index.asc()).all()
 
-        # Khử trùng lặp tuyệt đối theo index để tránh bị vẽ đè 2 tầng sub
-        seen_d_idx = set()
-        unique_dialogues_db = []
-        for d in dialogues_db:
-            if d.index not in seen_d_idx:
-                seen_d_idx.add(d.index)
-                unique_dialogues_db.append(d)
-        dialogues_db = unique_dialogues_db
+        dialogues_db = sub_rows if sub_rows else tts_merged_rows
+
+        def _dedup_to_segments(rows) -> List[DialogueSegment]:
+            seen_idx = set()
+            out_list = []
+            for d in rows:
+                if d.index not in seen_idx:
+                    seen_idx.add(d.index)
+                    out_list.append(
+                        DialogueSegment(
+                            id=d.index,
+                            start=d.start_time,
+                            end=d.end_time if (d.end_time and d.end_time > d.start_time) else round(d.start_time + d.duration, 3),
+                            duration=round((d.end_time - d.start_time) if (d.end_time and d.end_time > d.start_time) else d.duration, 3),
+                            text=d.original_text,
+                            clean_text=d.clean_text or d.original_text,
+                            translated_text=d.translated_text or d.clean_text or d.original_text,
+                            confidence=d.confidence
+                        )
+                    )
+            return out_list
+
+        segments = _dedup_to_segments(dialogues_db)
+        karaoke_render_segments = segments
+        tts_audio_segments = _dedup_to_segments(tts_merged_rows) if tts_merged_rows else segments
 
         if render_subtitles:
             task_manager.add_log(task_id, "[1/4] ✨ Đang sinh file phụ đề Karaoke ASS từng từ (Word-by-word Highlight)...", "cyan")
@@ -434,23 +434,6 @@ class VideoComposerService:
         font_sz = font_size if (font_size and font_size > 0) else 14
         margin_v_val = margin_v if margin_v is not None else 8
         box_pad_val = box_padding if box_padding is not None else 8
-
-        segments = [
-            DialogueSegment(
-                id=d.index,
-                start=d.start_time,
-                end=d.end_time if (d.end_time and d.end_time > d.start_time) else round(d.start_time + d.duration, 3),
-                duration=round((d.end_time - d.start_time) if (d.end_time and d.end_time > d.start_time) else d.duration, 3),
-                text=d.original_text,
-                clean_text=d.clean_text or d.original_text,
-                translated_text=d.translated_text or d.clean_text or d.original_text,
-                confidence=d.confidence
-            )
-            for d in dialogues_db
-        ]
-
-        # Phụ đề Video & Karaoke được nạp trực tiếp chuẩn 100% từ bảng dialogue_segments
-        karaoke_render_segments = segments
 
         ass_file = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_karaoke.ass"
         if render_subtitles:
@@ -471,7 +454,6 @@ class VideoComposerService:
             )
             task_manager.add_log(task_id, f"   ✔ Đã tạo xong file Karaoke ASS: {ass_file.name} (PlayRes: {ass_w}x{ass_h})", "emerald")
             try:
-                import shutil
                 from app.config import get_project_dirs
                 p_dirs = get_project_dirs(project.id)
                 shutil.copyfile(ass_file, p_dirs["root"] / f"{project.video_id}_karaoke.ass")
@@ -479,19 +461,14 @@ class VideoComposerService:
             except Exception:
                 pass
         else:
-            # Tạo file dummy rỗng nếu chưa có để đảm bảo đường dẫn không lỗi
             if not ass_file.exists():
                 with open(ass_file, "w", encoding="utf-8") as f:
                     f.write("")
 
-        # Gen file ASS mask che sub gốc: nền dark vừa đúng độ rộng từng dòng sub Hán (BorderStyle=4)
         source_mask_ass = None
         if has_mask and render_subtitles:
             try:
                 mask_ass_file = settings.OUTPUT_TRANSCRIPTS_DIR / f"{project.video_id}_source_mask.ass"
-                # margin_v_pct: vị trí đáy sub gốc (% từ đáy), nhất thiết phải đúng vị trí sub Hán
-                src_margin_v_pct = mask_top * 0.01 * 100 if mask_top > 1 else (100 - mask_top - mask_height)
-                # mask_top là % từ trên xuống → margin_v_pct từ đáy = 100 - mask_top - mask_height
                 src_margin_v_pct = max(1.0, 100.0 - mask_top - mask_height)
                 KaraokeSubtitleService.create_source_mask_ass(
                     segments=segments,
@@ -503,7 +480,7 @@ class VideoComposerService:
                     mask_height_pct=mask_height,
                     margin_v_pct=src_margin_v_pct,
                     blur_radius=10,
-                    bg_alpha_hex="90",  # 90 = ~44% transparent (56% opaque)
+                    bg_alpha_hex="90",
                 )
                 source_mask_ass = str(mask_ass_file)
                 task_manager.add_log(task_id, f"   ✔ Đã tạo Source Mask ASS (per-sub blur): {mask_ass_file.name}", "emerald")
@@ -511,95 +488,76 @@ class VideoComposerService:
                 task_manager.add_log(task_id, f"   ⚠️ Không tạo được source mask ASS: {e_mask}", "amber")
                 source_mask_ass = None
 
-        # =========================================================================
-        # TÁCH RIÊNG 2 NGUỒN TIMELINE (DUAL-TIMELINE ARCHITECTURE)
-        # 1. Timeline Subtitle: Dùng SubtitleSegmentModel (chi tiết từng từ cho Karaoke ASS)
-        # 2. Timeline Audio Ducking: Dùng DialogueSegmentModel (các câu đã gộp hoàn chỉnh sau TTS)
-        # =========================================================================
-        tts_dialogues_db = db.query(DialogueSegmentModel).filter(
-            DialogueSegmentModel.task_id == project_id
-        ).order_by(DialogueSegmentModel.index.asc()).all()
-
-        tts_audio_segments = [
-            DialogueSegment(
-                id=d.index,
-                start=d.start_time,
-                end=d.end_time if (d.end_time and d.end_time > d.start_time) else round(d.start_time + d.duration, 3),
-                duration=round((d.end_time - d.start_time) if (d.end_time and d.end_time > d.start_time) else d.duration, 3),
-                text=d.original_text,
-                clean_text=d.clean_text or d.original_text,
-                translated_text=d.translated_text or d.clean_text or d.original_text,
-                confidence=d.confidence
-            )
-            for d in (tts_dialogues_db or dialogues_db)
-        ]
-
         from app.config import get_project_dirs
         p_dirs = get_project_dirs(project.id)
-        # Ưu tiên xuất chuẩn AAC .m4a để kích hoạt -c:a copy trong 0.5s ở bước mux
         mixed_audio_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_mixed_final.m4a"
         proj_root_vo = p_dirs["root"] / f"{project.video_id}_voiceover.mp3"
         voiceover_file = settings.OUTPUT_VOICEOVER_DIR / f"{project.video_id}_{safe_title}_voiceover.mp3"
         if proj_root_vo.exists():
             voiceover_file = proj_root_vo
         elif not voiceover_file.exists():
-            candidates = [f for f in settings.OUTPUT_VOICEOVER_DIR.glob(f"{project.video_id}*.mp3") if "mixed" not in f.name and f.stat().st_size > 1000]
-            if candidates:
-                voiceover_file = candidates[0]
-            else:
-                voiceover_file = None
+            candidates = [
+                f for f in settings.OUTPUT_VOICEOVER_DIR.glob(f"{project.video_id}*.*")
+                if "mixed" not in f.name and f.suffix.lower() in (".mp3", ".m4a", ".wav", ".aac") and f.stat().st_size > 1000
+            ]
+            voiceover_file = candidates[0] if candidates else None
 
-        audio_source = str(mixed_audio_file)
-        audio_mix_thread = None
-        audio_mix_error = [None]
+        audio_thread: Optional[threading.Thread] = None
+        audio_source = project.video_path
 
         if voiceover_file and Path(voiceover_file).exists():
-            task_manager.add_log(task_id, "   ⚡ [Zero-Wait Concurrency] Khởi chạy luồng hòa âm ngầm (.m4a AAC) song song với GPU render...", "cyan")
+            try:
+                mixed_audio_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            audio_source = str(mixed_audio_file)
+            task_manager.add_log(task_id, "   🎵 Đang hòa trộn BGM gốc & lồng tiếng Việt song song (Vocal Ducking)...", "cyan")
+
             def _async_mix_audio():
+                nonlocal audio_source
                 try:
-                    AudioMixerService.mix_bgm_and_voiceover(
+                    mixed_path = AudioMixerService.mix_bgm_and_voiceover(
                         original_video_or_audio=project.video_path,
                         voiceover_mp3=str(voiceover_file),
                         output_mixed_audio=str(mixed_audio_file),
                         dialogue_segments=tts_audio_segments,
-                        bgm_volume_when_speaking=0.04,  # Triệt tiêu 96% tiếng Trung gốc
-                        bgm_volume_normal=0.23,         # Giữ 23% BGM khi im lặng
+                        bgm_volume_when_speaking=0.04,
+                        bgm_volume_normal=0.23,
                         voiceover_volume=1.0,
                         use_flat_bgm_test=False
                     )
+                    audio_source = str(mixed_path)
+                    task_manager.add_log(task_id, "   ✔ Đã hòa trộn BGM & giọng Việt thành công.", "emerald")
                 except Exception as e:
-                    audio_mix_error[0] = e
+                    task_manager.add_log(task_id, f"   ⚠️ Mix BGM lỗi, dùng trực tiếp file voiceover: {e}", "amber")
+                    audio_source = str(voiceover_file)
 
-            audio_mix_thread = threading.Thread(target=_async_mix_audio, daemon=True)
-            audio_mix_thread.start()
+            audio_thread = threading.Thread(target=_async_mix_audio, daemon=True)
+            audio_thread.start()
         elif mixed_audio_file.exists():
             audio_source = str(mixed_audio_file)
         else:
             task_manager.add_log(task_id, "   ⚠️ Chưa tìm thấy file voiceover lồng tiếng, sử dụng âm thanh gốc.", "amber")
             audio_source = project.video_path
 
-        # 4. Render luồng hình ảnh & âm thanh thành phẩm (Single-Pass Siêu Tốc)
         task_manager.update_task(task_id, step=4, progress=65)
         task_manager.add_log(task_id, "[4/4] 🚀 Kích hoạt Render Video (Engine Single-Pass Siêu Tốc)...", "purple")
 
         output_video_path = settings.OUTPUT_FINAL_VIDEOS_DIR / f"{project.video_id}_{safe_title}_final.mp4"
         temp_visual_video = settings.TEMP_DIR / f"{project.video_id}_{safe_title}_visual_tmp.mp4"
-        
-        # Xóa triệt để file video thành phẩm cũ và file tạm hình ảnh cũ nếu có từ lần chạy trước
-        if output_video_path.exists():
-            try:
-                output_video_path.unlink(missing_ok=True)
-            except Exception:
-                pass
 
-        if temp_visual_video.exists():
-            try:
-                temp_visual_video.unlink(missing_ok=True)
-            except Exception:
-                pass
+        for old_f in (output_video_path, temp_visual_video):
+            if old_f.exists():
+                try:
+                    old_f.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
-        # Single-Pass Render: Ghép video phân đoạn + Mux âm thanh trực tiếp vào output_video_path
-        # Tiết kiệm hoàn toàn 1 lần ghi 20GB và 1 lần đọc 20GB file trung gian!
+        # Với video ngắn <= 60s, chờ audio_thread hoàn tất để mux trực tiếp trong 1 pass
+        if audio_thread is not None and cls.get_video_duration(project.video_path) <= 60.0:
+            audio_thread.join(timeout=60.0)
+
         v_ok = cls.render_visual_stream(
             task_id=task_id,
             video_input_path=project.video_path,
@@ -626,14 +584,10 @@ class VideoComposerService:
             render_subtitles=render_subtitles
         )
 
-        # Đảm bảo luồng hòa âm ngầm hoàn tất trước khi kiểm tra file kết quả
-        if audio_mix_thread is not None and audio_mix_thread.is_alive():
-            audio_mix_thread.join(timeout=60.0)
+        if audio_thread is not None and audio_thread.is_alive():
+            audio_thread.join(timeout=30.0)
 
         if not v_ok or not output_video_path.exists() or output_video_path.stat().st_size < 1000:
-            if audio_mix_error[0]:
-                task_manager.add_log(task_id, f"   ⚠️ Luồng hòa âm ngầm gặp sự cố: {audio_mix_error[0]}", "amber")
-            # Fallback an toàn nếu cần hợp nhất lại qua file tạm
             if temp_visual_video.exists() and temp_visual_video.stat().st_size > 1000:
                 task_manager.add_log(task_id, "   ⚡ [Stream Mux Fallback] Hợp nhất video và âm thanh thành phẩm...", "cyan")
                 cls.mux_final_video(
@@ -649,15 +603,13 @@ class VideoComposerService:
         if not output_video_path.exists() or output_video_path.stat().st_size < 1000:
             raise RuntimeError("Render & hợp nhất video thành phẩm thất bại!")
 
-        # Cập nhật CSDL
         project.final_video_path = str(output_video_path)
         project.status = "COMPLETED"
         db.commit()
 
         task_manager.add_log(task_id, f"🎉 HOÀN TẤT XUẤT BẢN VIDEO REVIEW! File: output/final_videos/{output_video_path.name}", "emerald")
-        task_manager.add_log(task_id, f"   • Karaoke Sub: Đồng bộ 100% từng từ ({ass_w}x{ass_h})", "emerald")
+        task_manager.add_log(task_id, f"   • Karaoke Sub & Dải mờ: Đồng bộ 100% ({ass_w}x{ass_h})", "emerald")
         task_manager.add_log(task_id, f"   • Audio Mix: BGM gốc giữ nguyên + Lồng tiếng Việt nét căng", "emerald")
-        task_manager.add_log(task_id, f"   • Logo & Watermark: Gọn nhỏ, chống clone bản quyền tinh tế", "emerald")
 
         task_manager.update_task(
             task_id,
@@ -699,7 +651,7 @@ class VideoComposerService:
         target_ratio: str = "16:9",
         source_mask_ass: Optional[str] = None,
         bottom_cut_percent: Optional[float] = None,
-        top_cut_percent: Optional[float] = 2.5,
+        top_cut_percent: Optional[float] = 0.0,
         blur_height: Optional[float] = 13.0,
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True,
@@ -707,11 +659,11 @@ class VideoComposerService:
         cached_res: Optional[Tuple[int, int]] = None
     ) -> Tuple[str, List[str], int, int]:
         """
-        Chuỗi Filter Khung Kính Điện Ảnh 88% Bất Đối Xứng (Turbo C-SIMD Pure YUV420P):
-        1. Xóa vĩnh viễn noise, hue động và crop sin/cos exact=1 -> Hình ảnh trong vắt, 0% vỡ khối, 0% sôi viền.
-        2. Nhánh nền [v_bg] thu nhỏ về 160x90 trước khi làm mờ avgblur và hạ sáng eq -> Giảm 98% tải CPU nhánh nền.
-        3. Nhánh chính [v_fg] cắt bất đối xứng sạch hardsub Trung, lật gương hflip, chỉnh màu ấm tĩnh + nét viền unsharp,
-           KHÔNG vẽ khung drawbox, đặt lệch tâm để phụ đề Karaoke ASS đè cắt ngang biên dưới.
+        [KHÔI PHỤC GIAO DIỆN GỐC + LÁCH QUÉT KHÔNG NOISE]:
+        1. Bước 1: Crop cắt thẳng (Full màn hình, không bo viền PIP, khóa tĩnh chẵn pixel chống sôi viền).
+        2. Bước 1.5: Lá chắn lách quét (hflip + unsharp + eq tách gamma R/B, xóa bỏ noise làm nhòe hình).
+        3. Bước 2: Khôi phục 100% Dải nền mờ Frosted Glass che sạch sub Trung cũ.
+        4. Bước 3: Đốt phụ đề Karaoke ASS Tiếng Việt và Logo kênh lên trên cùng.
         """
         ass_escaped = None
         if ass_file_path:
@@ -723,68 +675,69 @@ class VideoComposerService:
             else:
                 ass_escaped = ass_posix.replace("'", "\\'")
 
-        vw, vh = cached_res if cached_res else cls.get_video_resolution(video_input_path)
-        cut_pct = max(9.0, float(bottom_cut_percent if bottom_cut_percent is not None else (mask_height if mask_height else 9.5)))
-        t_cut_pct = max(2.2, float(top_cut_percent if top_cut_percent and top_cut_percent > 0 else 2.5))
+        filter_chains = []
+        last_v = "0:v"
 
-        crop_info = cls.calculate_crop(
-            vw, vh,
-            bottom_cut_percent=cut_pct,
-            top_cut_percent=t_cut_pct,
-            target_ratio=target_ratio
-        )
+        vw, vh = cached_res if cached_res else cls.get_video_resolution(video_input_path)
+        cut_pct = max(4.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0))
+        t_cut_pct = max(0.0, float(top_cut_percent if top_cut_percent is not None else 0.0))
+
+        # 🎬 BƯỚC 1: CROP CẮT THẲNG FULL MÀN HÌNH (Khóa tọa độ chẵn tĩnh -> 0% sôi viền, 0% bo khung thừa)
+        crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, top_cut_percent=t_cut_pct, target_ratio=target_ratio)
         render_w = crop_info["w"]
         render_h = crop_info["h"]
-        fg_crop_w = crop_info["fg_crop_w"]
-        fg_crop_h = crop_info["fg_crop_h"]
-        fg_crop_x = crop_info["fg_crop_x"]
-        fg_crop_y = crop_info["fg_crop_y"]
-        fg_w = crop_info["fg_w"]
-        fg_h = crop_info["fg_h"]
-        fg_x = crop_info["fg_x"]
-        fg_y = crop_info["fg_y"]
+        crop_x = crop_info["x"]
+        crop_y = crop_info["y"]
 
-        # Kích thước thu nhỏ siêu tốc cho lớp nền mờ (chẵn pixel, nhỏ hơn ~64 lần so với 720p)
-        bg_tiny_w = 90 if target_ratio == "9:16" else 160
-        bg_tiny_h = 160 if target_ratio == "9:16" else 90
+        filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x}:y={crop_y}[v_clean]")
+        last_v = "v_clean"
 
-        filter_chains = [
-            # Tách 2 luồng thuần planar yuv420p
-            f"[0:v]format=yuv420p,split=2[v_bg][v_fg]",
-            # Nhánh nền mờ: Scale nhỏ 160x90 -> avgblur C-SIMD + hạ tối eq ngay trên ảnh nhỏ -> phóng fast_bilinear
-            f"[v_bg]scale={bg_tiny_w}:{bg_tiny_h}:flags=fast_bilinear,"
-            f"avgblur=sizeX=8:sizeY=8,"
-            f"eq=brightness=-0.14:saturation=0.78,"
-            f"scale={render_w}:{render_h}:flags=fast_bilinear[bg]",
-            # Nhánh phim chính 88%: Crop bất đối xứng chẵn pixel -> hflip -> scale bicubic -> eq màu ấm điện ảnh -> unsharp
-            f"[v_fg]crop=w={fg_crop_w}:h={fg_crop_h}:x={fg_crop_x}:y={fg_crop_y},"
-            f"hflip,"
-            f"scale={fg_w}:{fg_h}:flags=bicubic,"
-            f"eq=contrast=1.03:saturation=1.05:gamma=1.02:gamma_r=1.03:gamma_b=0.97,"
-            f"unsharp=lx=3:ly=3:la=0.22[fg]",
-            # Đặt lệch tâm trên nền mờ (Không dùng drawbox để chống AI Auto-Crop dò khung)
-            f"[bg][fg]overlay=x={fg_x}:y={fg_y}:format=yuv420:shortest=1[v_pip]"
-        ]
-        last_v = "v_pip"
+        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG QUÉT DEEP CNN (SẠCH 100% NOISE & KHÔNG RUNG LẮC)
+        # Giữ nguyên hflip + unsharp + eq lệch pha gamma R/B để phá mã băm CNN mà hình ảnh trong vắt, siêu tốc
+        filter_chains.append(
+            f"[{last_v}]hflip,"
+            f"unsharp=lx=3:ly=3:la=0.20,"
+            f"eq=contrast=1.04:saturation=1.06:gamma=1.03:gamma_r=1.03:gamma_b=0.97:brightness=0.01[v_shield]"
+        )
+        last_v = "v_shield"
 
-        # Chỉ kích hoạt dải mờ bổ sung nếu người dùng đẩy sub_bottom_offset lên cao (> 4.0%)
-        # Còn mặc định (< 4.0%) hardsub Trung ở đáy đã bị cắt vật lý sạch 100% bởi fg_crop_h, giúp tiết kiệm 35% CPU!
-        b_offset_val = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
-        if has_mask and render_subtitles and b_offset_val > 4.0:
-            b_h_val = float(blur_height if blur_height is not None else 12.0)
-            m_w = max(32, min(fg_w, (int(round(fg_w * (mask_width / 100.0))) // 2) * 2))
-            m_h = max(16, min(fg_h, (int(round(fg_h * (b_h_val / 100.0))) // 2) * 2))
-            m_x = ((fg_x + (fg_w - m_w) // 2) // 2) * 2
-            offset_px = int(round(render_h * (b_offset_val / 100.0)))
-            m_y = max(0, min(render_h - m_h, ((render_h - offset_px - m_h) // 2) * 2))
+        # 🎬 BƯỚC 2: KHÔI PHỤC 100% DẢI NỀN MỜ FROSTED GLASS CHE SUB CŨ TRÊN KHUNG HÌNH
+        if has_mask and render_subtitles:
+            b_h_val = float(blur_height if blur_height is not None else (mask_height if mask_height and mask_height > 0 else 13.0))
+            b_offset_val = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
+
+            m_w = int(round(render_w * (mask_width / 100.0))) if mask_width else render_w
+            m_h = int(round(render_h * (b_h_val / 100.0)))
+            m_x = max(0, int(round((render_w - m_w) / 2.0)))
+
+            offset_bottom_px = int(round(render_h * (b_offset_val / 100.0)))
+            if offset_bottom_px <= 2:
+                m_y = max(0, render_h - m_h)
+                mask_expr = "if(lt(Y,8),245*(Y/8),245)"
+            else:
+                m_y = max(0, render_h - offset_bottom_px - m_h)
+                f_h = max(2, int(round(m_h * 0.12)))
+                mask_expr = f"if(lt(Y,{f_h}),245*(Y/{f_h}),if(gt(Y,H-{f_h}),245*((H-Y)/{f_h}),245))"
+
+            m_w = max(32, min(render_w, (m_w // 2) * 2))
+            m_h = max(16, min(render_h, (m_h // 2) * 2))
+            m_x = max(0, min(render_w - m_w, (m_x // 2) * 2))
+            m_y = max(0, min(render_h - m_h, (m_y // 2) * 2))
+
             filter_chains.append(
+                f"color=s={m_w}x{m_h}:c=black,format=gray,geq=lum='{mask_expr}',loop=loop=-1:size=1:start=0[mask_alpha];"
                 f"[{last_v}]split=2[v_main][v_crop_src];"
-                f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},avgblur=sizeX=45:sizeY=6,eq=brightness=-0.08[v_blurred];"
-                f"[v_main][v_blurred]overlay={m_x}:{m_y}:format=yuv420:shortest=1[v_masked]"
+                f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
+                f"avgblur=sizeX=65:sizeY=5,"
+                f"colorchannelmixer=rr=0.85:gg=0.85:bb=0.85,"
+                f"eq=brightness=0.14,"
+                f"format=rgba[v_blurred];"
+                f"[v_blurred][mask_alpha]alphamerge[v_feathered];"
+                f"[v_main][v_feathered]overlay={m_x}:{m_y}:format=yuv420:shortest=1[v_masked]"
             )
             last_v = "v_masked"
 
-        # Phụ đề Tiếng Việt Karaoke ASS đè trực tiếp lên ranh giới cạnh dưới của Khung Kính (Phá biên + Semantic Occlusion)
+        # 🎬 BƯỚC 3: Phụ đề Tiếng Việt Karaoke ASS đặt đè lên dải mờ
         if render_subtitles and ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
             filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
             last_v = "v_sub"
@@ -793,18 +746,17 @@ class VideoComposerService:
         if logo_path and os.path.exists(logo_path):
             logo_inputs = ["-i", str(logo_path)]
             if logo_position == "top_right":
-                overlay_pos = f"W-w-{fg_x // 2}:20"
+                overlay_pos = "W-w-25:25"
             elif logo_position == "bottom_left":
-                overlay_pos = f"{fg_x // 2}:H-h-20"
+                overlay_pos = "25:H-h-25"
             elif logo_position == "bottom_right":
-                overlay_pos = f"W-w-{fg_x // 2}:H-h-20"
+                overlay_pos = "W-w-25:H-h-25"
             else:
-                overlay_pos = f"{fg_x // 2}:20"
+                overlay_pos = "25:25"
             filter_chains.append(f"[1:v]scale={logo_size}:{logo_size}:flags=bicubic,format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
             filter_chains.append(f"[{last_v}][logo]overlay={overlay_pos}:format=yuv420[v_logo]")
             last_v = "v_logo"
 
-        # Đổi trực tiếp nhãn cuối cùng thành [v_out] (không cần filter scale trunc(iw/2)*2 dư thừa vì render_w/render_h đã chẵn 100%)
         filter_chains[-1] = re.sub(r"\[[^\]]+\]$", "[v_out]", filter_chains[-1])
         return ";".join(filter_chains), logo_inputs, render_w, render_h
 
@@ -837,15 +789,9 @@ class VideoComposerService:
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
     ) -> bool:
-        """
-        Render luồng hình ảnh song song tối đa (Parallel Segment Rendering).
-        Chia nhỏ video thành nhiều phân đoạn, chạy đa luồng đồng thời trên GPU/CPU,
-        rồi ghép lại siêu tốc bằng Concat Demuxer. Tăng tốc từ 3x - 10x so với render đơn luồng.
-        Hỗ trợ Single-Pass Concat + Audio Mux trực tiếp, không sinh file trung gian 20GB.
-        """
-        total_duration = cls.get_video_duration(video_input_path)
-        # Chỉ những video siêu ngắn dưới 60s mới chạy đơn luồng.
-        # Tất cả video từ 60s trở lên (kể cả 2-5 phút hay 8-15 tiếng) ĐỀU phân đoạn chạy song song tối đa để bứt tốc!
+        cached_w, cached_h, native_fps_val, native_fps_arg, total_duration = cls.get_video_metadata(video_input_path)
+        cached_video_res = (cached_w, cached_h)
+
         if total_duration <= 60.0:
             return cls._render_visual_stream_single(
                 task_id=task_id,
@@ -877,7 +823,6 @@ class VideoComposerService:
         cpu_cores = os.cpu_count() or 4
         vcodec, preset, encoder_desc = cls.detect_best_encoder()
 
-        # Tính số luồng xử lý đồng thời thích ứng linh hoạt theo cấu hình máy bất kỳ:
         if max_workers is not None and max_workers > 0:
             workers = max_workers
         else:
@@ -885,19 +830,12 @@ class VideoComposerService:
             if env_workers and env_workers.isdigit() and int(env_workers) > 0:
                 workers = int(env_workers)
             elif vcodec == "h264_nvenc":
-                # Card rời NVIDIA (NVENC): Hỗ trợ tối đa tới 8 phiên mã hóa phần cứng song song
                 workers = max(3, min(8, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
             elif vcodec in ("h264_qsv", "h264_amf"):
-                # GPU phần cứng (Intel QuickSync / AMD AMF): Chạy 3 - 4 luồng đồng thời tối ưu nhất
                 workers = max(2, min(4, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
             else:
-                # Máy không có GPU (chạy CPU libx264 Ultrafast): Dùng đa nhân CPU, chừa 1 core cho hệ thống
                 workers = max(1, min(max(1, cpu_cores - 1), 8) if cpu_cores > 2 else cpu_cores)
 
-        # Phân chia phân đoạn thông minh để tận dụng tối đa số worker:
-        # - Video ngắn (< 5 phút): mỗi phân đoạn ~ 60s -> chia đều cho các luồng GPU xử lý đồng loạt
-        # - Video vừa (5 - 30 phút): mỗi phân đoạn ~ 120s - 180s
-        # - Video dài (1 - 15 tiếng): mỗi phân đoạn ~ 300s (5 phút)
         if total_duration <= 300.0:
             segment_duration = max(30.0, total_duration / float(max(2, workers)))
         elif total_duration <= 1800.0:
@@ -909,10 +847,7 @@ class VideoComposerService:
         workers = min(workers, num_segments)
         threads_per_worker = max(1, cpu_cores // workers)
 
-        # Đo độ phân giải 1 lần duy nhất cho toàn bộ tiến trình phân đoạn (tránh gọi ffprobe lặp lại N lần)
-        cached_video_res = cls.get_video_resolution(video_input_path)
-
-        full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
+        _, _, render_w, render_h = cls._build_visual_filter_complex(
             video_input_path=video_input_path,
             ass_file_path=ass_file_path,
             logo_path=logo_path,
@@ -938,20 +873,12 @@ class VideoComposerService:
             cached_res=cached_video_res
         )
 
-        # Tự động nhận diện FPS gốc và cấu hình bitrate thích ứng độ phân giải để chất lượng video y nguyên bản gốc
-        native_fps_val, native_fps_arg = cls.get_video_fps(video_input_path)
         if render_h >= 1080:
-            target_bv = "8000k"
-            max_bv = "12000k"
-            crf_val = "19"
+            target_bv, max_bv, crf_val = "8000k", "12000k", "19"
         elif render_h >= 720:
-            target_bv = "5000k"
-            max_bv = "8000k"
-            crf_val = "21"
+            target_bv, max_bv, crf_val = "5000k", "8000k", "21"
         else:
-            target_bv = "3500k"
-            max_bv = "5000k"
-            crf_val = "23"
+            target_bv, max_bv, crf_val = "3500k", "5000k", "23"
 
         if task_id:
             task_manager.add_log(task_id, f"🚀 KÍCH HOẠT ENGINE RENDER SONG SONG TỐI ĐA ({workers} Luồng Đồng Thời)...", "purple")
@@ -962,7 +889,6 @@ class VideoComposerService:
         out_p = Path(output_temp_video).resolve()
         out_p.parent.mkdir(parents=True, exist_ok=True)
         temp_seg_dir = out_p.parent / f"segs_{out_p.stem}"
-        # Luôn làm sạch thư mục phân đoạn cũ để không dính file hỏng từ lần chạy trước
         if temp_seg_dir.exists():
             try:
                 shutil.rmtree(temp_seg_dir, ignore_errors=True)
@@ -976,10 +902,8 @@ class VideoComposerService:
             dur_sec = min(segment_duration, total_duration - start_sec)
             seg_file = temp_seg_dir / f"seg_{i:05d}.mp4"
 
-            # Cắt lát file ASS độc lập cho riêng phân đoạn này:
-            # Timestamp được chuẩn hóa về [0, dur_sec] nên libass hiển thị chính xác 100%
             seg_ass_path = None
-            if ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
+            if render_subtitles and ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
                 seg_ass_file = temp_seg_dir / f"seg_{i:05d}.ass"
                 seg_ass_path = KaraokeSubtitleService.slice_ass_for_interval(
                     source_ass_path=ass_file_path,
@@ -988,7 +912,6 @@ class VideoComposerService:
                     dur_sec=dur_sec
                 )
 
-            # Tạo filter_complex riêng cho phân đoạn với file ASS tương ứng + khớp pha sóng (t + start_sec)
             seg_filter_complex, seg_logo_inputs, _, _ = cls._build_visual_filter_complex(
                 video_input_path=video_input_path,
                 ass_file_path=seg_ass_path,
@@ -1039,17 +962,15 @@ class VideoComposerService:
             if task_id and task_manager.is_cancelled(task_id):
                 return idx, False
 
-            # Xóa file cũ nếu có để tránh xung đột
             try:
                 seg_file.unlink(missing_ok=True)
             except Exception:
                 pass
 
             ffmpeg_cmd = get_ffmpeg_cmd()
-            # Fast seek -ss TRƯỚC -i để seek tức thì không decode thừa,
-            # và file ASS đã được cô lập cục bộ theo [0, dur_sec] nên chuẩn tuyệt đối 100%
             cmd = [
                 *ffmpeg_cmd, "-y",
+                "-hwaccel", "auto",
                 "-ss", f"{start_sec:.3f}",
                 "-t", f"{dur_sec:.3f}",
                 "-i", str(video_input_path),
@@ -1063,12 +984,17 @@ class VideoComposerService:
             if preset != "none":
                 cmd.extend(["-preset", preset])
             if vcodec == "libx264":
-                cmd.extend(["-crf", crf_val])
+                cmd.extend(["-crf", crf_val, "-tune", "fastdecode"])
             elif vcodec == "h264_nvenc":
-                # Tối ưu chuyên biệt cho NVIDIA GeForce/RTX/GTX (Laptop RTX 3050, 4060, v.v.):
-                # -spatial_aq 1: Giữ viền nét chữ phụ đề sắc sảo, chống vỡ hạt macroblock
-                # -rc:v vbr: Variable Bitrate thích ứng khung hình, xuất video siêu tốc
-                cmd.extend(["-rc:v", "vbr", "-cq:v", "20", "-b:v", target_bv, "-maxrate", max_bv, "-spatial_aq", "1"])
+                cmd.extend([
+                    "-tune", "hq",
+                    "-rc:v", "vbr",
+                    "-cq:v", "21",
+                    "-b:v", target_bv,
+                    "-maxrate", max_bv,
+                    "-spatial_aq", "1",
+                    "-bf", "2"
+                ])
             elif vcodec == "h264_amf":
                 cmd.extend(["-quality", "speed", "-b:v", target_bv, "-maxrate", max_bv])
             else:
@@ -1084,7 +1010,6 @@ class VideoComposerService:
 
             res = subprocess.run(cmd, capture_output=True, text=True, errors="replace", cwd=str(settings.BASE_DIR))
 
-            # Tự động Fallback CPU ultrafast nếu GPU encoder phân đoạn gặp lỗi
             if res.returncode != 0 or not seg_file.exists() or seg_file.stat().st_size < 1000:
                 fb_cmd = [
                     *ffmpeg_cmd, "-y",
@@ -1149,7 +1074,6 @@ class VideoComposerService:
                 shutil.rmtree(temp_seg_dir, ignore_errors=True)
             except Exception:
                 pass
-            # Fallback 100% tin cậy: chuyển sang Render đơn luồng toàn bộ video
             return cls._render_visual_stream_single(
                 task_id=task_id,
                 video_input_path=video_input_path,
@@ -1177,18 +1101,14 @@ class VideoComposerService:
                 render_subtitles=render_subtitles
             )
 
-        # Ghép nối các phân đoạn bằng Concat Demuxer
         concat_list_file = temp_seg_dir / "concat_list.txt"
         with open(concat_list_file, "w", encoding="utf-8") as f:
             for seg in segments_info:
-                # Dùng relative filename để FFmpeg concat demuxer đọc an toàn tuyệt đối trên Windows/Linux
                 f.write(f"file '{seg['output'].name}'\n")
 
-        # Kiểm tra luồng audio: Nếu có audio_source_path và file hợp lệ -> Single-Pass Concat + Audio Mux
         has_audio = False
         valid_audio_path = None
         if audio_source_path:
-            # Chờ tối đa 60 giây nếu luồng audio mixer chạy song song chưa kịp hoàn tất
             wait_start = time.time()
             while time.time() - wait_start < 60.0:
                 valid_audio_path = cls._find_valid_audio(audio_source_path)
@@ -1197,7 +1117,7 @@ class VideoComposerService:
                     break
                 if task_id and task_manager.is_cancelled(task_id):
                     break
-                time.sleep(0.5)
+                time.sleep(0.3)
 
         ffmpeg_cmd = get_ffmpeg_cmd()
         out_dest = Path(output_temp_video).resolve()
@@ -1219,7 +1139,6 @@ class VideoComposerService:
                 "-map_metadata", "-1",
                 "-shortest"
             ]
-            # Chỉ thêm +faststart với video <= 30 phút; video dài bỏ qua để tránh ghi lại toàn bộ file lần 2
             if total_duration <= 1800.0:
                 concat_cmd.extend(["-movflags", "+faststart"])
             concat_cmd.append(str(out_dest))
@@ -1241,11 +1160,9 @@ class VideoComposerService:
         c_res = subprocess.run(concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir.resolve()))
         out_video = Path(output_temp_video)
 
-        # Nếu Concat kèm Audio thất bại (do audio chưa sẵn sàng hoặc lỗi mux), tự động fallback sang Concat Video thuần túy
-        # để bảo toàn 100% các phân đoạn video đã render cực nhọc, tuyệt đối không hủy bỏ phân đoạn!
         if (c_res.returncode != 0 or not out_video.exists() or out_video.stat().st_size < 1000) and has_audio:
             if task_id:
-                task_manager.add_log(task_id, "⚠️ Single-Pass Concat kèm Audio chưa sẵn sàng, chuyển sang Concat Video thuần túy (Bảo toàn 100% phân đoạn)...", "amber")
+                task_manager.add_log(task_id, "⚠️ Single-Pass Concat kèm Audio chưa sẵn sàng, chuyển sang Concat Video thuần túy...", "amber")
             fallback_concat_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-f", "concat",
@@ -1259,7 +1176,6 @@ class VideoComposerService:
             c_res = subprocess.run(fallback_concat_cmd, capture_output=True, text=True, errors="replace", cwd=str(temp_seg_dir.resolve()))
 
         if c_res.returncode == 0 and out_video.exists() and out_video.stat().st_size > 1000:
-            # Dọn dẹp ngay các phân đoạn tạm để giải phóng ổ đĩa
             try:
                 shutil.rmtree(temp_seg_dir, ignore_errors=True)
             except Exception:
@@ -1329,7 +1245,7 @@ class VideoComposerService:
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
     ) -> bool:
-        """Render đơn luồng (dành cho video ngắn dưới 60s hoặc fallback). Hỗ trợ Single-Pass muxing."""
+        cached_w, cached_h, _, native_fps_arg, total_duration = cls.get_video_metadata(video_input_path)
         full_filter_complex, logo_inputs, render_w, render_h = cls._build_visual_filter_complex(
             video_input_path=video_input_path,
             ass_file_path=ass_file_path,
@@ -1351,23 +1267,16 @@ class VideoComposerService:
             top_cut_percent=top_cut_percent,
             blur_height=blur_height,
             sub_bottom_offset=sub_bottom_offset,
-            render_subtitles=render_subtitles
+            render_subtitles=render_subtitles,
+            cached_res=(cached_w, cached_h)
         )
 
-        total_duration = cls.get_video_duration(video_input_path)
-        native_fps_val, native_fps_arg = cls.get_video_fps(video_input_path)
         if render_h >= 1080:
-            target_bv = "8000k"
-            max_bv = "12000k"
-            crf_val = "19"
+            target_bv, max_bv, crf_val = "8000k", "12000k", "19"
         elif render_h >= 720:
-            target_bv = "5000k"
-            max_bv = "8000k"
-            crf_val = "21"
+            target_bv, max_bv, crf_val = "5000k", "8000k", "21"
         else:
-            target_bv = "3500k"
-            max_bv = "5000k"
-            crf_val = "23"
+            target_bv, max_bv, crf_val = "3500k", "5000k", "23"
 
         has_audio = False
         audio_inputs = []
@@ -1381,7 +1290,7 @@ class VideoComposerService:
                     break
                 if task_id and task_manager.is_cancelled(task_id):
                     break
-                time.sleep(0.5)
+                time.sleep(0.3)
 
         if valid_audio:
             has_audio = True
@@ -1390,10 +1299,11 @@ class VideoComposerService:
             audio_codec_args = ["-c:a", "copy"] if valid_audio.suffix.lower() in (".m4a", ".aac") else ["-c:a", "aac", "-b:a", "192k"]
             audio_maps = ["-map", f"{a_idx}:a?", *audio_codec_args, "-shortest"]
 
-        vcodec, preset, encoder_desc = cls.detect_best_encoder()
+        vcodec, preset, _ = cls.detect_best_encoder()
         ffmpeg_cmd = get_ffmpeg_cmd()
         cmd = [
             *ffmpeg_cmd, "-y",
+            "-hwaccel", "auto",
             "-i", str(video_input_path),
             *logo_inputs,
             *audio_inputs,
@@ -1406,9 +1316,9 @@ class VideoComposerService:
         if preset != "none":
             cmd.extend(["-preset", preset])
         if vcodec == "libx264":
-            cmd.extend(["-crf", crf_val])
+            cmd.extend(["-crf", crf_val, "-tune", "fastdecode"])
         elif vcodec == "h264_nvenc":
-            cmd.extend(["-rc:v", "vbr", "-cq:v", "20", "-b:v", target_bv, "-maxrate", max_bv, "-spatial_aq", "1"])
+            cmd.extend(["-tune", "hq", "-rc:v", "vbr", "-cq:v", "21", "-b:v", target_bv, "-maxrate", max_bv, "-spatial_aq", "1", "-bf", "2"])
         elif vcodec == "h264_amf":
             cmd.extend(["-quality", "speed", "-b:v", target_bv, "-maxrate", max_bv])
         else:
@@ -1465,14 +1375,13 @@ class VideoComposerService:
             print(f"[RenderVisualStream] Lỗi encode ({vcodec}), tự động chuyển CPU Ultrafast:\n{err_summary}")
             if task_id:
                 task_manager.add_log(task_id, f"   ⚠️ Chuyển sang bộ mã hóa CPU Đa Luồng Ultrafast an toàn...", "amber")
-            clean_part = full_filter_complex
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(video_input_path),
                 *logo_inputs,
                 *audio_inputs,
                 "-threads", "0",
-                "-filter_complex", clean_part,
+                "-filter_complex", full_filter_complex,
                 "-map", "[v_out]",
                 *audio_maps,
                 "-c:v", "libx264",
@@ -1555,11 +1464,6 @@ class VideoComposerService:
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True
     ) -> bool:
-        """
-        Render luồng hình ảnh không tiếng (Visual Stream) với Subtitle Karaoke + Logo + Vùng che.
-        Tự động phân luồng song song (Multi-Worker Parallel) cho video dài (>60s), tối ưu tốc độ tối đa trên mọi máy.
-        Hỗ trợ Single-Pass Concat + Audio Mux trực tiếp khi có audio_source_path.
-        """
         dur = cls.get_video_duration(video_input_path)
         if dur > 60.0:
             return cls.parallel_render_visual_stream(
@@ -1625,11 +1529,6 @@ class VideoComposerService:
         output_final_path: str,
         task_id: Optional[str] = None
     ) -> bool:
-        """
-        Ghép siêu tốc luồng hình ảnh và âm thanh (Stream Copy 0.5s - 1s).
-        Hiển thị tiến độ Stream Copy & di chuyển Moov Atom thời gian thực lên Terminal và Web UI.
-        An toàn 100% trên Windows (chống WinError 32 khóa file từ trình duyệt).
-        """
         out_p = Path(output_final_path).resolve()
         out_p.parent.mkdir(parents=True, exist_ok=True)
         temp_out = out_p.parent / f"{out_p.stem}_mux_tmp{out_p.suffix}"
@@ -1637,7 +1536,6 @@ class VideoComposerService:
         ffmpeg_cmd = get_ffmpeg_cmd()
         total_duration = cls.get_video_duration(visual_video_path)
         actual_audio = cls._find_valid_audio(audio_source_path) or Path(audio_source_path)
-        # Kiểm tra nếu audio_source_path đã là AAC/M4A -> Stream Copy 100% không re-encode
         src_audio_ext = actual_audio.suffix.lower()
         if src_audio_ext in (".m4a", ".aac"):
             audio_codec_args = ["-c:a", "copy"]
@@ -1685,7 +1583,6 @@ class VideoComposerService:
         proc.wait()
 
         if proc.returncode != 0 or not temp_out.exists():
-            # Fallback nếu stream copy gặp lỗi
             fallback_cmd = [
                 *ffmpeg_cmd, "-y",
                 "-i", str(visual_video_path),
@@ -1705,23 +1602,19 @@ class VideoComposerService:
         if not temp_out.exists() or temp_out.stat().st_size < 1000:
             return False
 
-        # Thay thế file đích an toàn
         try:
             if out_p.exists():
                 try:
                     out_p.unlink(missing_ok=True)
                 except Exception:
-                    # File đang bị khóa bởi trình phát video trên web, dùng os.replace để ghi đè
                     pass
             os.replace(str(temp_out), str(out_p))
         except Exception as e:
             print(f"[MuxFinalVideo] Không thể ghi đè file cũ (đang bị lock), lưu tạm file: {e}")
             try:
-                import shutil
                 shutil.copy2(str(temp_out), str(out_p))
                 temp_out.unlink(missing_ok=True)
             except Exception:
-                # Nếu vẫn không copy được, đổi tên temp_out thành file chính
                 pass
 
         return out_p.exists() or temp_out.exists()
