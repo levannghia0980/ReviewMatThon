@@ -323,7 +323,7 @@ class VideoComposerService:
         - Cắt đều 2 bên (trái & phải) để video đạt chuẩn tỷ lệ YouTube hỗ trợ (Mặc định 16:9 YouTube ngang, hoặc 9:16 Shorts).
         - CHỈ CẮT (CROP) - TUYỆT ĐỐI KHÔNG SCALE để tối ưu tốc độ render nhanh nhất có thể.
         """
-        bot_pct = max(0.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 0.0)))
+        bot_pct = max(4.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0)))
         top_pct = max(0.0, min(35.0, float(top_cut_percent if top_cut_percent is not None else 0.0)))
         
         cut_top = int(round(vh * (top_pct / 100.0)))
@@ -708,31 +708,25 @@ class VideoComposerService:
         last_v = "0:v"
 
         vw, vh = cls.get_video_resolution(video_input_path)
-        cut_pct = float(bottom_cut_percent if bottom_cut_percent is not None else 0.0)
-        t_cut_pct = float(top_cut_percent if top_cut_percent is not None else 0.0)
+        cut_pct = max(4.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0))
+        t_cut_pct = max(0.0, float(top_cut_percent if top_cut_percent is not None else 0.0))
 
-        # 🎬 BƯỚC 1: CROP VIDEO (Cắt bỏ % sub Trung ở đáy + cắt % trên đỉnh + cắt đều 2 bên theo tỷ lệ 16:9 hoặc 9:16 Shorts)
-        if cut_pct > 0 or t_cut_pct > 0:
-            crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, top_cut_percent=t_cut_pct, target_ratio=target_ratio)
-            render_w = crop_info["w"]
-            render_h = crop_info["h"]
-            crop_x = crop_info["x"]
-            crop_y = crop_info["y"]
-            # Dynamic Micro-Pan: Lia máy vi mô +-16px theo chu kỳ 12s trên phần lề thừa 2 bên để phá khóa Spatial Grid & Motion Vector của Content ID
-            pan_px = min(16, int(crop_x)) if crop_x >= 4 else 0
-            if pan_px > 0:
-                crop_x_expr = f"'{crop_x}+{pan_px}*sin(2*PI*t/12)'"
-                filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x_expr}:y={crop_y}[v_clean]")
-            else:
-                filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
-            last_v = "v_clean"
-        else:
-            render_w = (vw // 2) * 2
-            render_h = (vh // 2) * 2
-            if render_w != vw or render_h != vh:
-                crop_expr = f"w='min(iw,{render_w})':h='min(ih,{render_h})':x=0:y=0"
-                filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
-                last_v = "v_clean"
+        # 🎬 BƯỚC 1: CROP VIDEO + 2D MICRO-ORBIT (Khóa tối thiểu 4% cắt đáy để luôn có viền ẩn chống quét Content ID)
+        crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, top_cut_percent=t_cut_pct, target_ratio=target_ratio)
+        render_w = crop_info["w"]
+        render_h = crop_info["h"]
+        crop_x = crop_info["x"]
+        crop_y = crop_info["y"]
+        cut_bot_px = crop_info["cut_h"]
+
+        # 2D Lissajous Micro-Orbit: Lia ngang +-20px (chu kỳ 12s) kết hợp nhấp nhô dọc +-4px (chu kỳ 9s) trong vùng viền an toàn
+        pan_x = min(20, int(crop_x)) if crop_x >= 4 else 0
+        pan_y = min(4, int(cut_bot_px // 5)) if cut_bot_px >= 20 else 0
+
+        crop_x_expr = f"'{crop_x}+{pan_x}*sin(2*PI*t/12)'" if pan_x > 0 else str(crop_x)
+        crop_y_expr = f"'{crop_y + pan_y}+{pan_y}*cos(2*PI*t/9)'" if pan_y > 0 else str(crop_y)
+        filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x_expr}:y={crop_y_expr}[v_clean]")
+        last_v = "v_clean"
 
         # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG BẢN QUYỀN HÌNH ẢNH ĐỘNG (DYNAMIC ANTI-CONTENT ID VISUAL SHIELD)
         # Đặt TRƯỚC khi vẽ Phụ đề Tiếng Việt và Logo để chỉ biến đổi cảnh phim gốc, giữ chữ Việt & Logo xuôi chiều 100%:

@@ -33,7 +33,7 @@ export default function MainStudioView({ onNavigateTab }) {
   const [maskTop, setMaskTop] = useState(80); // % from top
   const [maskLeft, setMaskLeft] = useState(0); // % left
   const [maskWidth, setMaskWidth] = useState(100); // Giữ để gửi backend
-  const [maskHeight, setMaskHeight] = useState(8); // % height cắt sub đáy
+  const [maskHeight, setMaskHeight] = useState(4); // % height cắt đáy (Mặc định & tối thiểu 4% tạo viền ẩn chống quét YT)
   const [topCutPercent, setTopCutPercent] = useState(0); // % height cắt trên đỉnh
   const [blurHeight, setBlurHeight] = useState(13); // % height dải mờ che sub cũ (tùy chỉnh cao nền)
   const [cropRatio, setCropRatio] = useState('16:9'); // '16:9' (YouTube Ngang Chuẩn) | '9:16' (Shorts/TikTok)
@@ -525,7 +525,7 @@ export default function MainStudioView({ onNavigateTab }) {
     const currentMouseY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
 
     if (interactionMode === 'crop-bottom') {
-      const newHeight = Math.max(1, Math.min(45, 100 - currentMouseY));
+      const newHeight = Math.max(4, Math.min(45, 100 - currentMouseY));
       setMaskHeight(Math.round(newHeight));
     } else if (interactionMode === 'crop-top') {
       const newTop = Math.max(0, Math.min(35, currentMouseY));
@@ -630,8 +630,8 @@ export default function MainStudioView({ onNavigateTab }) {
         mask_top: calcMaskTop, // % từ đỉnh xuống dải mờ
         mask_left: calcMaskLeft,
         mask_width: calcMaskWidth, // Độ rộng dải mờ %
-        mask_height: maskHeight, // Chiều cao cắt sub đáy %
-        bottom_cut_percent: maskHeight, // Chiều cao cắt sub đáy %
+        mask_height: Math.max(4, maskHeight), // Khóa tối thiểu 4% tạo viền ẩn chống quét YT
+        bottom_cut_percent: Math.max(4, maskHeight), // Khóa tối thiểu 4% tạo viền ẩn chống quét YT
         top_cut_percent: topCutPercent, // Chiều cao cắt trên đỉnh %
         blur_height: calcBlurH, // Chiều cao dải mờ %
         sub_bottom_offset: subBottomOffset, // Vị trí dải mờ từ đáy khung hình crop lên %
@@ -1293,8 +1293,8 @@ export default function MainStudioView({ onNavigateTab }) {
                   <span style={{ fontSize: '12px', fontWeight: 800, color: '#1e40af', whiteSpace: 'nowrap' }}>✂ Cắt Đáy:</span>
                   <button
                     type="button"
-                    onClick={() => setMaskHeight(prev => Math.max(0, prev - 1))}
-                    title="Giảm độ cao cắt sub đáy (về 0% là không cắt)"
+                    onClick={() => setMaskHeight(prev => Math.max(4, prev - 1))}
+                    title="Giảm độ cao cắt đáy (Khóa tối thiểu 4% để tạo viền ẩn chống YouTube quét bản quyền)"
                     style={{
                       width: '24px',
                       height: '24px',
