@@ -718,7 +718,13 @@ class VideoComposerService:
             render_h = crop_info["h"]
             crop_x = crop_info["x"]
             crop_y = crop_info["y"]
-            filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
+            # Dynamic Micro-Pan: Lia máy vi mô +-16px theo chu kỳ 12s trên phần lề thừa 2 bên để phá khóa Spatial Grid & Motion Vector của Content ID
+            pan_px = min(16, int(crop_x)) if crop_x >= 4 else 0
+            if pan_px > 0:
+                crop_x_expr = f"'{crop_x}+{pan_px}*sin(2*PI*t/12)'"
+                filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x_expr}:y={crop_y}[v_clean]")
+            else:
+                filter_chains.append(f"[0:v]crop={render_w}:{render_h}:{crop_x}:{crop_y}[v_clean]")
             last_v = "v_clean"
         else:
             render_w = (vw // 2) * 2
@@ -728,13 +734,13 @@ class VideoComposerService:
                 filter_chains.append(f"[0:v]crop={crop_expr}[v_clean]")
                 last_v = "v_clean"
 
-        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG BẢN QUYỀN HÌNH ẢNH YOUTUBE (ANTI-CONTENT ID VISUAL SHIELD)
+        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG BẢN QUYỀN HÌNH ẢNH ĐỘNG (DYNAMIC ANTI-CONTENT ID VISUAL SHIELD)
         # Đặt TRƯỚC khi vẽ Phụ đề Tiếng Việt và Logo để chỉ biến đổi cảnh phim gốc, giữ chữ Việt & Logo xuôi chiều 100%:
         # - hflip: Lật gương ngang toàn bộ tọa độ không gian cảnh quay gốc
         # - eq: Tinh chỉnh nhẹ độ tương phản (+4%), bão hòa màu (+6%), gamma (+2%), độ sáng (+1%) -> Đổi 100% mã băm YUV pixel
-        # - hue=h=2: Dịch pha màu vi mô 2 độ -> Phá vỡ hoàn toàn biểu đồ Histogram màu của bot quét Content ID
+        # - hue=h='2+2.5*sin(2*PI*t/15)': Dịch pha màu hình sin biến thiên theo thời gian thực t -> Phá vỡ hoàn toàn Temporal Color Histogram
         filter_chains.append(
-            f"[{last_v}]hflip,eq=contrast=1.04:saturation=1.06:gamma=1.02:brightness=0.01,hue=h=2[v_shield]"
+            f"[{last_v}]hflip,eq=contrast=1.04:saturation=1.06:gamma=1.02:brightness=0.01,hue=h='2+2.5*sin(2*PI*t/15)'[v_shield]"
         )
         last_v = "v_shield"
 
@@ -1202,6 +1208,7 @@ class VideoComposerService:
                 "-map", "1:a?",
                 "-c:v", "copy",
                 *audio_codec_args,
+                "-map_metadata", "-1",
                 "-shortest"
             ]
             # Chỉ thêm +faststart với video <= 30 phút; video dài bỏ qua để tránh ghi lại toàn bộ file lần 2
@@ -1216,7 +1223,8 @@ class VideoComposerService:
                 "-f", "concat",
                 "-safe", "0",
                 "-i", concat_list_file.name,
-                "-c", "copy"
+                "-c", "copy",
+                "-map_metadata", "-1"
             ]
             if total_duration <= 1800.0:
                 concat_cmd.extend(["-movflags", "+faststart"])
@@ -1390,7 +1398,8 @@ class VideoComposerService:
         pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
         cmd.extend([
             "-pix_fmt", pix_fmt,
-            "-r", native_fps_arg
+            "-r", native_fps_arg,
+            "-map_metadata", "-1"
         ])
         if total_duration <= 1800.0 and has_audio:
             cmd.extend(["-movflags", "+faststart"])
@@ -1624,6 +1633,7 @@ class VideoComposerService:
             "-map", "1:a?",
             "-c:v", "copy",
             *audio_codec_args,
+            "-map_metadata", "-1",
             "-shortest"
         ]
         if total_duration <= 1800.0:
