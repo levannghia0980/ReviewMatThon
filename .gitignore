@@ -48,10 +48,11 @@ gemini_current_ui.png
 inspect_gemini_*.py
 export_prompt.py
 
-# Sensitive Keys (Keep template only)
+# Sensitive Keys & Local Machine Hooks (Keep template only)
 .env
 .pip_hash
 .app_version
+scripts/
 
 # Binary Tools (Tự động trích xuất từ imageio-ffmpeg)
 tools/*.exe

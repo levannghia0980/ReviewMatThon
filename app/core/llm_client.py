@@ -390,7 +390,8 @@ async def execute_llm_call(
         "generationConfig": {
             "temperature": temperature,
             "topP": 0.95,
-            "topK": 40
+            "topK": 40,
+            "maxOutputTokens": 65536
         }
     }
     if system_instruction:
@@ -425,7 +426,10 @@ async def execute_llm_call(
         candidates = res_json.get("candidates") or []
         if candidates and "content" in candidates[0]:
             parts = candidates[0]["content"].get("parts") or []
-            if parts and "text" in parts[0]:
+            text_parts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text") and not p.get("thought")]
+            if text_parts:
+                return "".join(text_parts).strip()
+            elif parts and isinstance(parts[0], dict) and "text" in parts[0]:
                 return parts[0]["text"].strip()
 
         # Kiểm tra nếu bị Safety Filter chặn

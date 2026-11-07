@@ -72,13 +72,13 @@ LOW_CONF_BAND = 0.05
 JUNK_MAX_LEN = 0  # CẤM coi câu ngắn là rác: 1-2 chữ (A!, Cút!, Dừng tay!) đều là thoại hợp lệ 100%
 
 # --- NGƯỠNG KẸP BÁNH MÌ KHOANH VÙNG (SANDWICH CONTAINMENT) ---
-SANDWICH_ANCHOR_MIN_RATIO = 0.58   # Độ tin cậy tối thiểu để 1 câu được công nhận là Vỏ Bánh Mì chuẩn gốc
-SANDWICH_SKIP_MAX_CHUNKS = 5       # Tối đa số mẩu ASR ngắn bị LLM lược bỏ nằm giữa 2 vỏ bánh mì
-SANDWICH_SKIP_MAX_CHARS = 45       # Tổng chữ Hán tối đa của khe bị lược bỏ (khoanh vùng câu cảm thán/câu phụ ngắn)
-SANDWICH_SKIP_MAX_DUR = 12.0       # Tổng thời lượng tối đa (giây) của khe bị lược bỏ
-SANDWICH_ORPHAN_MAX_CHUNKS = 6     # Tối đa số mẩu ASR lọt khe gán cho cụm câu mồ côi nằm giữa 2 vỏ bánh mì
-SANDWICH_ORPHAN_MAX_CHARS = 60     # Tổng chữ Hán tối đa cho phép kẹp cứu cụm câu mồ côi
-SANDWICH_ORPHAN_MAX_DUR = 15.0     # Tổng thời lượng tối đa cho phép kẹp cứu cụm câu mồ côi
+SANDWICH_ANCHOR_MIN_RATIO = 0.45   # Độ tin cậy tối thiểu để 1 câu được công nhận là Vỏ Bánh Mì chuẩn gốc
+SANDWICH_SKIP_MAX_CHUNKS = 15      # Tối đa số mẩu ASR ngắn bị LLM lược bỏ nằm giữa 2 vỏ bánh mì
+SANDWICH_SKIP_MAX_CHARS = 150      # Tổng chữ Hán tối đa của khe bị lược bỏ (khoanh vùng câu cảm thán/câu phụ ngắn)
+SANDWICH_SKIP_MAX_DUR = 35.0       # Tổng thời lượng tối đa (giây) của khe bị lược bỏ
+SANDWICH_ORPHAN_MAX_CHUNKS = 25    # Tối đa số mẩu ASR lọt khe gán cho cụm câu mồ côi nằm giữa 2 vỏ bánh mì
+SANDWICH_ORPHAN_MAX_CHARS = 300    # Tổng chữ Hán tối đa cho phép kẹp cứu cụm câu mồ côi
+SANDWICH_ORPHAN_MAX_DUR = 60.0     # Tổng thời lượng tối đa cho phép kẹp cứu cụm câu mồ côi
 
 JUNK_PHRASES = {'谢谢观看', '感谢观看', '谢谢收看', '请订阅', '字幕由'}
 
@@ -403,7 +403,7 @@ class SmartTimelineHealer:
         Kiểm tra một câu kịch bản có đủ chuẩn làm 'Vỏ Bánh Mì' (Anchor) không:
         - Có src hợp lệ.
         - Không mang lỗi trượt cấu trúc nghiêm trọng (OUT_OF_ORDER, NO_SRC, INVALID_SRC, ZH_MISSING).
-        - Khớp với ASR gốc ở mức tin cậy cao (match_ratio >= SANDWICH_ANCHOR_MIN_RATIO).
+        - Khớp với ASR gốc ở mức tin cậy hoặc đã được cứu qua các cơ chế căn chỉnh tuần tự.
         """
         src = it.get('src') or []
         if not src:
@@ -411,9 +411,13 @@ class SmartTimelineHealer:
         h_flags = it.get('hard_flags') or []
         if any(f.startswith(('OUT_OF_ORDER', 'NO_SRC', 'INVALID_SRC', 'ZH_MISSING')) for f in h_flags):
             return False
-        if float(it.get('match_ratio', 0.0) or 0.0) < SANDWICH_ANCHOR_MIN_RATIO:
-            return False
-        return True
+        ratio = float(it.get('match_ratio', 0.0) or 0.0)
+        if ratio >= SANDWICH_ANCHOR_MIN_RATIO or any(
+            f.startswith(('SHORT_SEQ_', 'SANDWICH_', 'SPAN_LOCKED_'))
+            for f in it.get('soft_flags', [])
+        ):
+            return True
+        return False
 
     @classmethod
     def _apply_sandwich_containment(
@@ -461,7 +465,7 @@ class SmartTimelineHealer:
                 idx += 1
             run_end = idx - 1
             run_len = run_end - run_start + 1
-            if run_len > 4:
+            if run_len > 10:
                 continue
 
             left_item = out[run_start - 1] if run_start > 0 else None
@@ -849,19 +853,25 @@ class SmartTimelineHealer:
             if found is None:
                 unmatched_tail = [r for r in range(fs, n) if not pieces[r]['chunks']]
                 avail_tail = [c for c in order[st['ptr']:] if c not in assigned and c not in junk]
-                if unmatched_tail and avail_tail and len(unmatched_tail) <= 4 and len(avail_tail) <= SANDWICH_ORPHAN_MAX_CHUNKS:
+                if unmatched_tail and avail_tail and len(unmatched_tail) <= 8 and len(avail_tail) <= 35:
                     m_cnt = len(avail_tail)
                     u_cnt = len(unmatched_tail)
                     for idx_u, r in enumerate(unmatched_tail):
-                        c_pick = avail_tail[min(idx_u, m_cnt - 1)]
-                        pieces[r]['chunks'] = [c_pick]
+                        if m_cnt >= u_cnt:
+                            c_lo = (idx_u * m_cnt) // u_cnt
+                            c_hi = ((idx_u + 1) * m_cnt) // u_cnt
+                            c_slice = avail_tail[c_lo:max(c_lo + 1, c_hi)]
+                        else:
+                            c_slice = [avail_tail[min(idx_u, m_cnt - 1)]]
+                        pieces[r]['chunks'] = list(c_slice)
                         pieces[r]['best'] = max(pieces[r].get('best') or 0.0, 0.70)
                         pieces[r]['flags'] = [
                             f for f in pieces[r]['flags']
                             if not f.startswith(('PIECE_UNMATCHED', 'PIECE_UNASSIGNED', 'AMBIGUOUS'))
                         ]
-                        pieces[r]['flags'].append(f'SANDWICH_TAIL_HEALED_[{c_pick}]')
-                        assigned.add(c_pick)
+                        pieces[r]['flags'].append(f'SANDWICH_TAIL_HEALED_{c_slice}')
+                        for c_x in c_slice:
+                            assigned.add(c_x)
                     telemetry['matched_pieces'] += u_cnt
                     telemetry['sandwich_rescued'] += u_cnt
                 else:
@@ -1377,14 +1387,26 @@ class SmartTimelineHealer:
                     telemetry['junk_skipped_count'] += len(run)
                     continue
 
-            # 3b. Kẹp biên đầu/cuối lô (Intro/Outro ngắn bị LLM lược bỏ <= 3 mẩu)
-            if (i == 0 or i == len(by_start)) and by_start and len(run) <= 3 and run_chars <= 35 and run_dur <= 10.0:
+            # 3b. Kẹp biên đầu/cuối lô (Intro/Outro ngắn bị LLM lược bỏ <= 10 mẩu)
+            if (i == 0 or i == len(by_start)) and by_start and len(run) <= 10 and run_chars <= 150 and run_dur <= 35.0:
                 edge_item = by_start[0][2] if i == 0 else by_start[-1][2]
                 if cls._is_trusted_anchor_item(edge_item):
                     for x in run:
                         edge_item['junk_covered'].append(x)
                         junk_covered.add(x)
                     edge_item['soft_flags'].append(f'BOUNDARY_SKIPPED_CHUNK_{run}')
+                    telemetry['sandwich_rescued'] += len(run)
+                    telemetry['junk_skipped_count'] += len(run)
+                    continue
+
+            # 3c. Khe nhỏ lọt giữa 2 câu (khe <= 4 mẩu, <= 12s): Tự động khoanh vùng vào junk_covered thay vì đánh lỗi cứng
+            if len(run) <= 4 and run_dur <= 12.0:
+                tgt_absorb = by_start[i - 1][2] if i > 0 else (by_start[0][2] if by_start else (out[-1] if out else None))
+                if tgt_absorb is not None:
+                    for x in run:
+                        tgt_absorb['junk_covered'].append(x)
+                        junk_covered.add(x)
+                    tgt_absorb['soft_flags'].append(f'SANDWICH_GAP_ABSORBED_{run}')
                     telemetry['sandwich_rescued'] += len(run)
                     telemetry['junk_skipped_count'] += len(run)
                     continue

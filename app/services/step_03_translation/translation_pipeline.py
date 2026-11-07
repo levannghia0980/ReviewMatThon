@@ -736,19 +736,24 @@ class TranslationPipelineService:
                     logger.warning(f"[Lo #{b_num}] Canh bao timeline: {inv_check.get('errors')}")
 
             def _is_true_mega_summary(items_list):
-                """Chỉ coi là Mega-Summary thật sự nếu gộp >= 15 mẩu ASR VÀ văn bản tiếng Việt bị tóm tắt cụt (< 35% độ dài chữ Hán)."""
+                """Chỉ coi là Mega-Summary thật sự nếu gộp >= 25 mẩu ASR VÀ văn bản tiếng Việt bị tóm tắt cụt (< 18% độ dài chữ Hán)."""
+                orig_zh_map = {s.get("index", idx + 1): str(s.get("zh", "")) for idx, s in enumerate(batch_orig_dicts)}
                 for it in (items_list or []):
                     src_ids = it.get("src", []) or []
-                    if len(src_ids) >= 15:
+                    if len(src_ids) >= 25:
                         vi_words = len(str(it.get("vi", "") or "").split())
-                        zh_raw = str(it.get("zh", "") or "").replace("/", "").replace("／", "").strip()
-                        zh_len = max(len(zh_raw), len(src_ids) * 4)
-                        if vi_words < zh_len * 0.35 or len(src_ids) >= 35:
+                        total_zh_chars = sum(len(orig_zh_map.get(sid, "")) for sid in src_ids)
+                        if total_zh_chars == 0:
+                            zh_raw = str(it.get("zh", "") or "").replace("/", "").replace("／", "").strip()
+                            total_zh_chars = max(len(zh_raw), len(src_ids) * 4)
+                        if vi_words < total_zh_chars * 0.18:
                             return True
                 return False
 
             def _should_retry_batch(items_list, inv_res):
                 """Quyết định có cần gọi LLM dịch lại cả lô 500 câu hay không (tránh bắt dịch lại oan khi lỗi cục bộ đã kẹp bánh mì)."""
+                if not items_list:
+                    return True
                 if _is_true_mega_summary(items_list):
                     return True
                 total_orig_cnt = max(1, len(batch_orig_dicts))
@@ -758,6 +763,9 @@ class TranslationPipelineService:
                 failed_items = inv_res.get("failed_items", []) or []
                 if struct_errs or empty_items:
                     return True
+                # Nếu độ phủ >= 96% và số câu lỗi HARD <= 2 (đã được kẹp bánh mì xử lý an toàn) -> Đạt chuẩn, không retry
+                if (cov_total / total_orig_cnt) >= 0.96 and len(failed_items) <= 2:
+                    return False
                 if (cov_total / total_orig_cnt) < 0.95:
                     return True
                 if len(failed_items) > 3:
@@ -792,9 +800,8 @@ class TranslationPipelineService:
                 if _has_mega_summary:
                     missing_info = f" (LLM tóm tắt gộp quá nhiều mẩu ASR trong 1 dòng)"
                     _mega_warning = (
-                        "\n\n⚠️ CẢNH BÁO NGHIÊM TRỌNG: Lần dịch trước bạn đã gộp quá nhiều mẩu ASR vào 1 dòng duy nhất. "
-                        "BẮT BUỘC ngắt dòng riêng cho TỪNG mẩu ASR một, ánh xạ 1:1 với từng mẩu chữ Hán. "
-                        "TUYỆT ĐỐI KHÔNG ĐƯỢC gộp quá 3 mẩu ASR trong một cặp ngoặc vuông!"
+                        "\n\nLƯU Ý DỊCH THUẬT: Vui lòng dịch đầy đủ chi tiết từng câu thoại, "
+                        "không tóm tắt hoặc bỏ sót nội dung của các mẩu ASR."
                     )
                 else:
                     missing_info = f" (bị bỏ sót {len(batch_orig_dicts) - inv_check.get('covered_orig', len(batch_orig_dicts))} câu ASR)" if not inv_check.get("passed") else ""
@@ -869,15 +876,14 @@ class TranslationPipelineService:
                     except Exception:
                         pass
 
-            # Sau tất cả retry: nếu vẫn còn mega-summary, KHÔNG dừng pipeline — log cảnh báo
-            # và để enforce_sequential_asr_locking phân bổ timecode tuần tự (sandwich mechanism)
-            if any(len(it.get("src", [])) >= 20 for it in (healed_items or [])):
-                warn_msg = (
-                    f"⚠️ [Lô #{b_num}] Vẫn còn gộp câu sau {_retry_count}/{_max_retries} lần thử "
-                    f"— Healer sẽ phân bổ timeline tuần tự. Pipeline tiếp tục."
-                )
-                task_manager.add_log(task_id, warn_msg, "amber")
-                logger.warning(warn_msg)
+            # Sau các lần xử lý: nếu có câu gộp dài, Healer tự động phân bổ timeline tuần tự
+            if any(len(it.get("src", [])) >= 25 for it in (healed_items or [])):
+                if _retry_count > 0 and not inv_check.get("passed"):
+                    warn_msg = (
+                        f"ℹ️ [Lô #{b_num}] Healer tự động phân bổ timeline tuần tự cho các câu gộp dài. Pipeline tiếp tục."
+                    )
+                    task_manager.add_log(task_id, warn_msg, "cyan")
+                    logger.info(warn_msg)
                 # Chỉ dừng pipeline khi thực sự mất toàn bộ nội dung (healed_items rỗng)
             if not healed_items:
                 err_msg = f"Lô #{b_num}: Kết quả dịch rỗng hoàn toàn sau {_retry_count} lần thử. Dừng an toàn."

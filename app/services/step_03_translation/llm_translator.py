@@ -166,6 +166,7 @@ async def translate_batch_pass2_llm(
                         idx_list = []
                     return "".join(zh_map.get(idx, "") for idx in idx_list)
 
+                repeat_streak = 0
                 for k in range(1, len(parsed_items)):
                     item_prev = parsed_items[k-1]
                     item_curr = parsed_items[k]
@@ -178,13 +179,32 @@ async def translate_batch_pass2_llm(
                         
                         # Nếu nội dung gốc tiếng Trung từ các mẩu src cũng giống hệt nhau (như nhân vật hét lặp lại) -> CHO QUA 100%!
                         if zh_prev_span and zh_curr_span and zh_prev_span == zh_curr_span:
+                            repeat_streak = 0
                             continue
-                        
-                        # Chỉ khi tiếng Trung gốc khác nhau mà tiếng Việt lại dịch lặp giống nhau -> mới báo lỗi gian lận
-                        duplicate_detected = True
-                        duplicate_detail = f"Câu #{k} và #{k+1} bị lặp cùng nội dung '{item_curr.get('vi', '')}'!"
-                        is_valid = False
-                        break
+
+                        # Câu ngắn (< 10 từ tiếng Việt), như tên chiêu thức/công pháp ("Phổ thông Thổ Nạp Pháp"), gọi tên, cảm thán -> CHO QUA!
+                        vi_words_len = len(vi_curr_pure.split())
+                        if vi_words_len < 10:
+                            repeat_streak = 0
+                            continue
+
+                        # Nếu 2 mẩu tiếng Trung có giao thoa từ vựng hoặc đồng âm -> CHO QUA!
+                        from difflib import SequenceMatcher
+                        zh_sim = SequenceMatcher(None, zh_prev_span, zh_curr_span).ratio()
+                        common_chars = set(zh_prev_span) & set(zh_curr_span)
+                        if zh_sim >= 0.35 or len(common_chars) >= 2:
+                            repeat_streak = 0
+                            continue
+
+                        # Chỉ coi là kẹt vòng lặp khi lặp từ 3 câu liên tiếp trở lên hoặc 2 câu dài (>= 15 từ) hoàn toàn không liên quan
+                        repeat_streak += 1
+                        if repeat_streak >= 2 or vi_words_len >= 15:
+                            duplicate_detected = True
+                            duplicate_detail = f"Câu #{k} và #{k+1} bị kẹt lặp ({repeat_streak + 1} lần) cùng nội dung '{item_curr.get('vi', '')}'!"
+                            is_valid = False
+                            break
+                    else:
+                        repeat_streak = 0
 
         # NẾU ĐẠT CHUẨN: TRẢ VỀ KẾT QUẢ NGAY
         if is_valid:

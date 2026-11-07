@@ -4,6 +4,7 @@ import re
 import json
 import time
 import math
+import random
 import shutil
 import threading
 import subprocess
@@ -43,7 +44,7 @@ class VideoComposerService:
         ff_cmd = get_ffmpeg_cmd()
         try:
             test_nvenc = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-pix_fmt", "yuv420p", "-c:v", "h264_nvenc", "-f", "null", "-"],
+                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-pix_fmt", "nv12", "-c:v", "h264_nvenc", "-f", "null", "-"],
                 capture_output=True, text=True, errors="replace", timeout=8
             )
             if test_nvenc.returncode == 0:
@@ -54,7 +55,7 @@ class VideoComposerService:
 
         try:
             test_qsv = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_qsv", "-f", "null", "-"],
+                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-pix_fmt", "nv12", "-c:v", "h264_qsv", "-f", "null", "-"],
                 capture_output=True, text=True, errors="replace", timeout=3
             )
             if test_qsv.returncode == 0:
@@ -65,7 +66,7 @@ class VideoComposerService:
 
         try:
             test_amf = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_amf", "-f", "null", "-"],
+                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-pix_fmt", "nv12", "-c:v", "h264_amf", "-f", "null", "-"],
                 capture_output=True, text=True, errors="replace", timeout=3
             )
             if test_amf.returncode == 0:
@@ -76,7 +77,7 @@ class VideoComposerService:
 
         try:
             test_mf = subprocess.run(
-                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1", "-c:v", "h264_mf", "-f", "null", "-"],
+                [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-c:v", "h264_mf", "-f", "null", "-"],
                 capture_output=True, text=True, errors="replace", timeout=3
             )
             if test_mf.returncode == 0:
@@ -585,7 +586,7 @@ class VideoComposerService:
         )
 
         if audio_thread is not None and audio_thread.is_alive():
-            audio_thread.join(timeout=30.0)
+            audio_thread.join(timeout=180.0)
 
         if not v_ok or not output_video_path.exists() or output_video_path.stat().st_size < 1000:
             if temp_visual_video.exists() and temp_visual_video.stat().st_size > 1000:
@@ -656,14 +657,16 @@ class VideoComposerService:
         sub_bottom_offset: Optional[float] = 0.0,
         render_subtitles: bool = True,
         start_sec: float = 0.0,
+        dur_sec: float = 60.0,
         cached_res: Optional[Tuple[int, int]] = None
     ) -> Tuple[str, List[str], int, int]:
         """
-        [KHÔI PHỤC GIAO DIỆN GỐC + LÁCH QUÉT KHÔNG NOISE]:
-        1. Bước 1: Crop cắt thẳng (Full màn hình, không bo viền PIP, khóa tĩnh chẵn pixel chống sôi viền).
-        2. Bước 1.5: Lá chắn lách quét (hflip + unsharp + eq tách gamma R/B, xóa bỏ noise làm nhòe hình).
-        3. Bước 2: Khôi phục 100% Dải nền mờ Frosted Glass che sạch sub Trung cũ.
-        4. Bước 3: Đốt phụ đề Karaoke ASS Tiếng Việt và Logo kênh lên trên cùng.
+        [KHÔI PHỤC GIAO DIỆN GỐC + LÁCH QUÉT ĐA TẦNG KHÔNG NOISE & KHÔNG RUNG LẮC]:
+        1. Bước 1: Crop cắt thẳng (Full màn hình, khóa tĩnh chẵn pixel tuyệt đối -> 0% di chuyển, 0% chóng mặt).
+        2. Bước 1.5: Lá chắn màu đa hình vi mô theo thời gian thực (hflip + hue sóng ngắn vô tỉ + unsharp + eq).
+        3. Bước 2: Dải nền mờ Frosted Glass thuần YUVA420P che sạch sub Trung cũ.
+        4. Bước 2.5: Phá vỡ ma trận thời gian hình ảnh (Chaotic 3-Wave Short-Period setpts) khớp biên 0.000s.
+        5. Bước 3: Đốt phụ đề Karaoke ASS Tiếng Việt và Logo kênh lên trên cùng (khớp TTS 100%).
         """
         ass_escaped = None
         if ass_file_path:
@@ -682,7 +685,7 @@ class VideoComposerService:
         cut_pct = max(4.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0))
         t_cut_pct = max(0.0, float(top_cut_percent if top_cut_percent is not None else 0.0))
 
-        # 🎬 BƯỚC 1: CROP CẮT THẲNG FULL MÀN HÌNH (Khóa tọa độ chẵn tĩnh -> 0% sôi viền, 0% bo khung thừa)
+        # 🎬 BƯỚC 1: CROP CẮT THẲNG FULL MÀN HÌNH (Khóa tọa độ chẵn tĩnh -> 0% sôi viền, 0% di chuyển khung hình)
         crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, top_cut_percent=t_cut_pct, target_ratio=target_ratio)
         render_w = crop_info["w"]
         render_h = crop_info["h"]
@@ -692,13 +695,30 @@ class VideoComposerService:
         filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x}:y={crop_y}[v_clean]")
         last_v = "v_clean"
 
-        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG QUÉT DEEP CNN (SẠCH 100% NOISE & KHÔNG RUNG LẮC)
-        # Kết hợp hflip + hue xoay pha vector màu UV + unsharp + eq tách gamma R/B phá mã băm CNN mà hình ảnh trong vắt, siêu tốc
+        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG QUÉT DEEP CNN ĐA HÌNH VI MÔ (0% NOISE & 0% RUNG LẮC)
+        sys_rng = random.SystemRandom()
+        t_expr = f"(t+{start_sec:.3f})"
+        h0 = sys_rng.uniform(1.80, 3.10)
+        ha1 = sys_rng.uniform(1.10, 1.75)
+        ha2 = sys_rng.uniform(0.75, 1.35)
+        th1 = sys_rng.uniform(1.73, 2.41)
+        th2 = sys_rng.uniform(2.63, 3.59)
+        s0 = sys_rng.uniform(1.038, 1.062)
+        sa = sys_rng.uniform(0.014, 0.025)
+        ts = sys_rng.uniform(2.11, 3.29)
+        la_val = sys_rng.uniform(0.19, 0.25)
+        c_val = sys_rng.uniform(1.032, 1.056)
+        g_val = sys_rng.uniform(1.012, 1.032)
+        gr_val = sys_rng.uniform(1.022, 1.044)
+        gb_val = sys_rng.uniform(0.958, 0.982)
+        br_val = sys_rng.uniform(0.007, 0.015)
+
         filter_chains.append(
             f"[{last_v}]hflip,"
-            f"hue=h=2.5:s=1.05,"
-            f"unsharp=lx=3:ly=3:la=0.22,"
-            f"eq=contrast=1.04:gamma=1.02:gamma_r=1.03:gamma_b=0.97:brightness=0.01[v_shield]"
+            f"hue=h='{h0:.2f}+{ha1:.2f}*sin(2*PI*{t_expr}/{th1:.3f})+{ha2:.2f}*cos(2*PI*{t_expr}/{th2:.3f})':"
+            f"s='{s0:.3f}+{sa:.3f}*sin(2*PI*{t_expr}/{ts:.3f})',"
+            f"unsharp=lx=3:ly=3:la={la_val:.3f},"
+            f"eq=contrast={c_val:.3f}:gamma={g_val:.3f}:gamma_r={gr_val:.3f}:gamma_b={gb_val:.3f}:brightness={br_val:.3f}[v_shield]"
         )
         last_v = "v_shield"
 
@@ -736,6 +756,35 @@ class VideoComposerService:
                 f"[v_main][v_feathered]overlay={m_x}:{m_y}:format=yuv420:shortest=1[v_masked]"
             )
             last_v = "v_masked"
+
+        # ⏱️ BƯỚC 2.5: PHÁ VỠ MA TRẬN THỜI GIAN HÌNH ẢNH BƯỚC SÓNG NGẮN (1.4s - 4.1s) TRƯỚC KHI ĐỐT SUB
+        # Tự động nhân số nửa chu kỳ nguyên theo dur_sec -> Bẻ gãy mọi cửa sổ quét 3s-5s-8s nhưng khóa biên 0.000s tuyệt đối
+        seg_d = max(3.0, float(dur_sec if dur_sec and dur_sec > 0 else 60.0))
+        tau1 = sys_rng.uniform(1.38, 1.84)
+        tau2 = sys_rng.uniform(2.14, 2.82)
+        tau3 = sys_rng.uniform(3.16, 4.12)
+        k1 = max(3, int(round(seg_d / tau1)))
+        k2 = max(2, int(round(seg_d / tau2)))
+        if k2 == k1:
+            k2 += 1
+        k3 = max(1, int(round(seg_d / tau3)))
+        while k3 in (k1, k2):
+            k3 += 1
+
+        v1 = sys_rng.uniform(0.012, 0.017)
+        v2 = sys_rng.uniform(0.011, 0.016)
+        v3 = sys_rng.uniform(0.010, 0.014)
+        a1 = (v1 * seg_d) / (k1 * math.pi)
+        a2 = (v2 * seg_d) / (k2 * math.pi)
+        a3 = (v3 * seg_d) / (k3 * math.pi)
+        op1, op2, op3 = sys_rng.choice([("+", "-", "+"), ("-", "+", "-"), ("+", "+", "-"), ("-", "+", "+")])
+        pts_warp_expr = (
+            f"PTS{op1}({a1:.5f}/TB)*sin({k1}*PI*T/{seg_d:.3f})"
+            f"{op2}({a2:.5f}/TB)*sin({k2}*PI*T/{seg_d:.3f})"
+            f"{op3}({a3:.5f}/TB)*sin({k3}*PI*T/{seg_d:.3f})"
+        )
+        filter_chains.append(f"[{last_v}]settb=1/90000,setpts='{pts_warp_expr}'[v_timewarp]")
+        last_v = "v_timewarp"
 
         # 🎬 BƯỚC 3: Phụ đề Tiếng Việt Karaoke ASS đặt đè lên dải mờ
         if render_subtitles and ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
@@ -830,11 +879,11 @@ class VideoComposerService:
             if env_workers and env_workers.isdigit() and int(env_workers) > 0:
                 workers = int(env_workers)
             elif vcodec == "h264_nvenc":
-                workers = max(3, min(8, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
+                workers = 4 if cpu_cores >= 8 else max(3, min(4, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
             elif vcodec in ("h264_qsv", "h264_amf"):
                 workers = 4 if cpu_cores >= 8 else max(2, min(4, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
             else:
-                workers = max(1, min(max(1, cpu_cores - 1), 8) if cpu_cores > 2 else cpu_cores)
+                workers = max(1, cpu_cores - 1)
 
         if total_duration <= 300.0:
             segment_duration = max(30.0, total_duration / float(max(2, workers)))
@@ -937,6 +986,7 @@ class VideoComposerService:
                 sub_bottom_offset=sub_bottom_offset,
                 render_subtitles=render_subtitles,
                 start_sec=start_sec,
+                dur_sec=dur_sec,
                 cached_res=cached_video_res
             )
 
@@ -1003,7 +1053,7 @@ class VideoComposerService:
             else:
                 cmd.extend(["-b:v", target_bv, "-maxrate", max_bv])
 
-            pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
+            pix_fmt = "nv12" if vcodec in ("h264_nvenc", "h264_qsv", "h264_amf") else "yuv420p"
             cmd.extend([
                 "-g", "50",
                 "-pix_fmt", pix_fmt,
@@ -1179,7 +1229,7 @@ class VideoComposerService:
         valid_audio_path = None
         if audio_source_path:
             wait_start = time.time()
-            while time.time() - wait_start < 60.0:
+            while time.time() - wait_start < 180.0:
                 valid_audio_path = cls._find_valid_audio(audio_source_path)
                 if valid_audio_path:
                     has_audio = True
@@ -1337,6 +1387,7 @@ class VideoComposerService:
             blur_height=blur_height,
             sub_bottom_offset=sub_bottom_offset,
             render_subtitles=render_subtitles,
+            dur_sec=total_duration if total_duration > 0 else 60.0,
             cached_res=(cached_w, cached_h)
         )
 
@@ -1355,7 +1406,7 @@ class VideoComposerService:
         valid_audio = None
         if audio_source_path:
             wait_start = time.time()
-            while time.time() - wait_start < 60.0:
+            while time.time() - wait_start < 180.0:
                 valid_audio = cls._find_valid_audio(audio_source_path)
                 if valid_audio:
                     break
@@ -1395,7 +1446,7 @@ class VideoComposerService:
         else:
             cmd.extend(["-b:v", target_bv, "-maxrate", max_bv])
 
-        pix_fmt = "nv12" if vcodec == "h264_qsv" else "yuv420p"
+        pix_fmt = "nv12" if vcodec in ("h264_nvenc", "h264_qsv", "h264_amf") else "yuv420p"
         cmd.extend([
             "-g", "50",
             "-pix_fmt", pix_fmt,
