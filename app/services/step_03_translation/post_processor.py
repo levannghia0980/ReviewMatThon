@@ -292,22 +292,38 @@ class PostProcessor:
         text = re.sub(r'^[^\w\s\(\[\{]+', '', text).strip()
         text = re.sub(r'\s+', ' ', text)
         
-        # Xóa các cụm dấu dị tật kép hoặc dấu khóa xoay vòng ở đuôi chuỗi
-        text = re.sub(r'[\.\,\!\?\…\:\;\—\-\_\s]+$', lambda m: '', text).strip()
+        # Nhận diện dấu câu tự nhiên của LLM trước khi làm sạch để bảo toàn ngữ điệu
+        viet_strip = viet_text.strip()
+        llm_punct = None
+        if viet_strip.endswith("?"):
+            llm_punct = "?"
+        elif viet_strip.endswith("!"):
+            llm_punct = "!"
+        elif viet_strip.endswith("...") or viet_strip.endswith("…"):
+            llm_punct = "..."
+        elif viet_strip.endswith(",") or viet_strip.endswith("，"):
+            llm_punct = ","
+        elif viet_strip.endswith("."): 
+            llm_punct = "."
 
-        # Khôi phục dấu câu tự nhiên dựa trên câu gốc thực sự:
-        orig_tail = (orig_text or "").strip()
-        if orig_tail.endswith(("？", "?")):
-            text = text + "?"
-        elif orig_tail.endswith(("！", "!")):
-            text = text + "!"
-        elif orig_tail.endswith(("……", "...")):
-            text = text + "..."
-        elif orig_tail.endswith(("，", ",")):
-            text = text + ","
-        elif orig_tail.endswith(("。", ".")):
-            text = text + "."
-        # TUYỆT ĐỐI KHÔNG tự ý chèn dấu chấm "." nếu mẩu gốc không có dấu ngắt câu!
+        # Xóa các cụm dấu dị tật kép hoặc dấu khóa xoay vòng ở đuôi chuỗi
+        text = re.sub(r'[\.\,\!\?\…\:\;\—\-\s]+$', '', text).strip()
+
+        # Khôi phục dấu câu tự nhiên: Ưu tiên số 1 là dấu tự nhiên từ LLM
+        if llm_punct:
+            text = text + llm_punct
+        else:
+            orig_tail = (orig_text or "").strip()
+            if orig_tail.endswith("？") or orig_tail.endswith("?"):
+                text = text + "?"
+            elif orig_tail.endswith("！") or orig_tail.endswith("!"):
+                text = text + "!"
+            elif orig_tail.endswith("……") or orig_tail.endswith("..."):
+                text = text + "..."
+            elif orig_tail.endswith("，") or orig_tail.endswith(","):
+                text = text + ","
+            else:
+                text = text + "."
 
         # Dọn dẹp triệt để nếu vẫn còn dị tật dấu câu kép như ., ,. ,, ..
         text = re.sub(r'[\,\.]+\,', ',', text)

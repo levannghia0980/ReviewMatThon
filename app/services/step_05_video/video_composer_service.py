@@ -45,7 +45,7 @@ class VideoComposerService:
         try:
             test_nvenc = subprocess.run(
                 [*ff_cmd, "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-pix_fmt", "nv12", "-c:v", "h264_nvenc", "-f", "null", "-"],
-                capture_output=True, text=True, errors="replace", timeout=8
+                capture_output=True, text=True, errors="replace", timeout=10
             )
             if test_nvenc.returncode == 0:
                 cls._CACHED_ENCODER = ("h264_nvenc", "p2", "NVIDIA GPU NVENC Siêu Tốc (Turbo P2)")
@@ -1023,6 +1023,8 @@ class VideoComposerService:
                 "-i", str(video_input_path),
                 *seg_logos,
                 "-threads", str(threads_per_worker),
+                "-filter_threads", str(threads_per_worker),
+                "-filter_complex_threads", str(threads_per_worker),
                 "-filter_complex", seg_fc,
                 "-map", "[v_out]",
                 "-an",
@@ -1039,7 +1041,6 @@ class VideoComposerService:
                     "-cq:v", "21",
                     "-b:v", target_bv,
                     "-maxrate", max_bv,
-                    "-spatial_aq", "1",
                     "-bf", "2"
                 ])
             elif vcodec == "h264_amf":
@@ -1424,6 +1425,8 @@ class VideoComposerService:
             *logo_inputs,
             *audio_inputs,
             "-threads", "0",
+            "-filter_threads", "0",
+            "-filter_complex_threads", "0",
             "-filter_complex", full_filter_complex,
             "-map", "[v_out]",
             *audio_maps,
@@ -1434,7 +1437,7 @@ class VideoComposerService:
         if vcodec == "libx264":
             cmd.extend(["-crf", crf_val, "-tune", "fastdecode"])
         elif vcodec == "h264_nvenc":
-            cmd.extend(["-tune", "hq", "-rc:v", "vbr", "-cq:v", "21", "-b:v", target_bv, "-maxrate", max_bv, "-spatial_aq", "1", "-bf", "2"])
+            cmd.extend(["-tune", "hq", "-rc:v", "vbr", "-cq:v", "21", "-b:v", target_bv, "-maxrate", max_bv, "-bf", "2"])
         elif vcodec == "h264_amf":
             cmd.extend(["-quality", "speed", "-b:v", target_bv, "-maxrate", max_bv])
         else:

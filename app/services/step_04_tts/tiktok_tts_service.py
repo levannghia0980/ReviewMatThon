@@ -674,7 +674,7 @@ class TikTokTTSService:
             )
 
             # In log tiến độ định kỳ mỗi 1,000 câu
-            if (idx_d + 1) % 1000 == 0 or (idx_d + 1) == total_count:
+            if (idx_d + 1) % 100 == 0 or (idx_d + 1) == total_count:
                 pct = int(((idx_d + 1) / total_count) * 100)
                 task_manager.add_log(task_id, f"   • [Pha 2/2] Đã ghép {idx_d + 1:,} / {total_count:,} câu ({pct}%) vào Timeline...", "cyan")
 

@@ -33,7 +33,7 @@ class AudioMixerService:
         """
         src_orig = Path(original_video_or_audio)
         src_voice = Path(voiceover_mp3)
-        out_audio = Path(output_mixed_audio)
+        out_audio = Path(output_mixed_audio).resolve()
         out_audio.parent.mkdir(parents=True, exist_ok=True)
 
         ffmpeg_cmd = get_ffmpeg_cmd()
