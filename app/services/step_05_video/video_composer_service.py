@@ -734,34 +734,35 @@ class VideoComposerService:
         )
         last_v = "v_main"
 
-        # 3. DẢI MỜ FROSTED GLASS THU GỌN 2 BÊN (Lọt thỏm giữa lòng video, không chạm 2 viền khung)
+        # 3. DẢI MỜ FROSTED GLASS (Chạm đáy 0px theo slider người dùng, vừa chạm 2 viền bên)
         if has_mask and render_subtitles:
-            m_width_val = float(mask_width if mask_width and mask_width <= 85.0 else 68.0)
-            b_h_val = float(blur_height if blur_height is not None else 13.0)
+            m_width_val = float(mask_width if mask_width is not None else 96.0)
+            b_h_val = float(blur_height if blur_height is not None else 14.0)
             b_offset_val = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
 
             m_w = int(round(out_w * (m_width_val / 100.0)))
             m_h = int(round(out_h * (b_h_val / 100.0)))
             m_x = max(0, int(round((out_w - m_w) / 2.0)))
 
-            # Khoảng đệm viền khung kim loại đáy (~1.6% chiều cao) khớp với ASS subtitle
+            # Tọa độ đáy hoàn toàn theo thao tác kéo của người dùng (cho phép hạ sát đáy 0px, KHÔNG trừ pad_b)
             offset_bottom_px = int(round(out_h * (b_offset_val / 100.0)))
-            m_y = max(0, out_h - pad_b - offset_bottom_px - m_h)
+            m_y = max(0, out_h - offset_bottom_px - m_h)
 
             m_w = max(32, min(out_w, (m_w // 2) * 2))
             m_h = max(16, min(out_h, (m_h // 2) * 2))
             m_x = max(0, min(out_w - m_w, (m_x // 2) * 2))
             m_y = max(0, min(out_h - m_h, (m_y // 2) * 2))
 
-            f_h = max(2, int(round(m_h * 0.25)))
-            mask_expr = f"if(lt(Y,{f_h}),245*(Y/{f_h}),if(gt(Y,H-{f_h}),245*((H-Y)/{f_h}),245))"
+            # Feather nhẹ đỉnh trên của dải mờ, phần thân và đáy đục mịn 100%
+            f_h = max(2, int(round(m_h * 0.20)))
+            mask_expr = f"if(lt(Y,{f_h}),255*(Y/{f_h}),255)"
 
             filter_chains.append(
                 f"color=s={m_w}x{m_h}:c=black:r=1:d=1,format=gray,geq=lum='{mask_expr}',loop=loop=-1:size=1:start=0[mask_alpha];"
                 f"[{last_v}]split=2[v_base][v_crop_src];"
                 f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
-                f"avgblur=sizeX=45:sizeY=5,"
-                f"eq=contrast=0.86:brightness=0.02,"
+                f"avgblur=sizeX=55:sizeY=25,"
+                f"eq=contrast=0.80:brightness=0.05,"
                 f"format=yuva420p[v_blurred];"
                 f"[v_blurred][mask_alpha]alphamerge[v_feathered];"
                 f"[v_base][v_feathered]overlay={m_x}:{m_y}:format=yuv420:shortest=1[v_masked]"

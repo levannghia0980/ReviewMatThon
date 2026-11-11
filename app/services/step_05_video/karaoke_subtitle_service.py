@@ -183,13 +183,10 @@ class KaraokeSubtitleService:
         # Tâm dải mờ = box_bottom_px + (box_height_px / 2).
         # => actual_margin_v = Tâm dải mờ - (effective_font_size / 2) - visual_offset.
         b_offset = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
-        b_height = float(blur_height if blur_height is not None else 13.0)
+        b_height = float(blur_height if blur_height is not None else 14.0)
 
-        # Khoảng đệm viền khung kim loại đáy (~1.6% chiều cao) để sub dính khớp khung khi b_offset = 0
-        pad_bottom_pct = 1.6
-        total_offset_pct = pad_bottom_pct + b_offset
-
-        box_bottom_px = height * (total_offset_pct / 100.0)
+        # Tọa độ hộp mờ bám sát đáy 0px theo slider của người dùng
+        box_bottom_px = height * (b_offset / 100.0)
         box_height_px = height * (b_height / 100.0)
         box_center_y = box_bottom_px + (box_height_px / 2.0)
 
