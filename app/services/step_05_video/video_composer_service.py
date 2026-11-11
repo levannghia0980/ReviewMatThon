@@ -293,48 +293,76 @@ class VideoComposerService:
         target_ratio: str = "16:9"
     ) -> Dict[str, int]:
         """
-        [KHÔI PHỤC NGUYÊN BẢN 100% CROP FULL MÀN HÌNH]:
-        - Cắt bỏ phần trên theo top_cut_percent (% chiều cao).
+        [TÍNH TOÁN CROP NATIVE ADAPTIVE + KHUNG CUỘN PHIM ĐIỆN ẢNH 16:9]:
+        - Chuẩn hóa độ phân giải tối thiểu 720p (1280x720) để răng cưa cuộn phim, logo và sub luôn sắc nét 100%.
         - Cắt bỏ phần đáy theo bottom_cut_percent (% chiều cao) để xóa bỏ hardsub Trung Quốc cũ.
-        - Cắt đều 2 bên (trái & phải) để video đạt chuẩn tỷ lệ 16:9 hoặc 9:16.
-        - CHỈ CẮT (CROP) FULL MÀN HÌNH - TUYỆT ĐỐI KHÔNG ĐÓNG KHUNG VIỀN BO MỜ PIP.
+        - Khớp hoàn hảo tỷ lệ khung hình lòng cuộn phim, không bị méo/dãn hình.
+        - Trả về out_w, out_h, inner_w, inner_h, pad_l, pad_r, pad_t, pad_b, crop_w, crop_h, crop_x, crop_y.
         """
-        bot_pct = max(4.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0)))
+        bot_pct = max(4.0, min(45.0, float(bottom_cut_percent if bottom_cut_percent is not None else 8.0)))
         top_pct = max(0.0, min(35.0, float(top_cut_percent if top_cut_percent is not None else 0.0)))
 
+        # 1. Xác định out_w, out_h theo độ phân giải gốc của video (Native Adaptive 16:9 / 9:16, chẵn pixel)
+        # Không ép sàn 720p cưỡng bức để tránh lãng phí thời gian render cho video 480p/360p
+        if target_ratio == "9:16":
+            out_w = max(360, (vw // 2) * 2)
+            out_h = (int(round(out_w * 16.0 / 9.0)) // 2) * 2
+        else:
+            out_h = max(240, (vh // 2) * 2)
+            out_w = (int(round(out_h * 16.0 / 9.0)) // 2) * 2
+
+        # Khung kim loại công nghệ (Cyber Silver) hiển thị full màn hình sạch (không viền đen dày)
+        pad_l = 0
+        pad_r = 0
+        pad_t = 0
+        pad_b = max(6, int(round(out_h * (1.6 / 100.0))))  # Đệm viền đáy ~1.6% khớp phụ đề & dải mờ
+
+        inner_w = out_w
+        inner_h = out_h
+        inner_aspect = inner_w / float(inner_h)
+
+        # 2. Tính toán vùng cắt trên video gốc để sau khi scale vào inner_w x inner_h không bị méo hình
         cut_top = int(round(vh * (top_pct / 100.0)))
         cut_bot = int(round(vh * (bot_pct / 100.0)))
 
-        pan_y = 0
-        h_clean = vh - cut_top - cut_bot
-        h_target = max(120, (h_clean // 2) * 2)
+        h_avail = vh - cut_top - cut_bot
+        if h_avail <= 60:
+            h_avail = vh
+            cut_top = 0
+            cut_bot = 0
 
-        ratio_val = 9.0 / 16.0 if target_ratio == "9:16" else 16.0 / 9.0
-        w_target = int(round(h_target * ratio_val))
-        w_target = (w_target // 2) * 2
-
-        if w_target > vw:
-            w_target = (vw // 2) * 2
-            h_target = int(round(w_target / ratio_val))
-            h_target = (h_target // 2) * 2
-            x = 0
-            y = cut_top
+        if (vw / float(h_avail)) >= inner_aspect:
+            crop_h = (int(round(h_avail)) // 2) * 2
+            crop_w = int(round(crop_h * inner_aspect)) // 2 * 2
+            crop_x = int(round((vw - crop_w) / 2.0)) // 2 * 2
+            crop_y = cut_top
         else:
-            x = int(round((vw - w_target) / 2.0))
-            x = (x // 2) * 2
-            y = cut_top
+            crop_w = (int(round(vw)) // 2) * 2
+            crop_h = int(round(crop_w / inner_aspect)) // 2 * 2
+            crop_x = 0
+            crop_y = cut_top
 
-        w_target = max(64, min(vw, (w_target // 2) * 2))
-        h_target = max(64, min(vh, (h_target // 2) * 2))
-        x = max(0, min(vw - w_target, (x // 2) * 2))
-        y = max(0, min(vh - h_target, (y // 2) * 2))
+        # Khóa biên an toàn
+        crop_w = max(64, min(vw, (crop_w // 2) * 2))
+        crop_h = max(64, min(vh, (crop_h // 2) * 2))
+        crop_x = max(0, min(vw - crop_w, (crop_x // 2) * 2))
+        crop_y = max(0, min(vh - crop_h, (crop_y // 2) * 2))
 
         return {
-            "w": w_target,
-            "h": h_target,
-            "x": x,
-            "y": y,
-            "pan_y": pan_y,
+            "w": crop_w,
+            "h": crop_h,
+            "x": crop_x,
+            "y": crop_y,
+            "out_w": out_w,
+            "out_h": out_h,
+            "inner_w": inner_w,
+            "inner_h": inner_h,
+            "pad_l": pad_l,
+            "pad_r": pad_r,
+            "pad_t": pad_t,
+            "pad_b": pad_b,
+            "border_px": pad_l,
+            "pan_y": 0,
             "cut_h": cut_bot,
             "cut_top": cut_top
         }
@@ -426,11 +454,8 @@ class VideoComposerService:
             task_manager.add_log(task_id, "[1/4] ⚡ Chế độ 'Không Sub': Bỏ qua tạo phụ đề Karaoke & dải mờ, chỉ Crop video & lồng tiếng!", "cyan")
 
         vw, vh = cls.get_video_resolution(project.video_path)
-        if has_mask or (mask_height and mask_height > 0):
-            crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=mask_height, target_ratio=crop_ratio)
-            ass_w, ass_h = crop_info["w"], crop_info["h"]
-        else:
-            ass_w, ass_h = (vw // 2) * 2, (vh // 2) * 2
+        crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=mask_height, target_ratio=crop_ratio)
+        ass_w, ass_h = crop_info.get("out_w", crop_info["w"]), crop_info.get("out_h", crop_info["h"])
 
         font_sz = font_size if (font_size and font_size > 0) else 14
         margin_v_val = margin_v if margin_v is not None else 8
@@ -523,8 +548,8 @@ class VideoComposerService:
                         voiceover_mp3=str(voiceover_file),
                         output_mixed_audio=str(mixed_audio_file),
                         dialogue_segments=tts_audio_segments,
-                        bgm_volume_when_speaking=0.04,
-                        bgm_volume_normal=0.23,
+                        bgm_volume_when_speaking=0.05,
+                        bgm_volume_normal=0.28,
                         voiceover_volume=1.0,
                         use_flat_bgm_test=False
                     )
@@ -682,132 +707,101 @@ class VideoComposerService:
         last_v = "0:v"
 
         vw, vh = cached_res if cached_res else cls.get_video_resolution(video_input_path)
-        cut_pct = max(4.0, float(bottom_cut_percent if bottom_cut_percent is not None else 4.0))
+        cut_pct = max(4.0, float(bottom_cut_percent if bottom_cut_percent is not None else 8.0))
         t_cut_pct = max(0.0, float(top_cut_percent if top_cut_percent is not None else 0.0))
 
-        # 🎬 BƯỚC 1: CROP CẮT THẲNG FULL MÀN HÌNH (Khóa tọa độ chẵn tĩnh -> 0% sôi viền, 0% di chuyển khung hình)
+        # 1. CROP NATIVE ADAPTIVE + TỈ LỆ 16:9 CHO INNER AREA KHUNG CANVA
         crop_info = cls.calculate_crop(vw, vh, bottom_cut_percent=cut_pct, top_cut_percent=t_cut_pct, target_ratio=target_ratio)
-        render_w = crop_info["w"]
-        render_h = crop_info["h"]
+        crop_w = crop_info["w"]
+        crop_h = crop_info["h"]
         crop_x = crop_info["x"]
         crop_y = crop_info["y"]
+        out_w = crop_info["out_w"]
+        out_h = crop_info["out_h"]
+        inner_w = crop_info["inner_w"]
+        inner_h = crop_info["inner_h"]
+        pad_l = crop_info.get("pad_l", 0)
+        pad_t = crop_info.get("pad_t", 0)
+        pad_b = crop_info.get("pad_b", 12)
 
-        filter_chains.append(f"[0:v]crop=w={render_w}:h={render_h}:x={crop_x}:y={crop_y}[v_clean]")
-        last_v = "v_clean"
-
-        # 🛡️ BƯỚC 1.5: LÁ CHẮN CHỐNG QUÉT DEEP CNN ĐA HÌNH VI MÔ (0% NOISE & 0% RUNG LẮC)
-        sys_rng = random.SystemRandom()
-        t_expr = f"(t+{start_sec:.3f})"
-        h0 = sys_rng.uniform(1.80, 3.10)
-        ha1 = sys_rng.uniform(1.10, 1.75)
-        ha2 = sys_rng.uniform(0.75, 1.35)
-        th1 = sys_rng.uniform(1.73, 2.41)
-        th2 = sys_rng.uniform(2.63, 3.59)
-        s0 = sys_rng.uniform(1.038, 1.062)
-        sa = sys_rng.uniform(0.014, 0.025)
-        ts = sys_rng.uniform(2.11, 3.29)
-        la_val = sys_rng.uniform(0.19, 0.25)
-        c_val = sys_rng.uniform(1.032, 1.056)
-        g_val = sys_rng.uniform(1.012, 1.032)
-        gr_val = sys_rng.uniform(1.022, 1.044)
-        gb_val = sys_rng.uniform(0.958, 0.982)
-        br_val = sys_rng.uniform(0.007, 0.015)
-
+        # 2. PIPELINE HÌNH ẢNH SẠCH: CROP -> HFLIP -> SCALE FULL -> COLORBALANCE WARM -> EQ
         filter_chains.append(
-            f"[{last_v}]hflip,"
-            f"hue=h='{h0:.2f}+{ha1:.2f}*sin(2*PI*{t_expr}/{th1:.3f})+{ha2:.2f}*cos(2*PI*{t_expr}/{th2:.3f})':"
-            f"s='{s0:.3f}+{sa:.3f}*sin(2*PI*{t_expr}/{ts:.3f})',"
-            f"unsharp=lx=3:ly=3:la={la_val:.3f},"
-            f"eq=contrast={c_val:.3f}:gamma={g_val:.3f}:gamma_r={gr_val:.3f}:gamma_b={gb_val:.3f}:brightness={br_val:.3f}[v_shield]"
+            f"[0:v]crop=w={crop_w}:h={crop_h}:x={crop_x}:y={crop_y},"
+            f"hflip,"
+            f"scale={out_w}:{out_h}:flags=bicubic,"
+            f"colorbalance=rs=0.04:gs=-0.01:bs=-0.04,"
+            f"eq=contrast=1.04:saturation=1.07[v_main]"
         )
-        last_v = "v_shield"
+        last_v = "v_main"
 
-        # 🎬 BƯỚC 2: DẢI NỀN MỜ FROSTED GLASS THUẦN HỆ MÀU YUVA420P (0% RGB SWSCALE OVERHEAD, TĂNG 31% TỐC ĐỘ)
+        # 3. DẢI MỜ FROSTED GLASS THU GỌN 2 BÊN (Lọt thỏm giữa lòng video, không chạm 2 viền khung)
         if has_mask and render_subtitles:
-            b_h_val = float(blur_height if blur_height is not None else (mask_height if mask_height and mask_height > 0 else 13.0))
+            m_width_val = float(mask_width if mask_width and mask_width <= 85.0 else 68.0)
+            b_h_val = float(blur_height if blur_height is not None else 13.0)
             b_offset_val = float(sub_bottom_offset if sub_bottom_offset is not None else 0.0)
 
-            m_w = int(round(render_w * (mask_width / 100.0))) if mask_width else render_w
-            m_h = int(round(render_h * (b_h_val / 100.0)))
-            m_x = max(0, int(round((render_w - m_w) / 2.0)))
+            m_w = int(round(out_w * (m_width_val / 100.0)))
+            m_h = int(round(out_h * (b_h_val / 100.0)))
+            m_x = max(0, int(round((out_w - m_w) / 2.0)))
 
-            offset_bottom_px = int(round(render_h * (b_offset_val / 100.0)))
-            if offset_bottom_px <= 2:
-                m_y = max(0, render_h - m_h)
-                mask_expr = "if(lt(Y,8),245*(Y/8),245)"
-            else:
-                m_y = max(0, render_h - offset_bottom_px - m_h)
-                f_h = max(2, int(round(m_h * 0.12)))
-                mask_expr = f"if(lt(Y,{f_h}),245*(Y/{f_h}),if(gt(Y,H-{f_h}),245*((H-Y)/{f_h}),245))"
+            # Khoảng đệm viền khung kim loại đáy (~1.6% chiều cao) khớp với ASS subtitle
+            offset_bottom_px = int(round(out_h * (b_offset_val / 100.0)))
+            m_y = max(0, out_h - pad_b - offset_bottom_px - m_h)
 
-            m_w = max(32, min(render_w, (m_w // 2) * 2))
-            m_h = max(16, min(render_h, (m_h // 2) * 2))
-            m_x = max(0, min(render_w - m_w, (m_x // 2) * 2))
-            m_y = max(0, min(render_h - m_h, (m_y // 2) * 2))
+            m_w = max(32, min(out_w, (m_w // 2) * 2))
+            m_h = max(16, min(out_h, (m_h // 2) * 2))
+            m_x = max(0, min(out_w - m_w, (m_x // 2) * 2))
+            m_y = max(0, min(out_h - m_h, (m_y // 2) * 2))
+
+            f_h = max(2, int(round(m_h * 0.25)))
+            mask_expr = f"if(lt(Y,{f_h}),245*(Y/{f_h}),if(gt(Y,H-{f_h}),245*((H-Y)/{f_h}),245))"
 
             filter_chains.append(
                 f"color=s={m_w}x{m_h}:c=black:r=1:d=1,format=gray,geq=lum='{mask_expr}',loop=loop=-1:size=1:start=0[mask_alpha];"
-                f"[{last_v}]split=2[v_main][v_crop_src];"
+                f"[{last_v}]split=2[v_base][v_crop_src];"
                 f"[v_crop_src]crop={m_w}:{m_h}:{m_x}:{m_y},"
-                f"avgblur=sizeX=65:sizeY=5,"
+                f"avgblur=sizeX=45:sizeY=5,"
                 f"eq=contrast=0.86:brightness=0.02,"
                 f"format=yuva420p[v_blurred];"
                 f"[v_blurred][mask_alpha]alphamerge[v_feathered];"
-                f"[v_main][v_feathered]overlay={m_x}:{m_y}:format=yuv420:shortest=1[v_masked]"
+                f"[v_base][v_feathered]overlay={m_x}:{m_y}:format=yuv420:shortest=1[v_masked]"
             )
             last_v = "v_masked"
 
-        # ⏱️ BƯỚC 2.5: PHÁ VỠ MA TRẬN THỜI GIAN HÌNH ẢNH BƯỚC SÓNG NGẮN (1.4s - 4.1s) TRƯỚC KHI ĐỐT SUB
-        # Tự động nhân số nửa chu kỳ nguyên theo dur_sec -> Bẻ gãy mọi cửa sổ quét 3s-5s-8s nhưng khóa biên 0.000s tuyệt đối
-        seg_d = max(3.0, float(dur_sec if dur_sec and dur_sec > 0 else 60.0))
-        tau1 = sys_rng.uniform(1.38, 1.84)
-        tau2 = sys_rng.uniform(2.14, 2.82)
-        tau3 = sys_rng.uniform(3.16, 4.12)
-        k1 = max(3, int(round(seg_d / tau1)))
-        k2 = max(2, int(round(seg_d / tau2)))
-        if k2 == k1:
-            k2 += 1
-        k3 = max(1, int(round(seg_d / tau3)))
-        while k3 in (k1, k2):
-            k3 += 1
-
-        v1 = sys_rng.uniform(0.012, 0.017)
-        v2 = sys_rng.uniform(0.011, 0.016)
-        v3 = sys_rng.uniform(0.010, 0.014)
-        a1 = (v1 * seg_d) / (k1 * math.pi)
-        a2 = (v2 * seg_d) / (k2 * math.pi)
-        a3 = (v3 * seg_d) / (k3 * math.pi)
-        op1, op2, op3 = sys_rng.choice([("+", "-", "+"), ("-", "+", "-"), ("+", "+", "-"), ("-", "+", "+")])
-        pts_warp_expr = (
-            f"PTS{op1}({a1:.5f}/TB)*sin({k1}*PI*T/{seg_d:.3f})"
-            f"{op2}({a2:.5f}/TB)*sin({k2}*PI*T/{seg_d:.3f})"
-            f"{op3}({a3:.5f}/TB)*sin({k3}*PI*T/{seg_d:.3f})"
-        )
-        filter_chains.append(f"[{last_v}]settb=1/90000,setpts='{pts_warp_expr}'[v_timewarp]")
-        last_v = "v_timewarp"
-
-        # 🎬 BƯỚC 3: Phụ đề Tiếng Việt Karaoke ASS đặt đè lên dải mờ
-        if render_subtitles and ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
-            filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
-            last_v = "v_sub"
-
+        # 4. OVERLAY KHUNG KIM LOẠI CÔNG NGHỆ + LOGO MẶT THỘN 3D GỐC (NẠP 1 LẦN VÀO RAM)
+        frame_file = getattr(settings, "FRAME_CANVAS_PATH", settings.ASSETS_DIR / "frames" / "frame_matthon_cyber_silver.png")
         logo_inputs = []
-        if logo_path and os.path.exists(logo_path):
+        if frame_file and Path(frame_file).exists():
+            logo_inputs = ["-i", str(Path(frame_file).resolve())]
+            filter_chains.append(
+                f"[1:v]format=yuva420p,scale={out_w}:{out_h}:flags=bicubic,loop=loop=-1:size=1:start=0[v_frame];"
+                f"[{last_v}][v_frame]overlay=x=0:y=0:format=yuv420:shortest=1[v_framed]"
+            )
+            last_v = "v_framed"
+        elif logo_path and os.path.exists(logo_path):
             logo_inputs = ["-i", str(logo_path)]
+            overlay_pos = "25:25"
             if logo_position == "top_right":
                 overlay_pos = "W-w-25:25"
             elif logo_position == "bottom_left":
                 overlay_pos = "25:H-h-25"
             elif logo_position == "bottom_right":
                 overlay_pos = "W-w-25:H-h-25"
-            else:
-                overlay_pos = "25:25"
             filter_chains.append(f"[1:v]scale={logo_size}:{logo_size}:flags=bicubic,format=rgba,colorchannelmixer=aa={logo_opacity}[logo]")
-            filter_chains.append(f"[{last_v}][logo]overlay={overlay_pos}:format=yuv420[v_logo]")
-            last_v = "v_logo"
+            filter_chains.append(f"[{last_v}][logo]overlay={overlay_pos}:format=yuv420[v_framed]")
+            last_v = "v_framed"
+
+        # 5. KHÓA CHUẨN TIMEBASE 1/90000 VÀ SETPTS TRƯỚC KHI ĐỐT SUB
+        filter_chains.append(f"[{last_v}]settb=1/90000,setpts=PTS[v_timewarp]")
+        last_v = "v_timewarp"
+
+        # 6. ĐỐT PHỤ ĐỀ KARAOKE ASS ĐÈ LÊN TRÊN CÙNG (CĂN GIỮA DẢI MỜ)
+        if render_subtitles and ass_file_path and os.path.exists(ass_file_path) and os.path.getsize(ass_file_path) > 0:
+            filter_chains.append(f"[{last_v}]subtitles='{ass_escaped}':force_style='Encoding=UTF-8'[v_sub]")
+            last_v = "v_sub"
 
         filter_chains[-1] = re.sub(r"\[[^\]]+\]$", "[v_out]", filter_chains[-1])
-        return ";".join(filter_chains), logo_inputs, render_w, render_h
+        return ";".join(filter_chains), logo_inputs, out_w, out_h
 
     @classmethod
     def parallel_render_visual_stream(
@@ -934,7 +928,7 @@ class VideoComposerService:
         if task_id:
             task_manager.add_log(task_id, f"🚀 KÍCH HOẠT ENGINE RENDER SONG SONG TỐI ĐA ({workers} Luồng Đồng Thời)...", "purple")
             task_manager.add_log(task_id, f"   • Bộ Mã Hóa: {vcodec} ({encoder_desc})", "cyan")
-            task_manager.add_log(task_id, f"   • Khung Hình Chuẩn: {render_w}x{render_h} @ {native_fps_val} FPS (Bitrate: {target_bv})", "cyan")
+            task_manager.add_log(task_id, f"   • Khung Hình Chuẩn: {render_w}x{render_h} @ 25 FPS (Chống quét ma trận, Bitrate: {target_bv})", "cyan")
             task_manager.add_log(task_id, f"   • Video: {cls._format_time(total_duration)} | Chia {num_segments} phân đoạn (~{int(segment_duration)}s/đoạn)", "cyan")
 
         out_p = Path(output_temp_video).resolve()
@@ -1057,7 +1051,7 @@ class VideoComposerService:
             cmd.extend([
                 "-g", "50",
                 "-pix_fmt", pix_fmt,
-                "-r", native_fps_arg,
+                "-r", "25",
                 "-map_metadata", "-1",
                 "-map_chapters", "-1",
                 "-t", f"{dur_sec:.3f}",
@@ -1450,7 +1444,7 @@ class VideoComposerService:
         cmd.extend([
             "-g", "50",
             "-pix_fmt", pix_fmt,
-            "-r", native_fps_arg,
+            "-r", "25",
             "-map_metadata", "-1",
             "-map_chapters", "-1"
         ])

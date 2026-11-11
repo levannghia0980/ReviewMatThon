@@ -388,30 +388,13 @@ async def execute_llm_call(
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": temperature,
-            "topP": 0.95,
-            "topK": 40,
-            "maxOutputTokens": 65536
+            "temperature": temperature
         }
     }
     if system_instruction:
         payload["systemInstruction"] = {
             "parts": [{"text": system_instruction}]
         }
-    if thinking_budget is not None:
-        if thinking_budget == -1:
-            # Chế độ Dynamic Thinking (Tự Động): Google Gemini API tự căn chỉnh mức tư duy theo độ phức tạp của prompt
-            payload["generationConfig"]["thinkingConfig"] = {
-                "thinkingBudget": -1
-            }
-        elif thinking_budget > 0:
-            payload["generationConfig"]["thinkingConfig"] = {
-                "thinkingBudget": min(24576, thinking_budget)
-            }
-        elif thinking_budget == 0:
-            payload["generationConfig"]["thinkingConfig"] = {
-                "thinkingBudget": 0
-            }
     if response_mime_type:
         payload["generationConfig"]["responseMimeType"] = response_mime_type
 

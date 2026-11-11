@@ -67,9 +67,11 @@ def get_project_dirs(project_id: int) -> dict:
 DB_DIR = BASE_DIR / "database"
 DB_PATH = DB_DIR / "review_mat_thon.db"
 
-# 5. Thư mục ASSETS (Từ điển, fonts, banner...)
+# 5. Thư mục ASSETS (Từ điển, fonts, banner, khung...)
 ASSETS_DIR = BASE_DIR / "assets"
 ASSETS_DICT_DIR = ASSETS_DIR / "dictionaries"
+ASSETS_FRAMES_DIR = ASSETS_DIR / "frames"
+FRAME_CANVAS_PATH = ASSETS_FRAMES_DIR / "frame_matthon_cyber_silver.png"
 
 # 6. Thư mục TOOLS (FFmpeg, yt-dlp, aria2c nhúng)
 TOOLS_DIR = BASE_DIR / "tools"
@@ -85,6 +87,7 @@ ALL_DIRS = [
     DB_DIR,
     ASSETS_DIR,
     ASSETS_DICT_DIR,
+    ASSETS_FRAMES_DIR,
     TOOLS_DIR
 ]
 
@@ -188,6 +191,8 @@ class Settings:
     
     ASSETS_DIR: Path = ASSETS_DIR
     ASSETS_DICT_DIR: Path = ASSETS_DICT_DIR
+    ASSETS_FRAMES_DIR: Path = ASSETS_FRAMES_DIR
+    FRAME_CANVAS_PATH: Path = FRAME_CANVAS_PATH
 
     @classmethod
     def get_bilibili_cookie_path(cls) -> Optional[str]:

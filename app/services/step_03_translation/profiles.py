@@ -206,13 +206,17 @@ COMMON_RULES = """Bạn là chuyên gia chuyển ngữ kịch bản lồng tiế
   + Mọi dòng mang nhãn -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D] BẮT BUỘC chỉ chứa DUY NHẤT 1 mẩu chữ Hán gốc trong ngoặc vuông [mẩu ASR đơn] (tuyệt đối CẤM có dấu '/' bên trong [...] ở bất kỳ dòng [Vai A], [Vai B], [Vai C], [Vai D] nào).
   + Khi gặp cảnh nhiều người quần chúng bàn tán, la hét hoặc các câu đồng dao/lời hát: Bắt buộc tách từng mẩu ASR thành từng dòng riêng biệt (1:1), dịch sát chữ từng dòng và đánh nhãn luân phiên -> [Vai A], -> [Vai B], -> [Vai C], -> [Vai D]. Ngay khi quay lại lời kể chuyện ngôi thứ ba thì trả về -> [DẪN CHUYỆN].
 
-3. YÊU CẦU DỊCH THUẬT & XỬ LÝ LỖI ASR / ĐỒNG ÂM HỢP LÝ:
-- Dịch sạch 100% sang tiếng Việt tự nhiên, giữ đúng dấu câu ngắt nghỉ và quy chuẩn xưng hô của thể loại.
-- Xử lý hài hòa lỗi nhận diện giọng nói ASR:
-  + Văn bản ASR từ video có thể nghe nhầm các chữ Hán đồng âm hoặc lệch ngữ cảnh (ví dụ: nghe nhầm địa danh '北京' khi đang tả vũ khí bị hỏng; hoặc nghe nhầm '景区' thay vì '禁区').
-  + Hãy căn cứ vào toàn bộ ngữ cảnh đối thoại và Bảng thực thể để dịch nghĩa tiếng Việt đúng, tự nhiên và ăn khớp cốt truyện. Nếu trong bảng thực thể có từ nghe nhầm không phù hợp mạch truyện, hãy dịch theo đúng ngữ cảnh thực tế của câu chuyện mà không bị ép buộc dịch sai.
-  + Đối với tên nhân vật, địa danh, vật phẩm chuẩn: Dịch thống nhất 100% xuyên suốt kịch bản. Phần chữ Hán trong [...] vẫn phải giữ nguyên văn theo đầu vào; tuyệt đối không viết chú thích lỗi ASR trong ngoặc đơn.
-- Tuyệt đối không để sót chữ Hán, Pinyin hay tiếng Anh trong lời dịch tiếng Việt."""
+3. NGUYÊN TẮC XỬ LÝ ASR ĐỒNG ÂM & TÁI TẠO HỘI THOẠI TIẾP DIỄN CÓ NGHĨA:
+- BẢN CHẤT VĂN BẢN ĐẦU VÀO:
+  + Đây là văn bản ASR bóc tách tự động từ âm thanh nên có thể bị nhận diện sai chữ Hán đồng âm hoặc ngắt câu rời rạc.
+  + Nhiệm vụ của bạn KHÔNG PHẢI là dịch máy móc từng chữ Hán riêng lẻ vô nghĩa, mà là DỰA VÀO NGỮ CẢNH ĐỐI THOẠI TRƯỚC VÀ SAU để hiểu nhân vật đang tương tác điều gì, từ đó tái tạo và viết ra lời thoại / lời dẫn tiếng Việt CÓ NGHĨA TRỌN VẸN, tiếp diễn mạch câu chuyện một cách tự nhiên.
+- PHÂN ĐỊNH GIỮ NGUYÊN VĂN VÀ TỰ DO CHUYỂN NGỮ:
+  + Phần chữ Hán trong [...] BẮT BUỘC giữ nguyên văn 100% theo đầu vào (để hệ thống đối soát thời gian).
+  + Phần lời dịch tiếng Việt ở ngoài: Bạn có toàn quyền nắn chỉnh, sửa từ đồng âm nghe nhầm thành từ đúng nghĩa để câu thoại ăn khớp với tình huống diễn ra.
+- MỆNH LỆNH CẤM THOÁI THÁC:
+  + Kịch bản này dùng trực tiếp để ĐỌC LỒNG TIẾNG (TTS) cho khán giả nghe, tuyệt đối CẤM xuất hiện cụm từ '(lỗi ASR)', '(không rõ nghĩa)', '(không dịch được)' hay bất kỳ ghi chú giải thích nào trong ngoặc đơn '()'.
+  + Khi gặp lời thoại kỳ lạ, tiếng kêu khóc, đồng dao hay từ ngữ lộn xộn: Bắt buộc dùng ngữ cảnh câu chuyện để chuyển dịch thành câu nói tiếng Việt có nghĩa tương đồng của tình huống, không được bỏ cuộc hay gắn mác lỗi ASR.
+- Dịch sạch 100% sang tiếng Việt, giữ đúng xưng hô, không để sót chữ Hán, Pinyin hay tiếng Anh trong lời dịch."""
 
 
 CONTEXT_PROFILES = {
@@ -366,7 +370,7 @@ def build_user_translation_prompt(
         f"- NGUYÊN TẮC GỘP CÂU (ƯU TIÊN 1:1, CHỈ GỘP KHI BỊ CHÉM ĐỨT NGỮ PHÁP) & ĐỒNG BỘ [CHỮ HÁN] - LỜI DỊCH:\n"
         f"  + Chỉ gộp tối đa 2 đến 3 mẩu ASR ngắn liền kề khi và chỉ khi mẩu trước bị đứt ngang ngữ pháp của CÙNG MỘT NGƯỜI bằng dấu '/' trong [...]. Hễ mẩu ASR đã trọn vẹn một phát ngôn ngắn hoặc có đổi lượt lời: BẮT BUỘC giữ nguyên 1:1, CẤM CỐ GỘP làm dính lời của hai người vào một dòng.\n"
         f"  + Tuyệt đối không gộp từ 4 mẩu trở lên; không gộp lời dẫn [DẪN CHUYỆN] với lời thoại nhân vật; không dùng ngoặc kép để nhét lời thoại vào dòng [DẪN CHUYỆN].\n"
-        f"  + Chữ Hán trong [...] của dòng nào phải dịch trực tiếp và đầy đủ sang lời thoại tiếng Việt ở dòng đó; tuyệt đối CẤM dùng dấu ngoặc đơn () để ghi chú lỗi ASR hay tóm tắt âm thanh. Giữ nguyên văn chữ Hán gốc trong [...] và bao phủ tuần tự 100% các mẩu đầu vào từ đầu đến cuối.\n"
+        f"  + Chữ Hán trong [...] giữ nguyên văn đầu vào. Lời dịch tiếng Việt phải dựa vào ngữ cảnh đối thoại trước sau để viết thành câu có nghĩa, tiếp diễn mạch truyện. Tuyệt đối CẤM ghi '(lỗi ASR)', '(không rõ nghĩa)' hay bất kỳ chú thích ngoặc đơn nào.\n"
         f"- NGUYÊN TẮC BẮT BUỘC CHUYỂN VAI ĐỐI THOẠI & CƠ CHẾ NHÃN ẨN DANH:\n"
         f"  + Hội thoại đối đáp luân phiên: TÊN VAI Ở CUỐI DÒNG SAU BẮT BUỘC PHẢI KHÁC TÊN VAI CỦA DÒNG TRƯỚC! Cấm tuyệt đối gán liên tục cùng một tên vai (hoặc gộp vào nhân vật chính) khi lời thoại là sự đối đáp qua lại.\n"
         f"  + Nhãn vai ẩn danh khi không biết tên: Không bắt buộc đoán đúng tên riêng, BẮT BUỘC dùng nhãn theo bối cảnh hoặc nhãn luân phiên [Người Lạ A] -> [Người Lạ B] -> [Người Lạ A]... (hoặc [Vai A] -> [Vai B]). Cấm vì không biết tên mà dồn hết câu cho nhân vật chính!\n"

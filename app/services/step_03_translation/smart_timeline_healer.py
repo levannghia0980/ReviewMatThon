@@ -41,6 +41,7 @@ SPEEDUP_MIN = 0.55
 
 SOFT_GAP = 0.4
 HARD_GAP = 0.8          # Ngưỡng [KHÓA] trong prompt / pipeline
+GAP_SPLIT_TH = 0.85     # Ngưỡng bắt buộc cắt câu gộp băng qua khoảng lặng (đồng bộ với gap_threshold gộp audio Bước 4)
 
 BUFFER = 0.08           # đệm trước đầu mẩu kế tiếp (đo thực tế)
 TAIL_CAP = 0.40         # nới tối đa sau đuôi khi gặp khoảng lặng >= HARD_GAP
@@ -334,6 +335,12 @@ class SmartTimelineHealer:
                 c['_ok'] = False
                 aligned.append(c)
             logs.append("[Align v5.3] Lô không có trường zh -> ZH_MISSING_ENTIRE_BATCH, yêu cầu dịch lại.")
+
+        # BƯỚC 1.5: CẮT TUẦN TỰ câu gộp băng qua khoảng lặng >= GAP_SPLIT_TH (chỉ câu thỏa điều kiện mới vào nhánh cắt)
+        aligned, gap_split_cnt, gap_split_logs = cls.split_items_at_hard_gaps(aligned, seg_map)
+        if gap_split_cnt:
+            fixes += gap_split_cnt
+            logs.extend(gap_split_logs)
 
         # BƯỚC 2: ghi chú mềm cho câu gộp băng qua khoảng lặng cứng ([KHÓA]) — KHÔNG đánh lỗi cứng
         cls.flag_gap_collisions(aligned, seg_map)
@@ -1507,6 +1514,156 @@ class SmartTimelineHealer:
                     flag = f'MERGE_ACROSS_KHOA_GAP_{a}-{b}_{gap:.2f}s'
                     it['soft_flags'] = list(it.get('soft_flags', [])) + [flag]
                     break
+
+    # =========================================================================
+    # KHỐI 2.5: CẮT TUẦN TỰ CÂU GỘP BĂNG QUA KHOẢNG LẶNG (GAP SPLIT - SEQUENTIAL ANCHOR)
+    # =========================================================================
+    @staticmethod
+    def _gap_split_seg_zh(seg: Dict[str, Any]) -> str:
+        return str(seg.get('zh') or seg.get('clean_text') or seg.get('text') or '').strip()
+
+    @classmethod
+    def _find_gap_cut_text(cls, text: str, left_ids: List[int], right_ids: List[int],
+                           seg_map: Dict[int, Dict[str, Any]]) -> Optional[Tuple[str, str]]:
+        """CHỈ dùng để TÌM VỊ TRÍ cắt chữ tiếng Việt giữa nhóm mẩu trái / nhóm mẩu phải.
+        DÙNG CHUNG toàn bộ dấu ngắt (kết câu .?!… và giữa câu ,;:—) trên trục tích lũy số từ:
+        - Neo theo dung lượng chữ Hán gốc cụm trái (ZH_L).
+        - Điểm cắt chuẩn là dấu câu nằm sát dung lượng kỳ vọng nhất (có cộng điểm ưu tiên cho dấu kết câu .?!…).
+        - Cấm chẻ đôi từ hoặc số (3.5, 10:30, 1,000). Không tìm được ranh giới an toàn -> trả None (không cắt)."""
+        text = str(text or '').strip()
+        if not text or not left_ids or not right_ids:
+            return None
+
+        words = text.split()
+        total_words = len(words)
+        if total_words < 2:
+            return None
+
+        zh_l = "".join(cls._gap_split_seg_zh(seg_map[i]) for i in left_ids)
+        zh_r = "".join(cls._gap_split_seg_zh(seg_map[i]) for i in right_ids)
+        zl = len(norm_zh(zh_l))
+        zr = len(norm_zh(zh_r))
+        if zl + zr == 0:
+            return None
+
+        expected_wl = total_words * (zl / (zl + zr))
+
+        punct_pattern = re.compile(r'([.!?…;:,，；：—–]+)')
+        cands = []
+        for m in punct_pattern.finditer(text):
+            en_pos = m.end()
+            st_pos = m.start()
+            punct = m.group()
+
+            # Bỏ qua các cấu trúc số: 3.5, 10:30, 1,000
+            if st_pos > 0 and en_pos < len(text) and text[st_pos - 1].isdigit() and text[en_pos].isdigit():
+                continue
+
+            left = text[:en_pos].strip()
+            right = text[en_pos:].strip()
+
+            if not left or not right:
+                continue
+            if not any(c.isalnum() for c in left) or not any(c.isalnum() for c in right):
+                continue
+
+            wl = len(left.split())
+            is_end = bool(re.search(r'[.!?…]', punct))
+            word_diff = abs(wl - expected_wl)
+
+            # Điểm phạt: càng sát số từ kỳ vọng càng tốt.
+            # Dấu kết câu (.!?) được ưu tiên tự nhiên (tương đương dung sai ~3.5 từ so với dấu phẩy)
+            score = word_diff
+            if is_end:
+                score -= 3.5
+
+            cands.append({
+                'left': left,
+                'right': right,
+                'diff': word_diff,
+                'score': score
+            })
+
+        if not cands:
+            return None
+
+        cands.sort(key=lambda x: x['score'])
+        best = cands[0]
+        return best['left'], best['right']
+
+    @classmethod
+    def split_items_at_hard_gaps(cls, items: List[Dict[str, Any]], seg_map: Dict[int, Dict[str, Any]],
+                                 threshold: float = GAP_SPLIT_TH) -> Tuple[List[Dict[str, Any]], int, List[str]]:
+        """Nhánh IF cắt câu gộp băng qua khoảng lặng >= threshold.
+        - Câu không có khoảng lặng nội bộ >= threshold, câu mang lỗi cứng, câu thiếu src: GIỮ NGUYÊN 100%.
+        - Câu thỏa điều kiện: cắt TUẦN TỰ từng điểm gap từ trái sang phải; phần còn lại làm neo cho lần cắt kế.
+        - Không tìm được ranh giới dấu câu an toàn: dừng cắt, giữ phần còn lại nguyên vẹn + cờ mềm GAP_SPLIT_SKIPPED."""
+        out: List[Dict[str, Any]] = []
+        logs: List[str] = []
+        split_cnt = 0
+
+        for it in items:
+            src = [s for s in (it.get('src') or []) if s in seg_map]
+            if len(src) < 2 or it.get('hard_flags') or not it.get('_ok', True):
+                out.append(it)
+                continue
+
+            cut_positions = []
+            for j in range(len(src) - 1):
+                gap = float(seg_map[src[j + 1]].get('start', 0.0) or 0.0) - float(seg_map[src[j]].get('end', 0.0) or 0.0)
+                if gap >= threshold:
+                    cut_positions.append((j, round(gap, 2)))
+            if not cut_positions:
+                out.append(it)
+                continue
+
+            pieces_out: List[Dict[str, Any]] = []
+            ptr = 0
+            remain_txt = str(it.get('vi', '') or '').strip()
+            skipped_flag = None
+
+            for j, gap in cut_positions:
+                left_ids, right_ids = src[ptr:j + 1], src[j + 1:]
+                res = cls._find_gap_cut_text(remain_txt, left_ids, right_ids, seg_map)
+                if not res:
+                    skipped_flag = f'GAP_SPLIT_SKIPPED_{src[j]}-{src[j + 1]}_{gap:.2f}s'
+                    break
+                l_txt, r_txt = res
+                pieces_out.append({'src': left_ids, 'vi': l_txt, 'gap_flag': f'GAP_SPLIT_{src[j]}-{src[j + 1]}_{gap:.2f}s'})
+                ptr = j + 1
+                remain_txt = r_txt
+
+            if not pieces_out:
+                if skipped_flag:
+                    it['soft_flags'] = list(it.get('soft_flags', [])) + [skipped_flag]
+                out.append(it)
+                continue
+
+            pieces_out.append({'src': src[ptr:], 'vi': remain_txt, 'gap_flag': skipped_flag})
+
+            junk_cov = list(it.get('junk_covered') or [])
+            dropped = list(it.get('dropped_chunks') or [])
+            for p_idx, p in enumerate(pieces_out):
+                p_src = p['src']
+                lo = p_src[0] if p_idx > 0 else float('-inf')
+                hi = pieces_out[p_idx + 1]['src'][0] if p_idx + 1 < len(pieces_out) else float('inf')
+                child = dict(it)
+                child['src'] = list(p_src)
+                child['vi'] = p['vi']
+                child['zh_pieces'] = [cls._gap_split_seg_zh(seg_map[i]) for i in p_src]
+                child['zh'] = ''.join(child['zh_pieces'])
+                child['zh_raw'] = '/'.join(child['zh_pieces'])
+                child['junk_covered'] = [c for c in junk_cov if lo <= c < hi]
+                child['dropped_chunks'] = [c for c in dropped if lo <= c < hi]
+                child['hard_flags'] = list(it.get('hard_flags') or [])
+                child['soft_flags'] = list(it.get('soft_flags') or []) + ([p['gap_flag']] if p['gap_flag'] else [])
+                out.append(child)
+
+            split_cnt += len(pieces_out) - 1
+            logs.append(f"  ✔ [GapSplit] Cắt câu src={src} thành {len(pieces_out)} câu: "
+                        + " | ".join(f"{p['src']}: {p['vi']}" for p in pieces_out))
+
+        return out, split_cnt, logs
 
     # =========================================================================
     # KHỐI 3: AUDIT & CHỐT CHẶN CỰC ĐOAN (>= 2.0x)

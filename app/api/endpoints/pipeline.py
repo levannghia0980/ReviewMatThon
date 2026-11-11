@@ -570,9 +570,22 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 task_manager.add_log(task_id, "   🎵 Đang hòa trộn BGM gốc & lồng tiếng Việt (Vocal Ducking)...", "cyan")
                 db_mix = SessionLocal()
                 try:
-                    latest_segs = db_mix.query(DialogueSegmentModel).filter(
-                        DialogueSegmentModel.task_id == project.id
-                    ).order_by(DialogueSegmentModel.index.asc()).all()
+                    from app.models.dialogue import TTSDialogueSegmentModel, SubtitleSegmentModel, DialogueSegmentModel
+                    # BẮT BUỘC: Quy chiếu theo bảng câu gộp cuối cùng nhất của TTS (TTSDialogueSegmentModel)
+                    # để xác định chính xác thời điểm nhân vật cất tiếng và khoảng nghỉ thực tế
+                    latest_segs = db_mix.query(TTSDialogueSegmentModel).filter(
+                        TTSDialogueSegmentModel.task_id == project.id
+                    ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
+
+                    if not latest_segs:
+                        latest_segs = db_mix.query(SubtitleSegmentModel).filter(
+                            SubtitleSegmentModel.task_id == project.id
+                        ).order_by(SubtitleSegmentModel.index.asc()).all()
+
+                    if not latest_segs:
+                        latest_segs = db_mix.query(DialogueSegmentModel).filter(
+                            DialogueSegmentModel.task_id == project.id
+                        ).order_by(DialogueSegmentModel.index.asc()).all()
                 finally:
                     db_mix.close()
 
@@ -581,8 +594,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     voiceover_mp3=str(voiceover_file),
                     output_mixed_audio=str(mixed_audio_file),
                     dialogue_segments=latest_segs or segments,
-                    bgm_volume_when_speaking=0.35,  # 0.35 (35%) đồng đều xuyên suốt
-                    bgm_volume_normal=0.35,  # 0.35 (35%) khi không nói để giữ rõ âm thanh môi trường và BGM sống động
+                    bgm_volume_when_speaking=0.05,  # Khi có giọng thuyết minh Việt: dìm 95% tiếng gốc (0% đè giọng)
+                    bgm_volume_normal=0.28,  # Khi không nói: BGM và âm thanh môi trường nổi lên rõ ràng sống động
                     voiceover_volume=1.0
                 )
                 audio_res_container["audio_path"] = str(mixed_path)
