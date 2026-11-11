@@ -14,6 +14,7 @@ taskkill /F /FI "WINDOWTITLE eq *STUDIO REVIEW MAT THAN*" >nul 2>&1
 taskkill /F /IM python.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
 
+:: 2. Đồng bộ mã nguồn qua Git (Nếu máy có Git)
 where git >nul 2>&1
 if %ERRORLEVEL% EQU 0 (
     if exist ".git" (
@@ -25,12 +26,13 @@ if %ERRORLEVEL% EQU 0 (
     )
 )
 
+:: 3. Chạy cập nhật thư viện pip & smart merge .env (không bao giờ đè key cá nhân)
 if not exist "venv\Scripts\python.exe" (
-    echo [*] Dang chay cap nhat he thong...
-    python app_updater.py --force
+    echo [*] Dang kiem tra thu vien he thong va cau hinh .env...
+    python app_updater.py
 ) else (
-    echo [*] Dang chay cap nhat he thong qua venv...
-    venv\Scripts\python.exe app_updater.py --force
+    echo [*] Dang kiem tra thu vien qua venv va cau hinh .env...
+    venv\Scripts\python.exe app_updater.py
 )
 
 echo.
