@@ -22,7 +22,8 @@ def transcribe_media(req: TranscribeRequest):
             
         # Nếu là file video MP4/MKV -> tự động tách sang 16kHz WAV
         ext = Path(src_path).suffix.lower()
-        if ext in [".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv"]:
+        is_video = ext in [".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv"]
+        if is_video:
             audio_path = AudioExtractorService.extract_audio_16k_wav(src_path)
         else:
             audio_path = src_path
@@ -34,7 +35,8 @@ def transcribe_media(req: TranscribeRequest):
             audio_path=clean_audio,
             language=req.language,
             model_size=req.model_size,
-            clean_text=req.clean_text
+            clean_text=req.clean_text,
+            video_path=src_path if is_video else None,
         )
 
         total_dur = segments[-1].end if segments else 0.0

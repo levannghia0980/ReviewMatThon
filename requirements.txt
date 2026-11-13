@@ -28,5 +28,16 @@ deepfilternet>=0.5.6
 faster-whisper>=1.0.0
 edge-tts>=6.1.0
 
+# Visual Hardsub Refiner & Offline Text Arbiter (Zero-LLM)
+rapidocr>=3.10.0
+onnxruntime>=1.19.0,<1.20.0
+opencv-python-headless>=4.11.0,<5.0.0
+pillow>=10.0.0
+RapidFuzz>=3.0.0
+pypinyin>=0.53.0
+wordfreq>=3.1.0
+zhconv>=1.4.0
+jieba>=0.42.1
+
 # Browser Automation & AI Web Worker
 playwright>=1.40.0

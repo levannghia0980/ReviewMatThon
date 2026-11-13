@@ -40,6 +40,96 @@ class TTSSwollenRescuer:
 
     RESCUE_RATIO_THRESHOLD = 1.30  # Ngưỡng bắt buộc kích hoạt vá câu (cân bằng tốc độ [1.10x - 1.30x])
 
+    @staticmethod
+    def _sync_rescued_subtitles_in_db(
+        db: Session,
+        project_id: int,
+        rescued_by_tts_idx: Dict[int, Dict[str, Any]],
+    ) -> None:
+        """
+        Đồng bộ lại bảng SUB_KARAOKE (SubtitleSegmentModel) sau khi cứu hộ câu phình:
+        - Thay thế các dòng phụ đề cũ của tts_index đã rút gọn bằng văn bản mới.
+        - Đánh số liên tục 1..M an toàn, tránh xung đột UniqueConstraint trên pipeline_segments.
+        """
+        if not db or not rescued_by_tts_idx:
+            return
+        from app.models import SubtitleSegmentModel
+        from app.services.step_04_tts.async_tts_engine import split_text_strictly_by_punctuation
+
+        existing_subs = db.query(SubtitleSegmentModel).filter(
+            SubtitleSegmentModel.task_id == project_id
+        ).order_by(SubtitleSegmentModel.index.asc()).all()
+
+        rebuilt_specs: List[Dict[str, Any]] = []
+        seen_rescued = set()
+
+        def _append_new_pieces(t_idx: int, rec: Dict[str, Any]) -> None:
+            d_obj = rec["d_obj"]
+            clean_txt = rec["clean_text"]
+            pieces = split_text_strictly_by_punctuation(
+                clean_txt,
+                max_words=22,
+                max_chars=180,
+                allow_hard_word_cut=False,
+            ) or [clean_txt]
+            s_t = float(getattr(d_obj, "start_time", 0.0) or 0.0)
+            e_t = float(getattr(d_obj, "end_time", s_t + 1.0) or (s_t + 1.0))
+            dur_tot = max(0.1, e_t - s_t)
+            tot_w = sum(max(1, len(p.split())) for p in pieces)
+            cur_s = s_t
+            for idx_p, p in enumerate(pieces):
+                w = max(1, len(p.split()))
+                sp_e = round(e_t if idx_p == len(pieces) - 1 else cur_s + dur_tot * (w / tot_w), 2)
+                rebuilt_specs.append({
+                    "tts_index": t_idx,
+                    "source_indices": str(t_idx),
+                    "batch_index": getattr(d_obj, "batch_index", 1) or 1,
+                    "start_time": round(cur_s, 2),
+                    "end_time": sp_e,
+                    "duration": round(max(0.1, sp_e - cur_s), 2),
+                    "text_vi": p,
+                    "text_zh": getattr(d_obj, "original_text", "") or "",
+                    "speaker": getattr(d_obj, "speaker", "DẪN CHUYỆN") or "DẪN CHUYỆN",
+                    "status": "TRANSLATED",
+                })
+                cur_s = sp_e
+
+        for sub in existing_subs:
+            t_idx = getattr(sub, "tts_index", None)
+            if t_idx in rescued_by_tts_idx:
+                if t_idx not in seen_rescued:
+                    seen_rescued.add(t_idx)
+                    _append_new_pieces(t_idx, rescued_by_tts_idx[t_idx])
+                continue
+            rebuilt_specs.append({
+                "tts_index": t_idx,
+                "source_indices": getattr(sub, "source_indices", None) or (str(t_idx) if t_idx is not None else None),
+                "batch_index": getattr(sub, "batch_index", 1) or 1,
+                "start_time": float(sub.start_time or 0.0),
+                "end_time": float(sub.end_time or 0.1),
+                "duration": float(sub.duration or 0.1),
+                "text_vi": sub.translated_text or "",
+                "text_zh": sub.original_text or "",
+                "speaker": sub.speaker or "DẪN CHUYỆN",
+                "status": sub.status or "TRANSLATED",
+            })
+
+        for obj in list(db.identity_map.values()):
+            if isinstance(obj, SubtitleSegmentModel):
+                db.expunge(obj)
+
+        db.query(SubtitleSegmentModel).filter(
+            SubtitleSegmentModel.task_id == project_id
+        ).delete(synchronize_session=False)
+        db.flush()
+
+        for new_sub_idx, spec in enumerate(rebuilt_specs, start=1):
+            db.add(SubtitleSegmentModel(
+                task_id=project_id,
+                sub_index=new_sub_idx,
+                **spec,
+            ))
+
     @classmethod
     async def rescue_swollen_dialogues(
         cls,
@@ -47,7 +137,8 @@ class TTSSwollenRescuer:
         raw_results_map: Dict[int, AudioSegment],
         db: Optional[Session] = None,
         provider: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        chunk_sub_offsets: Optional[Dict[int, List[Dict[str, Any]]]] = None,
     ) -> int:
         """
         Thực thi cứu hộ chia theo lô (Batching) theo cài đặt để chống tràn token:
@@ -216,7 +307,11 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
                     max_retries_per_item=3,
                     return_utterances=False,
                 )
+                rescued_sub_timings = dict(getattr(AsyncTTSEngine, "_last_sub_timings_map", {}) or {})
                 AsyncTTSEngine._last_sub_timings_map = saved_sub_timings
+
+                batch_rescued_subs: Dict[int, Dict[str, Any]] = {}
+                batch_project_id: Optional[int] = None
 
                 for d_id, cand in candidates_map.items():
                     orig_item = cand["orig_item"]
@@ -254,25 +349,41 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
                             continue
 
                         raw_results_map[d_id] = new_audio
+                        tts_idx = getattr(d_obj, "tts_index", getattr(d_obj, "index", orig_item.get("index"))) if d_obj else orig_item.get("index")
+                        if chunk_sub_offsets is not None and tts_idx is not None:
+                            cap_t = rescued_sub_timings.get(d_id)
+                            if cap_t:
+                                chunk_sub_offsets[tts_idx] = [
+                                    {**dict(t), "old_tts_index": tts_idx} for t in cap_t
+                                ]
+                            else:
+                                chunk_sub_offsets[tts_idx] = [{
+                                    "old_tts_index": tts_idx,
+                                    "raw_start_ms": 0,
+                                    "raw_end_ms": len(new_audio),
+                                }]
 
-                        # Cập nhật văn bản mới vào object dialogue và DB
+                        # Cập nhật văn bản mới vào object dialogue và DB (cả RAW_ASR lẫn SUB_KARAOKE)
                         if d_obj:
                             if hasattr(d_obj, 'text_vietnamese'):
                                 d_obj.text_vietnamese = clean_text
                             if hasattr(d_obj, 'translated_text'):
                                 d_obj.translated_text = clean_text
 
-                            if db and getattr(d_obj, 'task_id', None) and getattr(d_obj, 'tts_index', None):
-                                try:
-                                    from app.models import DialogueSegmentModel
-                                    sub_segs = db.query(DialogueSegmentModel).filter(
-                                        DialogueSegmentModel.task_id == d_obj.task_id,
-                                        DialogueSegmentModel.tts_index == d_obj.tts_index
-                                    ).all()
-                                    for sub_s in sub_segs:
-                                        sub_s.translated_text = clean_text
-                                except Exception:
-                                    pass
+                            if getattr(d_obj, 'task_id', None) and tts_idx is not None:
+                                batch_project_id = d_obj.task_id
+                                batch_rescued_subs[int(tts_idx)] = {"d_obj": d_obj, "clean_text": clean_text}
+                                if db:
+                                    try:
+                                        from app.models import DialogueSegmentModel
+                                        sub_segs = db.query(DialogueSegmentModel).filter(
+                                            DialogueSegmentModel.task_id == d_obj.task_id,
+                                            DialogueSegmentModel.tts_index == tts_idx
+                                        ).all()
+                                        for sub_s in sub_segs:
+                                            sub_s.translated_text = clean_text
+                                    except Exception:
+                                        pass
 
                         total_rescued += 1
                         _safe_log(
@@ -280,6 +391,12 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
                             f"     • Cũ ({orig_ratio:.2f}x): \"{orig_item.get('text_vi')}\"\n"
                             f"     • Mới ({new_ratio:.2f}x): \"{clean_text}\""
                         )
+
+                if db and batch_rescued_subs and batch_project_id is not None:
+                    try:
+                        cls._sync_rescued_subtitles_in_db(db, batch_project_id, batch_rescued_subs)
+                    except Exception as e_sub:
+                        logger.warning(f"Lỗi đồng bộ SUB_KARAOKE sau cứu hộ: {e_sub}")
 
                 if db and total_rescued > 0:
                     try:
@@ -299,7 +416,8 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
         raw_results_map: Dict[int, AudioSegment],
         db: Optional[Session] = None,
         provider: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        chunk_sub_offsets: Optional[Dict[int, List[Dict[str, Any]]]] = None,
     ) -> int:
         """Wrapper đồng bộ để gọi từ hàm sync không có event loop (như produce_project_voiceover)."""
         import asyncio
@@ -310,7 +428,14 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
             asyncio.set_event_loop(new_loop)
             try:
                 return new_loop.run_until_complete(
-                    cls.rescue_swollen_dialogues(swollen_items, raw_results_map, db, provider, model)
+                    cls.rescue_swollen_dialogues(
+                        swollen_items,
+                        raw_results_map,
+                        db,
+                        provider,
+                        model,
+                        chunk_sub_offsets=chunk_sub_offsets,
+                    )
                 )
             finally:
                 new_loop.close()

@@ -231,10 +231,14 @@ NGUYÊN TẮC BÓC TÁCH VÀ ĐẶT TÊN BẢN SẮC THỂ LOẠI (DỄ HIỂU �
     if existing_entities:
         ref_lines = []
         for cn, info in existing_entities.items():
-            vn = info.get("vietnamese_name", "")
-            etype = info.get("entity_type", "NAME")
-            role = info.get("role", "")
-            ref_lines.append(f"  • {cn} -> {vn} [{etype}] (Vai trò: {role})")
+            vn = info.get("vietnamese_name") or info.get("viet") or ""
+            etype = info.get("entity_type") or info.get("type") or "NAME"
+            role = info.get("role") or info.get("desc") or ""
+            gender = info.get("gender") or ""
+            meta = f"Vai trò: {role}" if role else ""
+            if gender and f"Giới tính" not in meta:
+                meta = f"Giới tính: {gender}" + (f"; {meta}" if meta else "")
+            ref_lines.append(f"  • {cn} -> {vn} [{etype}] ({meta or 'Chưa rõ'})")
 
         existing_ref = f"""DANH SÁCH THỰC THỂ ĐÃ XUẤT HIỆN Ở CÁC CHƯƠNG TRƯỚC (BẮT BUỘC DỊCH Y HỆT 100%):
 Hệ thống đã tự động rà soát CSDL và phát hiện các thực thể sau ĐÃ TỒN TẠI từ trước và ĐANG XUẤT HIỆN LẠI trong lô chương này:

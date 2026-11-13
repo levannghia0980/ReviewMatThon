@@ -385,11 +385,21 @@ async def execute_llm_call(
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
+    gen_config: Dict[str, Any] = {
+        "temperature": temperature,
+        "maxOutputTokens": 65536,
+    }
+    model_low = model_name.lower()
+    if any(k in model_low for k in ("2.5", "gemini-3", "3.", "thinking")):
+        tb_eff = thinking_budget
+        if tb_eff == 0 and "pro" in model_low:
+            tb_eff = 128
+        if tb_eff >= -1:
+            gen_config["thinkingConfig"] = {"thinkingBudget": tb_eff}
+
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": temperature
-        }
+        "generationConfig": gen_config,
     }
     if system_instruction:
         payload["systemInstruction"] = {

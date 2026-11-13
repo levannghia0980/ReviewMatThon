@@ -110,53 +110,85 @@ def _load_audio_from_bytes(data: bytes, format: str = "mp3") -> AudioSegment:
                 pass
 
 
-def split_text_strictly_by_punctuation(text: str, max_words: int = 25, max_chars: int = 180) -> List[str]:
+def split_text_strictly_by_punctuation(
+    text: str,
+    max_words: int = 25,
+    max_chars: int = 180,
+    allow_hard_word_cut: bool = False,
+) -> List[str]:
     """
     Tách câu nghiêm ngặt dựa trên dấu câu tự nhiên:
-    1. Ưu tiên ngắt tại các dấu kết câu: [.?!:\n]+ hoặc \.{3,}
-    2. Nếu câu dài (> max_words hoặc > max_chars):
-       - Tìm các dấu giữa câu: [;,—–]+
-    3. Cơ chế an toàn (Fallback cho văn bản bị thiếu dấu câu):
-       - Nếu một đoạn vẫn vượt quá max_words mà không có dấu giữa câu:
-         Tìm ranh giới viết hoa đầu câu r'(?<=[a-zà-ỹ0-9])\s+(?=[A-ZÀ-Ỹ])'
-       - Tuyệt đối không bao giờ cắt ngang một từ ngữ.
+    1. Bảo vệ chữ viết tắt (v.v., TP.HCM...) và số thập phân khỏi bị cắt sai ở dấu chấm.
+    2. Ưu tiên ngắt tại các dấu kết câu: [.!?\n]+ (hoặc dấu ba chấm khi không phải ngắt ngập ngừng 1-2 từ).
+    3. Nếu câu dài (> max_words hoặc > max_chars): tách tiếp tại dấu giữa câu [;,—–]+.
+    4. Khi không có dấu câu: chỉ tách tại ranh giới viết hoa đầu câu; mặc định KHÔNG chặt ngang cụm từ
+       (trừ khi allow_hard_word_cut=True cho API TTS bị giới hạn độ dài cứng).
     """
     if not text or not text.strip():
         return []
     text = text.strip()
 
+    # Bảo vệ dấu chấm trong viết tắt & số thập phân để không cắt "v.v." -> "v ." + "v ."
+    _DOT_SENTINEL = "\uE000"
+    _prot_patterns = (
+        re.compile(r"(?i)\bv\s*\.\s*v\s*\."),
+        re.compile(r"(?:\b[A-Za-zÀ-Ỹà-ỹ]\.){2,}"),
+        re.compile(r"(?<=\d)\.(?=\d)"),
+        re.compile(r"(?i)\b(?:tp|mr|mrs|ms|dr|gs|pgs|ts|ths|ks|bs)\.(?=\s?[A-Za-zÀ-Ỹ0-9])"),
+    )
+
+    def _protect_dots(src: str) -> str:
+        res_s = src
+        for pat in _prot_patterns:
+            res_s = pat.sub(lambda m: m.group(0).replace(".", _DOT_SENTINEL), res_s)
+        return res_s
+
+    def _restore_dots(src: str) -> str:
+        return src.replace(_DOT_SENTINEL, ".")
+
     def _break_long_piece(p_text: str) -> List[str]:
-        if len(p_text.split()) <= max_words and len(p_text) <= max_chars:
-            return [p_text.strip()] if p_text.strip() else []
-        cap_parts = re.split(r'(?<=[a-zà-ỹ0-9])\s+(?=[A-ZÀ-Ỹ])', p_text)
-        res = []
-        curr = ''
-        for cp in cap_parts:
-            cp = cp.strip()
-            if not cp:
-                continue
-            if not curr:
-                curr = cp
-            elif len((curr + ' ' + cp).split()) <= max_words and len(curr + ' ' + cp) <= max_chars:
-                curr = curr + ' ' + cp
+        cleaned_piece = p_text.strip()
+        if not cleaned_piece:
+            return []
+        if not allow_hard_word_cut:
+            # Không có dấu câu: tuyệt đối không cắt ngang cụm từ hay cắt bừa ở chữ hoa/chữ Việt
+            return [cleaned_piece]
+        if len(cleaned_piece.split()) <= max_words and len(cleaned_piece) <= max_chars:
+            return [cleaned_piece]
+
+        # Chỉ dùng cho TikTok API bị giới hạn độ dài cứng: chia theo ranh giới từ an toàn,
+        # tránh regex [A-ZÀ-Ỹ] (vì khoảng Unicode À-Ỹ lẫn chữ thường có dấu như đ, ă, ơ, ư...)
+        words = cleaned_piece.split()
+        res: List[str] = []
+        curr_words: List[str] = []
+        curr_chars = 0
+        for w in words:
+            added_len = len(w) + (1 if curr_words else 0)
+            should_cut_on_cap = (
+                curr_words
+                and len(curr_words) >= max(6, max_words // 2)
+                and w[0].isupper()
+                and not curr_words[-1][0].isupper()
+            )
+            if curr_words and (
+                len(curr_words) >= max_words
+                or curr_chars + added_len > max_chars
+                or should_cut_on_cap
+            ):
+                res.append(" ".join(curr_words))
+                curr_words = [w]
+                curr_chars = len(w)
             else:
-                if curr:
-                    res.append(curr)
-                if len(cp.split()) > max_words or len(cp) > max_chars:
-                    words = cp.split()
-                    for k in range(0, len(words), max_words):
-                        w_slice = ' '.join(words[k:k+max_words])
-                        if w_slice:
-                            res.append(w_slice)
-                    curr = ''
-                else:
-                    curr = cp
-        if curr:
-            res.append(curr)
+                curr_words.append(w)
+                curr_chars += added_len
+        if curr_words:
+            res.append(" ".join(curr_words))
         return res
 
+    protected_text = _protect_dots(text)
+
     # Bước 1: Tách theo dấu kết câu chính
-    raw_sentences = re.split(r'([.!?:\n]+|\.{3,})', text)
+    raw_sentences = re.split(r'([.!?\n]+|\.{3,}|…+)', protected_text)
     sentences = []
     i = 0
     while i < len(raw_sentences):
@@ -164,6 +196,12 @@ def split_text_strictly_by_punctuation(text: str, max_words: int = 25, max_chars
         punc = raw_sentences[i+1].strip() if i + 1 < len(raw_sentences) else ''
         full_s = (s + (' ' + punc if punc and not s.endswith(punc) else '')).strip()
         if full_s:
+            # Không tách câu ngập ngừng ngắn <= 2 từ kết bằng dấu ba chấm ("Trần... Trần ca") thành 1 phụ đề riêng
+            if (punc.startswith("..") or "…" in punc) and len(s.split()) <= 2 and i + 2 < len(raw_sentences):
+                rem_next = raw_sentences[i + 2].lstrip()
+                raw_sentences[i + 2] = f"{full_s} {rem_next}".strip()
+                i += 2
+                continue
             sentences.append(full_s)
         i += 2
 
@@ -173,8 +211,8 @@ def split_text_strictly_by_punctuation(text: str, max_words: int = 25, max_chars
             final_chunks.append(s)
             continue
 
-        # Bước 2: Tách theo dấu giữa câu (; , — –)
-        sub_parts = re.split(r'([;,—–]+)', s)
+        # Bước 2: Tách theo dấu giữa câu (; , — – :)
+        sub_parts = re.split(r'([;,:—–]+)', s)
         curr = ''
         j = 0
         while j < len(sub_parts):
@@ -204,7 +242,8 @@ def split_text_strictly_by_punctuation(text: str, max_words: int = 25, max_chars
         if curr.strip():
             final_chunks.append(curr.strip())
 
-    return [c for c in final_chunks if any(ch.isalnum() for ch in c)]
+    restored = [_restore_dots(c) for c in final_chunks]
+    return [c for c in restored if any(ch.isalnum() for ch in c)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -597,7 +636,13 @@ class AsyncTTSEngine:
         4. Tự động cộng dồn offset thời gian cho mảng utterances (cho phụ đề Karaoke chuẩn xác 100%).
         5. Trả về kèm danh sách mốc thời gian sóng âm của từng câu con (sub_timings) phục vụ phụ đề tuần tự.
         """
-        chunks = split_text_strictly_by_punctuation(text, max_words=22, max_chars=180)
+        is_legacy_tiktok = (engine == "tiktok")
+        chunks = split_text_strictly_by_punctuation(
+            text,
+            max_words=25 if is_legacy_tiktok else 45,
+            max_chars=180 if is_legacy_tiktok else 280,
+            allow_hard_word_cut=is_legacy_tiktok,
+        )
         if len(chunks) <= 1:
             raw_text = chunks[0] if chunks else text
             res = await cls.synthesize_single_subchunk(

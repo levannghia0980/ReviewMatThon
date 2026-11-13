@@ -49,6 +49,131 @@ class CapCutASRService:
         return -1.0
 
     @classmethod
+    def _build_word_segment(
+        cls,
+        utterance: Dict[str, Any],
+        word_group: List[Dict[str, Any]],
+        is_chinese: bool,
+        time_offset: float,
+        seg_id: int,
+    ) -> Optional[DialogueSegment]:
+        grp_text = cls._join_words(word_group, is_chinese)
+        if not grp_text:
+            return None
+        s_ms = word_group[0].get("start_time", 0)
+        e_ms = word_group[-1].get("end_time", s_ms + 200)
+        s_sec = round((s_ms / 1000.0) + time_offset, 3)
+        e_sec = round((e_ms / 1000.0) + time_offset, 3)
+        if e_sec <= s_sec:
+            e_sec = round(s_sec + 0.15, 3)
+        return DialogueSegment(
+            id=seg_id,
+            start=s_sec,
+            end=e_sec,
+            duration=round(e_sec - s_sec, 3),
+            text=grp_text,
+            clean_text=grp_text,
+            translated_text="",
+            confidence=cls._extract_confidence(utterance, word_group),
+        )
+
+    @classmethod
+    def _split_utterance_to_segments(
+        cls,
+        u: Dict[str, Any],
+        is_chinese: bool,
+        time_offset: float,
+        start_id: int,
+    ) -> List[DialogueSegment]:
+        """Tách 1 utterance của CapCut thành các DialogueSegment theo ngưỡng ngắt câu chống chặt lẻ."""
+        words = u.get("words", [])
+        utt_text = u.get("text", "").strip()
+        utt_start_ms = u.get("start_time", 0)
+        utt_end_ms = u.get("end_time", utt_start_ms + 300)
+        out: List[DialogueSegment] = []
+        seg_counter = start_id
+
+        if words and len(words) > 1:
+            current_word_group: List[Dict[str, Any]] = []
+            for w in words:
+                if not current_word_group:
+                    current_word_group.append(w)
+                    continue
+                prev_w = current_word_group[-1]
+                gap_ms = w.get("start_time", 0) - prev_w.get("end_time", 0)
+                should_split = (gap_ms >= 750 and len(current_word_group) >= 5) or (
+                    len(current_word_group) >= 24 and gap_ms >= 280
+                )
+                if should_split:
+                    seg = cls._build_word_segment(u, current_word_group, is_chinese, time_offset, seg_counter)
+                    if seg is not None:
+                        out.append(seg)
+                        seg_counter += 1
+                    current_word_group = [w]
+                else:
+                    current_word_group.append(w)
+
+            if current_word_group:
+                seg = cls._build_word_segment(u, current_word_group, is_chinese, time_offset, seg_counter)
+                if seg is not None:
+                    out.append(seg)
+            return out
+
+        start_sec = round((utt_start_ms / 1000.0) + time_offset, 3)
+        end_sec = round((utt_end_ms / 1000.0) + time_offset, 3)
+        if end_sec <= start_sec:
+            end_sec = round(start_sec + 0.15, 3)
+        if utt_text:
+            out.append(
+                DialogueSegment(
+                    id=seg_counter,
+                    start=start_sec,
+                    end=end_sec,
+                    duration=round(end_sec - start_sec, 3),
+                    text=utt_text,
+                    clean_text=utt_text,
+                    translated_text="",
+                    confidence=cls._extract_confidence(u),
+                )
+            )
+        return out
+
+    @staticmethod
+    def _merge_micro_fragments(segments: List[DialogueSegment], is_chinese: bool = True) -> List[DialogueSegment]:
+        """Fallback an toàn khi không có video hardsub: gom các mảnh vụn <= 3 chữ liền sát (gap <= 0.08s)."""
+        if not is_chinese or len(segments) < 2:
+            return segments
+
+        merged: List[DialogueSegment] = [segments[0].model_copy()]
+        for i in range(1, len(segments)):
+            cur = segments[i].model_copy()
+            prev = merged[-1]
+            prev_t = (prev.clean_text or prev.text).strip()
+            cur_t = (cur.clean_text or cur.text).strip()
+            gap = round(float(cur.start) - float(prev.end), 3)
+            prev_bare = prev_t.rstrip("，。！？,.!?")
+            cur_bare = cur_t.rstrip("，。！？,.!?")
+            prev_ends_punct = bool(prev_t) and prev_t[-1] in "。！？!?."
+            cur_is_micro = 0 < len(cur_bare) <= 3 and (not cur_t or cur_t[-1] not in "。！？!?.")
+            prev_is_micro = 0 < len(prev_bare) <= 3 and not prev_ends_punct
+
+            if 0.0 <= gap <= 0.08 and not prev_ends_punct and (cur_is_micro or prev_is_micro):
+                if len(prev_bare) + len(cur_bare) <= 20:
+                    combined = f"{prev_t}{cur_t}"
+                    prev.end = max(prev.end, cur.end)
+                    prev.duration = round(prev.end - prev.start, 3)
+                    prev.text = combined
+                    prev.clean_text = combined
+                    if prev.confidence >= 0 and cur.confidence >= 0:
+                        prev.confidence = round((prev.confidence + cur.confidence) / 2.0, 4)
+                    continue
+            merged.append(cur)
+
+        for idx, seg in enumerate(merged, 1):
+            seg.id = idx
+        return merged
+
+    @classmethod
     def _transcribe_single_chunk(
         cls,
         audio_path: str,
@@ -85,7 +210,7 @@ class CapCutASRService:
                     language=lang_code,
                     translation_language="vi-VN",
                     use_translation=use_translation,
-                    words_per_line=14
+                    words_per_line=28
                 )
 
                 tasks = (stt_res.get("data") or {}).get("tasks") or []
@@ -120,90 +245,14 @@ class CapCutASRService:
                 seg_counter = 1
 
                 for u in utts:
-                    words = u.get("words", [])
-                    utt_text = u.get("text", "").strip()
-                    utt_start_ms = u.get("start_time", 0)
-                    utt_end_ms = u.get("end_time", utt_start_ms + 300)
-
-                    if words and len(words) > 1:
-                        current_word_group = []
-                        for w in words:
-                            if not current_word_group:
-                                current_word_group.append(w)
-                                continue
-
-                            prev_w = current_word_group[-1]
-                            gap_ms = w.get("start_time", 0) - prev_w.get("end_time", 0)
-                            should_split = (gap_ms >= 350) or (len(current_word_group) >= 14 and gap_ms >= 220)
-
-                            if should_split:
-                                grp_text = cls._join_words(current_word_group, is_chinese)
-                                if grp_text:
-                                    s_ms = current_word_group[0].get("start_time", 0)
-                                    e_ms = current_word_group[-1].get("end_time", s_ms + 200)
-                                    s_sec = round((s_ms / 1000.0) + time_offset, 3)
-                                    e_sec = round((e_ms / 1000.0) + time_offset, 3)
-                                    if e_sec <= s_sec:
-                                        e_sec = round(s_sec + 0.15, 3)
-
-                                    raw_segments.append(
-                                        DialogueSegment(
-                                            id=seg_counter,
-                                            start=s_sec,
-                                            end=e_sec,
-                                            duration=round(e_sec - s_sec, 3),
-                                            text=grp_text,
-                                            clean_text=grp_text,
-                                            translated_text="",
-                                            confidence=cls._extract_confidence(u, current_word_group)
-                                        )
-                                    )
-                                    seg_counter += 1
-                                current_word_group = [w]
-                            else:
-                                current_word_group.append(w)
-
-                        if current_word_group:
-                            grp_text = cls._join_words(current_word_group, is_chinese)
-                            if grp_text:
-                                s_ms = current_word_group[0].get("start_time", 0)
-                                e_ms = current_word_group[-1].get("end_time", s_ms + 200)
-                                s_sec = round((s_ms / 1000.0) + time_offset, 3)
-                                e_sec = round((e_ms / 1000.0) + time_offset, 3)
-                                if e_sec <= s_sec:
-                                    e_sec = round(s_sec + 0.15, 3)
-
-                                raw_segments.append(
-                                    DialogueSegment(
-                                        id=seg_counter,
-                                        start=s_sec,
-                                        end=e_sec,
-                                        duration=round(e_sec - s_sec, 3),
-                                        text=grp_text,
-                                        clean_text=grp_text,
-                                        translated_text="",
-                                        confidence=cls._extract_confidence(u, current_word_group)
-                                    )
-                                )
-                                seg_counter += 1
-                    else:
-                        start_sec = round((utt_start_ms / 1000.0) + time_offset, 3)
-                        end_sec = round((utt_end_ms / 1000.0) + time_offset, 3)
-                        if end_sec <= start_sec:
-                            end_sec = round(start_sec + 0.15, 3)
-                        raw_segments.append(
-                            DialogueSegment(
-                                id=seg_counter,
-                                start=start_sec,
-                                end=end_sec,
-                                duration=round(end_sec - start_sec, 3),
-                                text=utt_text,
-                                clean_text=utt_text,
-                                translated_text="",
-                                confidence=cls._extract_confidence(u)
-                            )
-                        )
-                        seg_counter += 1
+                    new_segs = cls._split_utterance_to_segments(
+                        u=u,
+                        is_chinese=is_chinese,
+                        time_offset=time_offset,
+                        start_id=seg_counter,
+                    )
+                    raw_segments.extend(new_segs)
+                    seg_counter += len(new_segs)
 
                 return raw_segments, utts
 
@@ -337,7 +386,8 @@ class CapCutASRService:
         clean_text: bool = True,
         use_translation: bool = False,
         timeout: float = 120.0,
-        task_id: Optional[str] = None
+        task_id: Optional[str] = None,
+        video_path: Optional[str] = None,
     ) -> Tuple[List[DialogueSegment], str, str, str]:
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Không tìm thấy file audio: {audio_path}")
@@ -345,58 +395,150 @@ class CapCutASRService:
         total_duration = AudioExtractorService.get_audio_duration(audio_path)
         logger.info(f"[CapCut ASR] Tổng thời lượng audio: {total_duration:.2f}s ({total_duration/60:.1f} phút)")
 
-        chunks = AudioExtractorService.split_audio_chunks_with_overlap(
-            audio_path, chunk_length_sec=CHUNK_LENGTH_SEC, overlap_sec=OVERLAP_SEC
-        )
-        total_chunks = len(chunks)
-        max_workers = getattr(settings, "ASR_MAX_WORKERS", 16)
-        workers = min(total_chunks, max(1, max_workers))
-
-        chunk_results: List[Optional[List[DialogueSegment]]] = [None] * total_chunks
-        raw_payloads: List[Dict[str, Any]] = [None] * total_chunks
-
-        if total_chunks == 1:
-            segs, raw_utts = cls._transcribe_single_chunk(
-                audio_path=chunks[0]["path"],
-                language=language,
-                use_translation=use_translation,
-                timeout=timeout,
-                time_offset=chunks[0]["offset"],
-                chunk_idx=0,
-                total_chunks=1
-            )
-            chunk_results[0] = segs
-            raw_payloads[0] = {"chunk_idx": 0, "offset": chunks[0]["offset"], "utterances": raw_utts}
-        else:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                future_to_idx = {
-                    executor.submit(
-                        cls._transcribe_single_chunk,
-                        audio_path=chunk["path"],
-                        language=language,
-                        use_translation=use_translation,
-                        timeout=timeout,
-                        time_offset=chunk["offset"],
-                        chunk_idx=idx,
-                        total_chunks=total_chunks
-                    ): idx for idx, chunk in enumerate(chunks)
-                }
-
-                for future in concurrent.futures.as_completed(future_to_idx):
-                    c_idx = future_to_idx[future]
-                    res_segs, raw_utts = future.result()
-                    chunk_results[c_idx] = res_segs
-                    raw_payloads[c_idx] = {"chunk_idx": c_idx, "offset": chunks[c_idx]["offset"], "utterances": raw_utts}
-
-        # Ghép chunk tại tâm vùng overlap
-        all_raw_segments = cls._merge_overlapping_chunks(chunk_results, chunks, overlap_sec=OVERLAP_SEC)
-
         lang_code = "zh-CN" if language in ("zh", "zh-CN") else language
         is_chinese = "zh" in lang_code.lower()
-        if clean_text:
-            cleaned_segments = TextCleanerService.clean_segments(all_raw_segments, is_chinese=is_chinese)
-        else:
-            cleaned_segments = all_raw_segments
+        use_visual_refiner = bool(
+            video_path
+            and os.path.exists(video_path)
+            and is_chinese
+            and getattr(settings, "ENABLE_VISUAL_SUB_REFINER", True)
+        )
+
+        # Kiểm tra cache sub ảnh trước; nếu chưa có cache thì quét FFmpeg + PP-OCRv4 song song lúc chờ CapCut Cloud
+        cached_visual_subs: List[Dict[str, Any]] = []
+        visual_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        visual_future: Optional[concurrent.futures.Future] = None
+        if use_visual_refiner:
+            from app.services.step_02_stt.visual_sub_refiner import VisualSubRefiner
+
+            cached_visual_subs = VisualSubRefiner.try_load_cached_subs(video_path)
+            if cached_visual_subs:
+                logger.info(f"[VisualSubRefiner] Tìm thấy cache sub ảnh ({len(cached_visual_subs)} dòng) -> bỏ qua quét FFmpeg.")
+            else:
+                def _visual_progress(msg: str) -> None:
+                    if task_id:
+                        task_manager.add_log(task_id, f"   [VisualSubRefiner] {msg}", "cyan")
+
+                visual_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                visual_future = visual_executor.submit(
+                    VisualSubRefiner.extract_visual_blocks,
+                    video_path=video_path,
+                    fps=2.0,
+                    progress_cb=_visual_progress,
+                )
+
+        try:
+            chunks = AudioExtractorService.split_audio_chunks_with_overlap(
+                audio_path, chunk_length_sec=CHUNK_LENGTH_SEC, overlap_sec=OVERLAP_SEC
+            )
+            total_chunks = len(chunks)
+            max_workers = getattr(settings, "ASR_MAX_WORKERS", 16)
+            workers = min(total_chunks, max(1, max_workers))
+
+            chunk_results: List[Optional[List[DialogueSegment]]] = [None] * total_chunks
+            raw_payloads: List[Dict[str, Any]] = [None] * total_chunks
+
+            if total_chunks == 1:
+                segs, raw_utts = cls._transcribe_single_chunk(
+                    audio_path=chunks[0]["path"],
+                    language=language,
+                    use_translation=use_translation,
+                    timeout=timeout,
+                    time_offset=chunks[0]["offset"],
+                    chunk_idx=0,
+                    total_chunks=1
+                )
+                chunk_results[0] = segs
+                raw_payloads[0] = {"chunk_idx": 0, "offset": chunks[0]["offset"], "utterances": raw_utts}
+            else:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_to_idx = {
+                        executor.submit(
+                            cls._transcribe_single_chunk,
+                            audio_path=chunk["path"],
+                            language=language,
+                            use_translation=use_translation,
+                            timeout=timeout,
+                            time_offset=chunk["offset"],
+                            chunk_idx=idx,
+                            total_chunks=total_chunks
+                        ): idx for idx, chunk in enumerate(chunks)
+                    }
+
+                    for future in concurrent.futures.as_completed(future_to_idx):
+                        c_idx = future_to_idx[future]
+                        res_segs, raw_utts = future.result()
+                        chunk_results[c_idx] = res_segs
+                        raw_payloads[c_idx] = {"chunk_idx": c_idx, "offset": chunks[c_idx]["offset"], "utterances": raw_utts}
+
+            # Ghép chunk tại tâm vùng overlap
+            all_raw_segments = cls._merge_overlapping_chunks(chunk_results, chunks, overlap_sec=OVERLAP_SEC)
+
+            if clean_text:
+                cleaned_segments = TextCleanerService.clean_segments(all_raw_segments, is_chinese=is_chinese)
+            else:
+                cleaned_segments = all_raw_segments
+
+            # Đợi quét sub ảnh (nếu đang chạy song song) rồi tinh chỉnh trước khi áp dụng offset timeline
+            extracted_subs: List[Dict[str, Any]] = []
+            extract_stats: Dict[str, Any] = {}
+            if visual_future is not None:
+                try:
+                    extracted_subs, extract_stats = visual_future.result()
+                except Exception as e_vis:
+                    logger.warning(f"[VisualSubRefiner] Lỗi quét phụ đề ảnh, giữ nguyên CapCut ASR: {e_vis}")
+                    extracted_subs = []
+
+            if use_visual_refiner and (cached_visual_subs or extracted_subs):
+                try:
+                    from app.services.step_02_stt.visual_sub_refiner import VisualSubRefiner
+
+                    # Khi dùng cache trên đĩa, truyền subs=[] để nạp cả multi-witness cache cùng lúc
+                    subs_arg = [] if cached_visual_subs else extracted_subs
+                    cleaned_segments, ref_stats = VisualSubRefiner.refine_asr_segments(
+                        segments=cleaned_segments,
+                        subs=subs_arg,
+                        video_path=video_path,
+                        use_cache=True,
+                    )
+                    logger.info(
+                        f"[VisualSubRefiner] {ref_stats.get('total_in')} -> {ref_stats.get('total_out')} câu | "
+                        f"Exact={ref_stats.get('exact')} (MW={ref_stats.get('multi_witness_saved')}), "
+                        f"Superset={ref_stats.get('safe_superset')}, Fused={ref_stats.get('auto_fused')}, "
+                        f"Alias={ref_stats.get('alias_polished')}, Guard={ref_stats.get('bleed_guarded')} | "
+                        f"t_vis={extract_stats.get('t_extract_wall', 0.0)}s ({extract_stats.get('hwaccel', 'cache')}), "
+                        f"t_arb={ref_stats.get('t_arbiter', 0.0)}s"
+                    )
+                    if task_id:
+                        if ref_stats.get("circuit_breaker_triggered"):
+                            task_manager.add_log(
+                                task_id,
+                                "   ⚠ [VisualSubRefiner] Cầu chì an toàn kích hoạt do OCR lệch ngưỡng -> Giữ nguyên 100% CapCut ASR.",
+                                "amber",
+                            )
+                        else:
+                            task_manager.add_log(
+                                task_id,
+                                f"   ✔ [VisualSubRefiner] Gộp & sửa đồng âm: {ref_stats.get('total_in')} -> {ref_stats.get('total_out')} câu "
+                                f"(Exact={ref_stats.get('exact')}, Sửa từ={ref_stats.get('auto_fused', 0) + ref_stats.get('safe_superset', 0)}, "
+                                f"Alias={ref_stats.get('alias_polished', 0)}).",
+                                "cyan",
+                            )
+                except Exception as e_ref:
+                    logger.warning(f"[VisualSubRefiner] Lỗi khi tinh chỉnh câu ASR, dùng fallback text: {e_ref}")
+                    cleaned_segments = cls._merge_micro_fragments(cleaned_segments, is_chinese=is_chinese)
+            else:
+                if use_visual_refiner and extract_stats.get("has_hardsub") is False and task_id:
+                    task_manager.add_log(
+                        task_id,
+                        "   ℹ [VisualSubRefiner] Phim không có phụ đề cứng tiếng Trung -> Bỏ qua quét ảnh, giữ nguyên CapCut ASR.",
+                        "cyan",
+                    )
+                if is_chinese:
+                    cleaned_segments = cls._merge_micro_fragments(cleaned_segments, is_chinese=is_chinese)
+        finally:
+            if visual_executor is not None:
+                visual_executor.shutdown(wait=True)
 
         # Mặc định STT_TIME_OFFSET_MS = 0 (chỉ trừ khi người dùng cấu hình rõ ràng sau khi đã đo thực nghiệm)
         offset_ms = getattr(settings, "STT_TIME_OFFSET_MS", 0) or 0

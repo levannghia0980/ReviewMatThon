@@ -51,6 +51,7 @@ export default function SettingsTab() {
   const [groqModel, setGroqModel] = useState('whisper-large-v3');
   const [asrEngine, setAsrEngine] = useState('capcut');
   const [whisperSize, setWhisperSize] = useState('base');
+  const [enableVisualSubRefiner, setEnableVisualSubRefiner] = useState(true);
 
   const [openrouterKey, setOpenrouterKey] = useState('');
   
@@ -111,6 +112,7 @@ export default function SettingsTab() {
         setGroqModel(data.groq_model || 'whisper-large-v3');
         setAsrEngine(data.asr_engine || 'capcut');
         setWhisperSize(data.whisper_model_size || 'base');
+        setEnableVisualSubRefiner(data.enable_visual_sub_refiner !== undefined ? !!data.enable_visual_sub_refiner : true);
         setOpenrouterKey(data.openrouter_api_key || '');
         setTranslationMaxChars(data.translation_max_chars || 50000);
         setTranslationBatchSize(data.translation_batch_size || 500);
@@ -299,6 +301,7 @@ export default function SettingsTab() {
         groq_model: groqModel,
         asr_engine: asrEngine,
         whisper_model_size: whisperSize,
+        enable_visual_sub_refiner: enableVisualSubRefiner,
         openrouter_api_key: orK,
         translation_max_chars: parseInt(translationMaxChars, 10) || 50000,
         translation_batch_size: parseInt(translationBatchSize, 10) || 500,
@@ -1529,6 +1532,65 @@ export default function SettingsTab() {
                 </span>
               </div>
             )}
+
+            {/* Toggle: Tinh chỉnh & Gộp câu bằng Phụ đề Ảnh Offline (VisualSubRefiner - Zero LLM) */}
+            <div style={{
+              marginTop: '4px',
+              padding: '14px 16px',
+              borderRadius: '10px',
+              background: enableVisualSubRefiner ? 'rgba(16, 185, 129, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+              border: enableVisualSubRefiner ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid var(--border)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '16px',
+              flexWrap: 'wrap'
+            }}>
+              <div style={{ flex: '1 1 320px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <Eye size={16} color={enableVisualSubRefiner ? 'var(--emerald)' : 'var(--text-dim)'} />
+                  <strong style={{ fontSize: '13.5px', color: 'var(--text-main)' }}>
+                    Tinh Chỉnh &amp; Gộp Câu Bằng Phụ Đề Cứng Trên Phim (Visual OCR Offline)
+                  </strong>
+                  <span className={`tag-badge ${enableVisualSubRefiner ? 'emerald' : 'slate'}`} style={{ fontSize: '10px', fontWeight: 800 }}>
+                    {enableVisualSubRefiner ? 'ĐANG BẬT • ZERO-LLM' : 'ĐANG TẮT'}
+                  </span>
+                </div>
+                <span style={{ fontSize: '12px', color: 'var(--text-sub)', lineHeight: 1.5 }}>
+                  Chạy song song khi chờ CapCut STT, tự dò vị trí &amp; cỡ chữ sub riêng từng phim để gộp câu bị chặt lẻ và sửa tên riêng/đồng âm sai trước khi lưu bản thoại gốc đầu tiên. Tự bỏ qua an toàn nếu phim không có hardsub.
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setEnableVisualSubRefiner((prev) => !prev)}
+                aria-pressed={enableVisualSubRefiner}
+                style={{
+                  position: 'relative',
+                  width: '54px',
+                  height: '28px',
+                  borderRadius: '999px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: enableVisualSubRefiner ? 'var(--emerald)' : 'rgba(148, 163, 184, 0.35)',
+                  transition: 'background 0.2s ease',
+                  flexShrink: 0
+                }}
+                title={enableVisualSubRefiner ? 'Nhấn để tắt quét phụ đề ảnh' : 'Nhấn để bật quét phụ đề ảnh'}
+              >
+                <span style={{
+                  position: 'absolute',
+                  top: '3px',
+                  left: enableVisualSubRefiner ? '29px' : '3px',
+                  width: '22px',
+                  height: '22px',
+                  borderRadius: '50%',
+                  background: '#ffffff',
+                  boxShadow: '0 1px 4px rgba(0, 0, 0, 0.35)',
+                  transition: 'left 0.2s ease'
+                }} />
+              </button>
+            </div>
           </div>
 
           {/* Card: Bộ Tải Video & Cookie Bilibili */}

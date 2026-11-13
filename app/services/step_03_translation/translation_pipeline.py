@@ -27,6 +27,24 @@ def format_timestamp(seconds: float) -> str:
     hours, mins = divmod(mins, 60)
     return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
+
+def is_true_mega_summary(items_list: List[Dict[str, Any]], batch_orig_dicts: List[Dict[str, Any]]) -> bool:
+    """Bắt khối gộp quá lớn: gộp >= 10 mẩu ASR hoặc >= 6 mẩu nhưng bị tóm tắt cụt (< 28% độ dài chữ Hán)."""
+    orig_zh_map = {s.get("index", idx + 1): str(s.get("zh", "")) for idx, s in enumerate(batch_orig_dicts)}
+    for it in (items_list or []):
+        src_ids = it.get("src", []) or []
+        if len(src_ids) >= 10:
+            return True
+        if len(src_ids) >= 6:
+            vi_words = len(str(it.get("vi", "") or "").split())
+            total_zh_chars = sum(len(orig_zh_map.get(sid, "")) for sid in src_ids)
+            if total_zh_chars == 0:
+                zh_raw = str(it.get("zh", "") or "").replace("/", "").replace("／", "").strip()
+                total_zh_chars = max(len(zh_raw), len(src_ids) * 4)
+            if vi_words < total_zh_chars * 0.28:
+                return True
+    return False
+
 class TranslationPipelineService:
     @classmethod
     def check_project_batches_completion(
@@ -250,7 +268,8 @@ class TranslationPipelineService:
                 audio_path=clean_audio_path,
                 language=src_lang,
                 clean_text=True,
-                task_id=task_id
+                task_id=task_id,
+                video_path=resolved_video,
             )
 
             if not dialogues:
@@ -502,12 +521,20 @@ class TranslationPipelineService:
                         viet = (item.get("vietnamese_name") or item.get("viet") or "").strip()
                         etype = (item.get("entity_type") or item.get("type") or "NAME").strip()
                         role = (item.get("role") or item.get("desc") or "").strip()
+                        gender = (item.get("gender") or "").strip()
+                        desc_parts = []
+                        if gender and "giới tính" not in role.lower():
+                            desc_parts.append(f"Giới tính: {gender}")
+                        if role and role != "-":
+                            desc_parts.append(role)
                         if raw and viet:
                             accumulated_entities[raw] = {
                                 "raw": raw,
                                 "viet": viet,
                                 "type": etype,
-                                "desc": role,
+                                "role": role,
+                                "gender": gender,
+                                "desc": "; ".join(desc_parts) if desc_parts else role,
                                 "is_user_locked": True  # Khóa cứng không cho LLM ghi đè
                             }
                 if accumulated_entities:
@@ -604,17 +631,33 @@ class TranslationPipelineService:
                 genre_key=genre,
                 provider=provider
             )
-            # Chuẩn hóa format sang dict {raw, viet, type}
+            # Chuẩn hóa format sang dict {raw, viet, type, gender, role, desc}
             new_entities = []
             for ent in raw_entities:
                 ch = ent.get("chinese_name", "").strip()
                 vn = ent.get("vietnamese_name", "").strip()
                 et = ent.get("entity_type", "NAME").strip()
+                role = (ent.get("role") or "").strip()
+                gender = str(ent.get("gender") or "").strip()
+                if gender.lower() == "null":
+                    gender = ""
                 if ch and vn:
                     # Nếu thực thể đã có trong từ điển tích lũy: BẢO VỆ 100% BẢN DỊCH CŨ
                     if ch in accumulated_entities:
                         vn = accumulated_entities[ch]["viet"]
-                    new_entities.append({"raw": ch, "viet": vn, "type": et})
+                    desc_parts = []
+                    if gender:
+                        desc_parts.append(f"Giới tính: {gender}")
+                    if role and role != "-":
+                        desc_parts.append(role)
+                    new_entities.append({
+                        "raw": ch,
+                        "viet": vn,
+                        "type": et,
+                        "gender": gender,
+                        "role": role,
+                        "desc": "; ".join(desc_parts),
+                    })
 
             # LƯU THỰC THỂ RIÊNG CỦA LÔ NÀY VÀO FOLDER entities/
             batch_ent_file = proj_entities_dir / f"batch_{b_num:02d}_entities.json"
@@ -633,8 +676,14 @@ class TranslationPipelineService:
                     accumulated_entities[raw] = ent
                     new_found_count += 1
                 elif raw and raw in accumulated_entities:
-                    # Tuyệt đối không để LLM ghi đè bản dịch cũ
-                    pass
+                    # Tuyệt đối không ghi đè bản dịch cũ; chỉ bổ sung role/gender còn thiếu (vd khi resume từ bảng cũ)
+                    ex = accumulated_entities[raw]
+                    if (not ex.get("gender")) and ent.get("gender"):
+                        ex["gender"] = ent["gender"]
+                    if (not ex.get("role") or ex.get("role") == "-") and ent.get("role"):
+                        ex["role"] = ent["role"]
+                    if (not ex.get("desc") or ex.get("desc") == "-") and ent.get("desc"):
+                        ex["desc"] = ent["desc"]
 
             # Lưu entities tích lũy ra file all_entities.json (Đồng bộ format với Web UI)
             entities_export = [
@@ -642,7 +691,8 @@ class TranslationPipelineService:
                     "chinese_name": e.get("raw", ""),
                     "vietnamese_name": e.get("viet", ""),
                     "entity_type": e.get("type", "NAME"),
-                    "role": e.get("desc", "-"),
+                    "gender": e.get("gender", ""),
+                    "role": e.get("role") or e.get("desc") or "-",
                     "evaluation": "TÊN CỐ ĐỊNH"
                 }
                 for e in accumulated_entities.values()
@@ -736,19 +786,7 @@ class TranslationPipelineService:
                     logger.warning(f"[Lo #{b_num}] Canh bao timeline: {inv_check.get('errors')}")
 
             def _is_true_mega_summary(items_list):
-                """Chỉ coi là Mega-Summary thật sự nếu gộp >= 25 mẩu ASR VÀ văn bản tiếng Việt bị tóm tắt cụt (< 18% độ dài chữ Hán)."""
-                orig_zh_map = {s.get("index", idx + 1): str(s.get("zh", "")) for idx, s in enumerate(batch_orig_dicts)}
-                for it in (items_list or []):
-                    src_ids = it.get("src", []) or []
-                    if len(src_ids) >= 25:
-                        vi_words = len(str(it.get("vi", "") or "").split())
-                        total_zh_chars = sum(len(orig_zh_map.get(sid, "")) for sid in src_ids)
-                        if total_zh_chars == 0:
-                            zh_raw = str(it.get("zh", "") or "").replace("/", "").replace("／", "").strip()
-                            total_zh_chars = max(len(zh_raw), len(src_ids) * 4)
-                        if vi_words < total_zh_chars * 0.18:
-                            return True
-                return False
+                return is_true_mega_summary(items_list, batch_orig_dicts)
 
             def _should_retry_batch(items_list, inv_res):
                 """Quyết định có cần gọi LLM dịch lại cả lô 500 câu hay không (tránh bắt dịch lại oan khi lỗi cục bộ đã kẹp bánh mì)."""
@@ -1102,8 +1140,13 @@ class TranslationPipelineService:
                     )
                     db.add(llm_entry)
 
-                    # TÁCH CÂU CON THEO DẤU CÂU TỰ NHIÊN & LƯU TRƯỚC VÀO SUB_KARAOKE
-                    sub_pieces = split_text_strictly_by_punctuation(vi_str, max_words=22, max_chars=180)
+                    # TÁCH CÂU CON THEO DẤU CÂU TỰ NHIÊN & LƯU TRƯỚC VÀO SUB_KARAOKE (cấm chặt ngang khi không có dấu)
+                    sub_pieces = split_text_strictly_by_punctuation(
+                        vi_str,
+                        max_words=22,
+                        max_chars=180,
+                        allow_hard_word_cut=False,
+                    )
                     if not sub_pieces:
                         sub_pieces = [vi_str]
 
@@ -1121,6 +1164,7 @@ class TranslationPipelineService:
                             task_id=project.id,
                             sub_index=curr_sub_counter,
                             tts_index=curr_tts_counter,
+                            source_indices=str(curr_tts_counter),
                             batch_index=b_num,
                             start_time=sp_start,
                             end_time=sp_end,

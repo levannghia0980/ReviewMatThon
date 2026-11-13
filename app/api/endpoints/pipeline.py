@@ -87,7 +87,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 audio_path=clean_audio_path,
                 language=req.source_language,
                 clean_text=True,
-                task_id=task_id
+                task_id=task_id,
+                video_path=video_path,
             )
             task_manager.add_log(task_id, f"   ✔ Đã bóc tách {len(dialogues)} câu thoại gốc.", "emerald")
 
@@ -217,7 +218,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     audio_path=clean_audio_path,
                     language=req.source_language or project.source_language or "zh",
                     clean_text=True,
-                    task_id=task_id
+                    task_id=task_id,
+                    video_path=project.video_path,
                 )
                 task_manager.add_log(task_id, f"   ✔ Đã bóc tách {len(dialogues)} câu thoại gốc.", "emerald")
 
@@ -863,7 +865,8 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
             audio_path=audio_path,
             language=req.source_language,
             clean_text=req.clean_text,
-            task_id=task_id
+            task_id=task_id,
+            video_path=video_path,
         )
         task_manager.add_log(task_id, f"✔ Bóc tách xong {len(dialogues)} câu thoại timecode.", "emerald")
 
@@ -1161,7 +1164,8 @@ def _run_extract_stt_worker(task_id: str, req: ExtractSTTRequest):
             audio_path=clean_audio_path,
             language=req.source_language,
             clean_text=True,
-            task_id=task_id
+            task_id=task_id,
+            video_path=project.video_path,
         )
         task_manager.add_log(task_id, f"✔ Đã bóc tách {len(dialogues)} câu thoại.", "emerald")
         

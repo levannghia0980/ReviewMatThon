@@ -143,6 +143,8 @@ class Settings:
     ASR_MAX_WORKERS: int = int(os.getenv("ASR_MAX_WORKERS", "10"))
     # Độ trễ thời gian STT (mili-giây) trừ về trước để khớp giọng đọc với thoại gốc (Chuẩn 30ms)
     STT_TIME_OFFSET_MS: int = int(os.getenv("STT_TIME_OFFSET_MS", "30"))
+    # Tự động quét phụ đề cứng trên video để gộp câu & sửa đồng âm CapCut (Zero-LLM, thích ứng GPU QSV/CUDA)
+    ENABLE_VISUAL_SUB_REFINER: bool = os.getenv("ENABLE_VISUAL_SUB_REFINER", "True").lower() in ("true", "1", "yes")
 
     # TTS Voiceover Settings: "capcut" (CapCut Cloud SAMI - Khuyên dùng) | "tiktok" (TikTok Legacy)
     TTS_ENGINE: str = os.getenv("TTS_ENGINE", "capcut")
@@ -222,7 +224,7 @@ class Settings:
         """Đọc lại toàn bộ cấu hình từ file .env vào runtime settings và os.environ ngay lập tức"""
         if not cls.ENV_PATH.exists():
             return
-        bool_fields = {"TTS_MERGE_CHUNKS", "GEMINI_WEB_HEADLESS", "IS_SERVER_HOST"}
+        bool_fields = {"TTS_MERGE_CHUNKS", "GEMINI_WEB_HEADLESS", "IS_SERVER_HOST", "ENABLE_VISUAL_SUB_REFINER"}
         int_fields = {
             "ASR_MAX_WORKERS", "STT_TIME_OFFSET_MS", "TTS_MAX_WORKERS",
             "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS", "GEMINI_THINKING_BUDGET",
@@ -266,7 +268,7 @@ class Settings:
                         k, v = line.split("=", 1)
                         env_dict[k.strip()] = v.strip()
         
-        bool_fields = {"TTS_MERGE_CHUNKS"}
+        bool_fields = {"TTS_MERGE_CHUNKS", "GEMINI_WEB_HEADLESS", "IS_SERVER_HOST", "ENABLE_VISUAL_SUB_REFINER"}
         int_fields = {"ASR_MAX_WORKERS", "TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS", "GEMINI_THINKING_BUDGET"}
         float_fields = {"TRANSLATION_TEMPERATURE"}
 

@@ -18,13 +18,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pydub import AudioSegment
 
 from app.config import settings
-from app.models import ProjectTask, DialogueSegmentModel, TTSDialogueSegmentModel, SubtitleSegmentModel
+from app.models import ProjectTask, DialogueSegmentModel, TTSDialogueSegmentModel, SubtitleSegmentModel, LLMMergedSegmentModel
 from app.services.task_manager import task_manager
 from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd
 from app.services.step_04_tts.proxy_manager import proxy_manager
 from app.services.step_04_tts.adaptive_trimmer import AdaptiveSilenceTrimmer
 from app.services.step_04_tts.timeline_borrower import TimelineBorrower
-from app.services.step_04_tts.async_tts_engine import AsyncTTSEngine
+from app.services.step_04_tts.async_tts_engine import AsyncTTSEngine, split_text_strictly_by_punctuation
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +362,164 @@ class CapCutTTSService:
             return audio_seg
 
     @classmethod
+    def prepare_unmerged_chunk_offsets(
+        cls,
+        dialogues: List[Any],
+        raw_results_map: Dict[int, AudioSegment],
+        engine_sub_timings: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+    ) -> Dict[int, List[Dict[str, Any]]]:
+        """Tạo chunk_sub_offsets 1-1 cho từng câu TTS không gộp, giữ old_tts_index chuẩn xác."""
+        sub_timings_map = engine_sub_timings or {}
+        offsets: Dict[int, List[Dict[str, Any]]] = {}
+        for d in dialogues:
+            tts_idx = getattr(d, "tts_index", getattr(d, "index", None))
+            if tts_idx is None:
+                continue
+            d_id = getattr(d, "id", None)
+            eng_t = sub_timings_map.get(d_id) if d_id is not None else None
+            if eng_t:
+                offsets[tts_idx] = [
+                    {**dict(item), "old_tts_index": item.get("old_tts_index", tts_idx)}
+                    for item in eng_t
+                ]
+            else:
+                seg = raw_results_map.get(d_id) if d_id is not None else None
+                offsets[tts_idx] = [{
+                    "old_tts_index": tts_idx,
+                    "raw_start_ms": 0,
+                    "raw_end_ms": len(seg) if seg else 0,
+                }]
+        return offsets
+
+    @classmethod
+    def ensure_unmerged_tts_script(
+        cls,
+        project_id: int,
+        db: Session,
+        task_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Khi tắt gộp audio sau TTS (TTS_MERGE_CHUNKS=False):
+        - Nếu TTS_AUDIO trong DB từng bị gộp gộp nhỏ từ lần chạy trước (số câu < LLM_MERGED),
+          tự động khôi phục 100% kịch bản TTS_AUDIO & SUB_KARAOKE sạch từ bảng LLM_MERGED.
+        - Nếu SUB_KARAOKE bị thiếu hoặc thiếu source_indices (cũ), tái lập phụ đề sạch theo dấu câu.
+        """
+        llm_rows = db.query(LLMMergedSegmentModel).filter(
+            LLMMergedSegmentModel.task_id == project_id
+        ).order_by(LLMMergedSegmentModel.index.asc()).all()
+        tts_rows = db.query(TTSDialogueSegmentModel).filter(
+            TTSDialogueSegmentModel.task_id == project_id
+        ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
+        sub_rows = db.query(SubtitleSegmentModel).filter(
+            SubtitleSegmentModel.task_id == project_id
+        ).order_by(SubtitleSegmentModel.index.asc()).all()
+
+        need_restore_tts = bool(llm_rows) and (not tts_rows or len(tts_rows) != len(llm_rows))
+        if need_restore_tts:
+            for obj in list(db.identity_map.values()):
+                if isinstance(obj, TTSDialogueSegmentModel):
+                    db.expunge(obj)
+            db.query(TTSDialogueSegmentModel).filter(
+                TTSDialogueSegmentModel.task_id == project_id
+            ).delete(synchronize_session=False)
+            db.commit()
+
+            asr_rows = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id
+            ).all()
+            asr_by_idx = {a.index: a for a in asr_rows}
+
+            restored_tts = []
+            for idx_num, lm in enumerate(llm_rows, start=1):
+                src_str = (lm.source_indices or str(lm.index)).strip()
+                src_ids = [int(x) for x in src_str.split(",") if x.strip().isdigit()]
+                for s_id in src_ids:
+                    if s_id in asr_by_idx:
+                        asr_by_idx[s_id].tts_index = idx_num
+
+                entry = TTSDialogueSegmentModel(
+                    task_id=project_id,
+                    tts_index=idx_num,
+                    batch_index=getattr(lm, "batch_index", 1) or 1,
+                    src_start_index=getattr(lm, "src_start_index", None) or (src_ids[0] if src_ids else idx_num),
+                    src_end_index=getattr(lm, "src_end_index", None) or (src_ids[-1] if src_ids else idx_num),
+                    src_indices=src_str,
+                    orig_count=getattr(lm, "sub_count", None) or max(1, len(src_ids)),
+                    start_time=round(float(lm.start_time), 2),
+                    end_time=round(float(lm.end_time), 2),
+                    duration=round(max(0.1, float(lm.end_time) - float(lm.start_time)), 2),
+                    original_text=lm.original_text or "",
+                    translated_text=lm.translated_text or "",
+                    speaker=lm.speaker or "DẪN CHUYỆN",
+                    status="TRANSLATED",
+                )
+                db.add(entry)
+                restored_tts.append(entry)
+            db.commit()
+            tts_rows = restored_tts
+            msg = f"🔄 [TTS Restore] Đã khôi phục {len(tts_rows)} câu gốc từ LLM_MERGED (thay cho bản gộp cũ) vì TTS_MERGE_CHUNKS=False."
+            if task_id:
+                task_manager.add_log(task_id, msg, "cyan")
+            logger.info(msg)
+
+        need_rebuild_subs = need_restore_tts or (
+            bool(tts_rows) and (not sub_rows or any(not getattr(sr, "source_indices", None) for sr in sub_rows))
+        )
+        if need_rebuild_subs and tts_rows:
+            for obj in list(db.identity_map.values()):
+                if isinstance(obj, SubtitleSegmentModel):
+                    db.expunge(obj)
+            db.query(SubtitleSegmentModel).filter(
+                SubtitleSegmentModel.task_id == project_id
+            ).delete(synchronize_session=False)
+            db.commit()
+
+            sub_counter = 0
+            for t in tts_rows:
+                t_idx = getattr(t, "tts_index", getattr(t, "index", 1))
+                vi_str = (t.translated_text or "").strip()
+                sub_pieces = split_text_strictly_by_punctuation(
+                    vi_str,
+                    max_words=22,
+                    max_chars=180,
+                    allow_hard_word_cut=False,
+                )
+                if not sub_pieces and vi_str:
+                    sub_pieces = [vi_str]
+                if not sub_pieces:
+                    continue
+
+                s_time = float(t.start_time or 0.0)
+                e_time = float(t.end_time or (s_time + 1.0))
+                tts_dur = max(0.1, e_time - s_time)
+                tot_words = sum(max(1, len(sp.split())) for sp in sub_pieces)
+                curr_sub_s = s_time
+                for sp_idx, sp in enumerate(sub_pieces):
+                    sub_counter += 1
+                    w_cnt = max(1, len(sp.split()))
+                    dur_sp = round(tts_dur * (w_cnt / tot_words), 2)
+                    sp_start = round(curr_sub_s, 2)
+                    sp_end = round(e_time if sp_idx == len(sub_pieces) - 1 else curr_sub_s + dur_sp, 2)
+                    curr_sub_s = sp_end
+                    db.add(SubtitleSegmentModel(
+                        task_id=project_id,
+                        sub_index=sub_counter,
+                        tts_index=t_idx,
+                        source_indices=str(t_idx),
+                        batch_index=getattr(t, "batch_index", 1) or 1,
+                        start_time=sp_start,
+                        end_time=sp_end,
+                        duration=round(max(0.1, sp_end - sp_start), 2),
+                        text_vi=sp,
+                        text_zh=t.original_text or "",
+                        speaker=t.speaker or "DẪN CHUYỆN",
+                        status="TRANSLATED",
+                    ))
+            db.commit()
+
+        return need_restore_tts
+
+    @classmethod
     def merge_continuous_audio_dialogues(
         cls,
         dialogues: List[Any],
@@ -369,26 +527,29 @@ class CapCutTTSService:
         db: Session,
         project_id: int,
         task_id: str,
-        gap_threshold: float = 0.85
-    ) -> Tuple[List[Any], Dict[int, AudioSegment]]:
+        gap_threshold: float = 0.85,
+        enable_merge: Optional[bool] = None,
+    ) -> Tuple[List[Any], Dict[int, AudioSegment], Dict[int, List[Dict[str, Any]]]]:
         """
         Gộp các file âm thanh của các câu liên tiếp CÙNG MỘT NGƯỜI NÓI (Audio Continuous Chunk Merger):
-        - 'Lách luật': CapCut TTS vẫn sinh âm thanh cho từng câu ngắn độc lập (tránh timeout/nuốt chữ).
-        - Ngay khi vừa tạo xong: Quét và gộp các file AudioSegment của các câu liên tiếp cùng vai đọc (gap < 0.85s).
-        - Tính lại thời gian gộp tổng theo số câu gộp và cập nhật lại start, end, duration y hệt như code gộp chữ trước đây.
-        - Cập nhật DialogueSegmentModel.tts_index trỏ về chunk gộp chung để phụ đề Karaoke đồng bộ chuẩn xác.
+        - Tôn trọng cấu hình settings.TTS_MERGE_CHUNKS: khi False, giữ nguyên từng câu khớp 100% khung hình.
+        - Khi bật True: quét gộp các câu liên tiếp cùng vai đọc (gap < gap_threshold) và giữ map offset.
         """
+        should_merge = getattr(settings, "TTS_MERGE_CHUNKS", False) if enable_merge is None else bool(enable_merge)
+        engine_sub_timings = AsyncTTSEngine.get_last_sub_timings() or {}
+
+        if not should_merge:
+            offsets = cls.prepare_unmerged_chunk_offsets(dialogues, raw_results_map, engine_sub_timings)
+            if task_id and dialogues:
+                task_manager.add_log(
+                    task_id,
+                    f"⏹️ [TTS Audio Merger] Đã tắt gộp sau TTS (TTS_MERGE_CHUNKS=False) — giữ nguyên {len(dialogues)} câu khớp hình.",
+                    "cyan",
+                )
+            return dialogues, raw_results_map, offsets
+
         if not dialogues or not raw_results_map or len(dialogues) <= 1:
-            dummy_offsets = {}
-            if dialogues and raw_results_map:
-                for d in dialogues:
-                    seg = raw_results_map.get(d.id)
-                    dummy_offsets[d.tts_index] = [{
-                        "old_tts_index": d.tts_index,
-                        "raw_start_ms": 0,
-                        "raw_end_ms": len(seg) if seg else 0
-                    }]
-            return dialogues, raw_results_map, dummy_offsets
+            return dialogues, raw_results_map, cls.prepare_unmerged_chunk_offsets(dialogues, raw_results_map, engine_sub_timings)
 
         sorted_dialogues = sorted(dialogues, key=lambda x: (float(x.start_time or 0.0), getattr(x, 'index', 0)))
         merged_dialogues = []
@@ -632,7 +793,11 @@ class CapCutTTSService:
         if not project:
             raise ValueError(f"Không tìm thấy Project ID #{project_id}")
 
-        # BẮT BUỘC: Đọc từ bảng câu gộp tts_dialogue_segments (Liền mạch chuẩn kịch bản cho lồng tiếng)
+        # Đảm bảo nếu TTS_MERGE_CHUNKS=False mà TTS_AUDIO trong DB từng bị gộp cũ thì khôi phục từ LLM_MERGED
+        if not getattr(settings, "TTS_MERGE_CHUNKS", False):
+            cls.ensure_unmerged_tts_script(project_id=project_id, db=db, task_id=task_id)
+
+        # BẮT BUỘC: Đọc từ bảng câu TTS (tts_dialogue_segments)
         tts_dialogues_db = db.query(TTSDialogueSegmentModel).filter(
             TTSDialogueSegmentModel.task_id == project_id
         ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
@@ -814,14 +979,17 @@ class CapCutTTSService:
         )
         total_count = len(dialogues)
 
-        # Hợp nhất các mốc sóng âm từ các sub-chunks tạo bởi AsyncTTSEngine cho từng câu to
+        # Hợp nhất các mốc sóng âm từ các sub-chunks tạo bởi AsyncTTSEngine cho từng câu
         engine_sub_timings = AsyncTTSEngine.get_last_sub_timings()
         if engine_sub_timings:
             for d in dialogues:
                 d_id = getattr(d, 'id', None)
                 tts_idx = getattr(d, 'tts_index', getattr(d, 'index', None))
                 if d_id in engine_sub_timings and (tts_idx not in chunk_sub_offsets or len(chunk_sub_offsets.get(tts_idx, [])) <= 1):
-                    chunk_sub_offsets[tts_idx] = engine_sub_timings[d_id]
+                    chunk_sub_offsets[tts_idx] = [
+                        {**dict(item), "old_tts_index": item.get("old_tts_index", tts_idx)}
+                        for item in engine_sub_timings[d_id]
+                    ]
 
         # =========================================================================
         # 0.5. CỨU HỘ CÂU PHÌNH QUÁ TẢI (> 1.30x) (TTS Swollen Rescuer)
@@ -894,7 +1062,8 @@ class CapCutTTSService:
             rescued_cnt = TTSSwollenRescuer.rescue_swollen_dialogues_sync(
                 swollen_items=swollen_items,
                 raw_results_map=raw_results_map,
-                db=db
+                db=db,
+                chunk_sub_offsets=chunk_sub_offsets,
             )
             if rescued_cnt > 0:
                 task_manager.add_log(

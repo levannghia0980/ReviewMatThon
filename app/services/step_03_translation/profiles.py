@@ -108,7 +108,7 @@ def _hien_dai_addressing_block(danh_xung_bo_sung: str = "") -> str:
      + 3 TẦNG XƯNG HÔ LINH HOẠT THEO BỐI CẢNH:
        1. Tầng Xã giao / Bình thường / Đồng đội: Tôi - Cậu / Anh / Chị / Bạn / Bác / Chú (hoặc dùng Chức danh, Tên riêng).
        2. Tầng Thân mật / Gia đình: Anh - Em, Chị - Em, Bố/Mẹ - Con, Ông/Bà - Cháu.
-       3. Tầng Đối kháng / Chiến đấu / Xung đột / Đe dọa: Dùng 'Ta - Ngươi' (khẩu khí quyết liệt, áp đảo đối phương). TUYỆT ĐỐI CẤM dùng 'Mày - Tao' vì thô tục.
+       3. Tầng Đối kháng / Xung đột / Đe dọa / Khinh miệt: Dùng xưng hô hiện đại sắc lạnh, quyết liệt như 'Tôi - Anh / Cô / Ông / Bà / Kẻ kia / Hắn' (hoặc gọi thẳng tên/chức danh). TUYỆT ĐỐI CẤM dùng 'Ta - Ngươi' kiếm hiệp/cổ trang trong bối cảnh hiện đại và TUYỆT ĐỐI CẤM dùng 'Mày - Tao' thô tục.
    - LỜI DẪN NGÔI 3 VÀ GỌI NHÂN VẬT: Dùng 'hắn' (nam), 'cô' hoặc 'nàng' (nữ), tên riêng, chàng trai, cô gái, đối phương... Tuyệt đối cấm dùng từ 'y' (cấm cả lời kể lẫn lời thoại).{extra}"""
 
 

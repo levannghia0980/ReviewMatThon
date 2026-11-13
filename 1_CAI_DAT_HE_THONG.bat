@@ -205,6 +205,9 @@ echo [5/7] Dang cai dat toan bo goi phu thuoc tu requirements.txt...
 pip install -r requirements.txt
 python -c "import hashlib, pathlib; p = pathlib.Path('requirements.txt'); pathlib.Path('.pip_hash').write_text(hashlib.md5(p.read_bytes()).hexdigest(), encoding='utf-8') if p.exists() else None" >nul 2>&1
 
+echo   [*] Dang tai san bo model OCR offline (RapidOCR v4/v5) cho tinh chinh phu de anh...
+python -c "from rapidocr import RapidOCR, OCRVersion, ModelType; RapidOCR(params={'Global.use_cls': False, 'Rec.ocr_version': OCRVersion.PPOCRV4, 'Rec.model_type': ModelType.MOBILE}); RapidOCR(params={'Global.use_det': False, 'Global.use_cls': False, 'Rec.ocr_version': OCRVersion.PPOCRV4, 'Rec.model_type': ModelType.MOBILE}); RapidOCR(params={'Global.use_det': False, 'Global.use_cls': False, 'Rec.ocr_version': OCRVersion.PPOCRV5, 'Rec.model_type': ModelType.MOBILE}); print('  [OK] Da tai san model RapidOCR offline.')" || echo   [!] Khong the tai san model OCR luc cai dat (he thong se tu tai o lan chay dau).
+
 :: Trích xuất tự động FFmpeg từ imageio-ffmpeg nếu tools vẫn chưa có
 if not exist "tools\ffmpeg.exe" (
     echo   [*] Dang tu dong trích xuất FFmpeg tu goi imageio-ffmpeg vao tools/...

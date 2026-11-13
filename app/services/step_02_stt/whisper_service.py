@@ -60,7 +60,8 @@ class WhisperService:
         language: str = "zh",
         model_size: str = None,
         clean_text: bool = True,
-        task_id: Optional[str] = None
+        task_id: Optional[str] = None,
+        video_path: Optional[str] = None,
     ) -> Tuple[List[DialogueSegment], str, str, str]:
         """
         Tự động điều phối giữa CapCut Cloud STT (Mặc định siêu tốc, chuẩn mili-giây, 0% CPU) và Groq Cloud.
@@ -80,7 +81,8 @@ class WhisperService:
                     audio_path=audio_path,
                     language=cap_lang,
                     clean_text=clean_text,
-                    task_id=task_id
+                    task_id=task_id,
+                    video_path=video_path,
                 )
             except Exception as cap_err:
                 import logging
@@ -105,5 +107,6 @@ class WhisperService:
             audio_path=audio_path,
             language=cap_lang,
             clean_text=clean_text,
-            task_id=task_id
+            task_id=task_id,
+            video_path=video_path,
         )

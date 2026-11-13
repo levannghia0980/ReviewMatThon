@@ -53,8 +53,24 @@ async def extract_batch_entities_pass1_llm(
         ch = ent.get("chinese_name", "").strip()
         vn = ent.get("vietnamese_name", "").strip()
         et = ent.get("entity_type", "NAME").strip()
+        role = (ent.get("role") or "").strip()
+        gender = str(ent.get("gender") or "").strip()
+        if gender.lower() == "null":
+            gender = ""
         if ch and vn:
-            result.append({"raw": ch, "viet": vn, "type": et})
+            desc_parts = []
+            if gender:
+                desc_parts.append(f"Giới tính: {gender}")
+            if role and role != "-":
+                desc_parts.append(role)
+            result.append({
+                "raw": ch,
+                "viet": vn,
+                "type": et,
+                "gender": gender,
+                "role": role,
+                "desc": "; ".join(desc_parts),
+            })
     return result
 
 

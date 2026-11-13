@@ -65,19 +65,76 @@ class WaveformSubSyncer:
                     # Trường hợp đa câu con: Tính mốc cất tiếng của từng câu con
                     calc_starts: List[float] = []
 
-                    if sub_timings and len(sub_timings) >= n_subs:
-                        # Khớp 100% theo mốc sóng âm thanh thực tế của từng sub-chunk
+                    # 1. Nhóm sub_timings theo old_tts_index (nếu có) để khóa chặt biên WAV của từng câu gốc,
+                    # tránh hiện tượng một câu chia nhiều sub làm lệch toàn bộ các câu sau trong chunk.
+                    timings_by_old_idx = {}
+                    for item in (sub_timings or []):
+                        old_idx = item.get("old_tts_index")
+                        if old_idx is not None:
+                            timings_by_old_idx.setdefault(str(old_idx), []).append(item)
+
+                    grouped_subs = []
+                    all_subs_have_src = bool(timings_by_old_idx)
+                    for m in sub_models:
+                        src_key = (getattr(m, "source_indices", None) or "").strip()
+                        if not src_key or src_key not in timings_by_old_idx:
+                            all_subs_have_src = False
+                            break
+                        if grouped_subs and grouped_subs[-1][0] == src_key:
+                            grouped_subs[-1][1].append(m)
+                        else:
+                            grouped_subs.append((src_key, [m]))
+
+                    def _append_start(val: float) -> None:
+                        v = round(val, 2)
+                        if calc_starts and v < calc_starts[-1]:
+                            v = calc_starts[-1]
+                        calc_starts.append(v)
+
+                    if all_subs_have_src and grouped_subs:
+                        def _ms_to_timeline_sec(raw_ms: float) -> float:
+                            t_ms = max(0.0, float(raw_ms) - cut_h)
+                            return min(total_seg_end, start_sec + (t_ms / 1000.0) / speed)
+
+                        for g_i, (src_key, grp_subs) in enumerate(grouped_subs):
+                            grp_timings = timings_by_old_idx[src_key]
+                            if len(grp_timings) == len(grp_subs):
+                                for t_item in grp_timings:
+                                    _append_start(_ms_to_timeline_sec(t_item.get("raw_start_ms", 0)))
+                            else:
+                                grp_start = _ms_to_timeline_sec(grp_timings[0].get("raw_start_ms", 0))
+                                grp_raw_end = max(
+                                    (float(t.get("raw_end_ms", 0) or 0) for t in grp_timings),
+                                    default=0.0,
+                                )
+                                grp_end = _ms_to_timeline_sec(grp_raw_end) if grp_raw_end > 0 else grp_start
+                                if grp_end <= grp_start:
+                                    if g_i + 1 < len(grouped_subs):
+                                        next_key = grouped_subs[g_i + 1][0]
+                                        next_raw_s = timings_by_old_idx[next_key][0].get("raw_start_ms", 0)
+                                        grp_end = _ms_to_timeline_sec(next_raw_s)
+                                    else:
+                                        grp_end = total_seg_end
+                                grp_dur = max(0.0, grp_end - grp_start)
+                                tot_w = sum(max(1, len((m.text_vi or '').split())) for m in grp_subs)
+                                curr_t = grp_start
+                                for m in grp_subs:
+                                    _append_start(curr_t)
+                                    w_cnt = max(1, len((m.text_vi or '').split()))
+                                    curr_t += grp_dur * (w_cnt / tot_w)
+                    elif sub_timings and len(sub_timings) >= n_subs:
+                        # Fallback tương thích ngược khi chưa có source_indices/old_tts_index
                         for s_idx in range(n_subs):
                             raw_s_ms = sub_timings[s_idx].get("raw_start_ms", 0)
                             t_s_ms = max(0.0, raw_s_ms - cut_h)
                             offset_s_sec = (t_s_ms / 1000.0) / speed
-                            calc_starts.append(round(start_sec + offset_s_sec, 2))
+                            _append_start(start_sec + offset_s_sec)
                     else:
                         # Fallback: Trải đều theo tỷ lệ số từ
                         tot_words = sum(max(1, len((m.text_vi or '').split())) for m in sub_models)
                         curr_t = start_sec
                         for s_idx, m in enumerate(sub_models):
-                            calc_starts.append(round(curr_t, 2))
+                            _append_start(curr_t)
                             w_cnt = max(1, len((m.text_vi or '').split()))
                             curr_t += seg_dur_sec * (w_cnt / tot_words)
 

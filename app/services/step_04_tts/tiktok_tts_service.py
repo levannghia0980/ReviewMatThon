@@ -359,7 +359,11 @@ class TikTokTTSService:
         if not project:
             raise ValueError(f"Không tìm thấy Project ID #{project_id}")
 
-        # BẮT BUỘC: Đọc từ bảng câu gộp tts_dialogue_segments (Liền mạch chuẩn kịch bản cho lồng tiếng)
+        if not getattr(settings, "TTS_MERGE_CHUNKS", False):
+            from app.services.step_04_tts.capcut_tts_service import CapCutTTSService
+            CapCutTTSService.ensure_unmerged_tts_script(project_id=project_id, db=db, task_id=task_id)
+
+        # BẮT BUỘC: Đọc từ bảng câu TTS (tts_dialogue_segments)
         tts_dialogues_db = db.query(TTSDialogueSegmentModel).filter(
             TTSDialogueSegmentModel.task_id == project_id
         ).order_by(TTSDialogueSegmentModel.tts_index.asc()).all()
@@ -542,7 +546,10 @@ class TikTokTTSService:
         if engine_sub_timings:
             for d in dialogues:
                 if d.id in engine_sub_timings and (d.tts_index not in chunk_sub_offsets or len(chunk_sub_offsets[d.tts_index]) <= 1):
-                    chunk_sub_offsets[d.tts_index] = engine_sub_timings[d.id]
+                    chunk_sub_offsets[d.tts_index] = [
+                        {**dict(item), "old_tts_index": item.get("old_tts_index", d.tts_index)}
+                        for item in engine_sub_timings[d.id]
+                    ]
 
         task_manager.add_log(task_id, f"🎯 Ghép nối {total_count} chunk thoại vào Master Audio Track (Engine: NumPy Siêu Tốc)...", "cyan")
 

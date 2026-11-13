@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import math
@@ -5,6 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from app.schemas.transcript import DialogueSegment
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 def format_ass_time(seconds: float) -> str:
     """Chuyển đổi giây sang định dạng ASS H:MM:SS.CC."""
@@ -238,9 +241,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for s in segments:
             # 1. Lấy duy nhất translated_text đã dịch tiếng Việt, KHÔNG dùng fallback tiếng Trung gốc
             text = (getattr(s, 'translated_text', '') or "").strip()
-            # Nếu text còn chứa ký tự tiếng Trung Hán tự chưa dịch, bỏ qua để không rò rỉ lên sub
-            if not text or re.search(r'[\u4e00-\u9fff]', text):
+            if not text:
                 continue
+            # Nếu text còn sót ký tự Hán tự chưa dịch (VD: "dược圃"), lọc bỏ Hán tự + log warning thay vì vứt cả câu
+            if re.search(r'[\u4e00-\u9fff]', text):
+                cleaned = re.sub(r'[\u4e00-\u9fff]+', '', text)
+                cleaned = re.sub(r'\s+([,.!?;:])', r'\1', cleaned)
+                cleaned = re.sub(r'\s{2,}', ' ', cleaned).strip()
+                logger.warning(
+                    "[ASS_SUB] Stripped stray CJK chars from segment %s: %r -> %r",
+                    getattr(s, 'id', '?'), text, cleaned
+                )
+                text = cleaned
+                if not text or not re.search(r'[A-Za-z0-9\u00C0-\u1EF9]', text):
+                    continue
 
             # Xóa sạch 100% số thứ tự đầu câu (1. , 02. , [1], Câu 1:...)
             text = re.sub(r'^(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\{\s*\d+\s*\}|【\s*\d+\s*】)\s*[\.\:\-\–\—\s]*', '', text)

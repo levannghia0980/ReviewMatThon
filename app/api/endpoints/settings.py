@@ -27,6 +27,7 @@ class SettingsUpdateRequest(BaseModel):
     capcut_cookie: Optional[str] = None
     tiktok_session_id: Optional[str] = None
     bilibili_cookie_file: Optional[str] = None
+    enable_visual_sub_refiner: Optional[bool] = None
 
 class TestGroqRequest(BaseModel):
     api_key: Optional[str] = None
@@ -75,6 +76,7 @@ def get_settings():
         "bilibili_cookie_file": getattr(settings, "BILIBILI_COOKIE_FILE", ""),
         "resolved_bilibili_cookie": settings.get_bilibili_cookie_path(),
         "has_bilibili_cookie": bool(settings.get_bilibili_cookie_path()),
+        "enable_visual_sub_refiner": getattr(settings, "ENABLE_VISUAL_SUB_REFINER", True),
     }
 
 @router.post("", summary="Lưu cấu hình hệ thống vào .env")
@@ -118,6 +120,8 @@ async def update_settings(req: SettingsUpdateRequest):
         updates["ASR_MAX_WORKERS"] = str(max(1, min(16, req.asr_threads)))
     if req.tts_threads is not None:
         updates["TTS_MAX_WORKERS"] = str(max(1, min(128, req.tts_threads)))
+    if req.enable_visual_sub_refiner is not None:
+        updates["ENABLE_VISUAL_SUB_REFINER"] = "True" if req.enable_visual_sub_refiner else "False"
 
     settings.save_to_env(updates)
 
@@ -161,6 +165,7 @@ async def update_settings(req: SettingsUpdateRequest):
             "translation_temperature": getattr(settings, "TRANSLATION_TEMPERATURE", 0.85),
             "tts_threads": settings.TTS_MAX_WORKERS,
             "asr_threads": getattr(settings, "ASR_MAX_WORKERS", 8),
+            "enable_visual_sub_refiner": getattr(settings, "ENABLE_VISUAL_SUB_REFINER", True),
         }
     }
 
