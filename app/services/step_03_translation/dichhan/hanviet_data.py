@@ -157,6 +157,12 @@ _GLOBAL_CHAR_CACHE = {}
 _MISSING_CHARS_SET = set()
 
 
+def clear_hanviet_caches() -> None:
+    """Giải phóng bộ nhớ đệm tra cứu Hán-Việt trong RAM."""
+    _GLOBAL_CHAR_CACHE.clear()
+    _MISSING_CHARS_SET.clear()
+
+
 class HanVietContext:
     """Quản lý kết nối SQLite và Cache nội bộ cho từng phiên làm việc (session) nhằm tránh rò rỉ RAM."""
     def __init__(self):

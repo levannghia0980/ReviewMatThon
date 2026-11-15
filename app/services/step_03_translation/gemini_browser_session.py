@@ -3,7 +3,7 @@ import json
 import logging
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Set, Tuple
 from app.config import BASE_DIR
 
 logger = logging.getLogger(__name__)
@@ -18,6 +18,49 @@ class GeminiBrowserSessionManager:
     1. open_login_window(): Mở cửa sổ trình duyệt cho người dùng đăng nhập lần đầu.
     2. get_fresh_session(): Mở ngầm (headless) 2-3s để lấy Cookie & SNlM0e token mới nhất, sau đó ĐÓNG NGAY để giải phóng RAM.
     """
+
+    _tracked_pids: set = set()
+
+    @classmethod
+    def register_browser_pid(cls, pid: Optional[int]) -> None:
+        if pid and isinstance(pid, int) and pid > 0:
+            cls._tracked_pids.add(pid)
+
+    @classmethod
+    def _collect_gemini_pids(cls) -> Set[int]:
+        """Thu thập an toàn các PID Chrome/Playwright thuộc gemini_profile trong 1 lần quét."""
+        from app.utils.resource_cleaner import find_processes_by_cmdline
+
+        my_pid = os.getpid()
+        procs = find_processes_by_cmdline(
+            name_substrings=("chrome", "node"),
+            cmdline_keywords=("gemini_profile", "playwright", "run-driver"),
+        )
+        by_pid = {p["pid"]: p for p in procs}
+        matched: Set[int] = set()
+        for info in procs:
+            pid = info["pid"]
+            ppid = info.get("ppid")
+            pname = info.get("name", "")
+            cmdline_low = info.get("cmdline", "").lower()
+            if "gemini_profile" in cmdline_low:
+                matched.add(pid)
+                if ppid and ppid != my_pid and ppid in by_pid:
+                    parent_name = by_pid[ppid].get("name", "")
+                    if any(k in parent_name for k in ("chrome", "node", "playwright")):
+                        matched.add(ppid)
+            elif ppid == my_pid and ("node" in pname or "chrome" in pname):
+                if "playwright" in cmdline_low or "run-driver" in cmdline_low:
+                    matched.add(pid)
+        return matched
+
+    @classmethod
+    def track_active_gemini_processes(cls) -> None:
+        """Ghi nhận PID các tiến trình chrome/playwright con vừa sinh ra cho gemini_profile."""
+        try:
+            cls._tracked_pids.update(cls._collect_gemini_pids())
+        except Exception:
+            pass
 
     @classmethod
     def get_profile_dir(cls) -> Path:
@@ -35,27 +78,19 @@ class GeminiBrowserSessionManager:
         """
         Quét và đóng triệt để mọi tiến trình Chromium hoặc Node bị kẹt
         đang chiếm giữ profile thư mục database/gemini_profile để tránh xung đột khóa tệp.
-        Sử dụng psutil để quét tức thì (<0.1s) và tuyệt đối không ảnh hưởng đến Chrome cá nhân của người dùng.
+        Tuyệt đối không ảnh hưởng đến Chrome cá nhân của người dùng.
         """
         profile_dir = cls.get_profile_dir()
         try:
-            import psutil
+            from app.utils.resource_cleaner import kill_pid_tree
             my_pid = os.getpid()
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if proc.info['pid'] == my_pid:
-                        continue
-                    pname = (proc.info['name'] or '').lower()
-                    if 'chrome' not in pname and 'node' not in pname:
-                        continue
-                    cmdline = " ".join(proc.info['cmdline'] or [])
-                    # Chỉ diệt tiến trình có flag trỏ vào database/gemini_profile
-                    if "gemini_profile" in cmdline:
-                        proc.kill()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+            target_pids = {pid for pid in (cls._tracked_pids | cls._collect_gemini_pids()) if pid and pid != my_pid}
+            for pid in sorted(target_pids):
+                kill_pid_tree(pid, wait_timeout=1.0)
         except Exception as e:
-            logger.debug(f"Không thể quét tiến trình Chrome con qua psutil: {e}")
+            logger.debug(f"Không thể quét/kill tiến trình Chrome con: {e}")
+        finally:
+            cls._tracked_pids.clear()
 
         # Xóa các file lock của Chromium
         for lock_name in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:

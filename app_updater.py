@@ -65,7 +65,6 @@ PROTECTED_PATHS = {
     ".git",
     ".app_version",
     ".pip_hash",
-    "scripts",
 }
 
 # ==============================================================================
@@ -742,18 +741,15 @@ def check_and_update(force: bool = False):
     LOG.info(f"  Bat dau luc: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
     LOG.info("=" * 70)
 
-    # 1. Smart merge .env — tự động thêm key mới từ developer
-    smart_merge_env()
-
     code_updated = False
 
-    # 2. Thử qua Git trước (nhanh nhất nếu có Git)
+    # 1. Thử qua Git trước (nhanh nhất nếu có Git)
     git_ok, git_has_changes = update_via_git(force=force)
     if git_ok:
         if git_has_changes:
             code_updated = True
     else:
-        # 3. Kiểm tra phiên bản → tải ZIP nếu lạc hậu hoặc force
+        # 2. Kiểm tra phiên bản → tải ZIP nếu lạc hậu hoặc force
         remote_sha = get_remote_latest_commit()
         local_sha  = get_local_commit()
 
@@ -767,6 +763,9 @@ def check_and_update(force: bool = False):
                     code_updated = True
                 else:
                     LOG.warning("  [i] Giu nguyen phien ban hien tai de tiep tuc su dung.")
+
+    # 3. Smart merge .env — chạy SAU khi kéo code/bản mới để nhận đủ key từ .env.example mới nhất
+    smart_merge_env()
 
     # 4. Smart pip install — chỉ cài khi requirements.txt thay đổi (hoặc người dùng yêu cầu force)
     smart_pip_install(force_reinstall=force)

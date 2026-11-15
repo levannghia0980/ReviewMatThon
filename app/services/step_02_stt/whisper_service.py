@@ -54,6 +54,26 @@ class WhisperService:
         return cls._models[size]
 
     @classmethod
+    def unload_all(cls) -> int:
+        """Giải phóng toàn bộ mô hình Whisper khỏi RAM và VRAM (CUDA)."""
+        count = len(cls._models)
+        if not count:
+            return 0
+        cls._models.clear()
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        return count
+
+    @classmethod
     def transcribe(
         cls,
         audio_path: str,

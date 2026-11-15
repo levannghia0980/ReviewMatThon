@@ -112,7 +112,7 @@ class TranslationAuditor:
         provider: str = None,
         model: str = None,
         project_title: str = "",
-        timeout: float = 180.0
+        timeout: float = None
     ) -> Dict[int, str]:
         """
         MODULE SỬA SÓT HÁN TOÀN BỘ PHIM BẰNG LLM (KẾ THỪA TRỰC TIẾP TỪ AIREAD):
@@ -213,9 +213,7 @@ Chỉ trả về JSON thuần hợp lệ (mảng JSON các object chứa "id" v�
                 prompt=prompt,
                 provider=provider,
                 model=model,
-                temperature=0.2,
-                response_mime_type="application/json",
-                timeout=timeout
+                response_mime_type="application/json"
             )
 
             if ans_text:

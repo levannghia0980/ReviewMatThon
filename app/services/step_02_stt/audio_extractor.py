@@ -27,6 +27,7 @@ class AudioExtractorService:
             "-y",
             "-i", str(src),
             "-vn",
+            "-af", "aresample=async=1:first_pts=0",
             "-acodec", "pcm_s16le",
             "-ar", "16000",
             "-ac", "1",

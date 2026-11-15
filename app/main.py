@@ -47,10 +47,10 @@ async def lifespan(app: FastAPI):
     # Tuân thủ quy tắc: KHÔNG khởi động ngầm Chromium khi mở app.
     # Chromium chỉ khởi động On-Demand khi người dùng thực sự bấm nút dịch.
     yield
-    # Tự động tắt sạch triệt để tiến trình Chromium nếu còn mở khi đóng ứng dụng
+    # Tự động tắt sạch triệt để Chromium, tiến trình con và giải phóng RAM khi đóng ứng dụng
     try:
-        from app.services.step_03_translation.gemini_web_service import GeminiWebService
-        await GeminiWebService.shutdown_worker()
+        from app.utils.resource_cleaner import cleanup_all_on_shutdown
+        await cleanup_all_on_shutdown()
     except Exception:
         pass
 

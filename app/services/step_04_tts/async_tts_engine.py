@@ -617,6 +617,12 @@ class AsyncTTSEngine:
         return dict(getattr(cls, "_last_sub_timings_map", {}))
 
     @classmethod
+    def clear_memory_cache(cls) -> int:
+        n = len(getattr(cls, "_last_sub_timings_map", {}))
+        cls._last_sub_timings_map = {}
+        return n
+
+    @classmethod
     async def synthesize_dialogue_smart(
         cls,
         session: aiohttp.ClientSession,

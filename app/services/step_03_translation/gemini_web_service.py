@@ -328,7 +328,7 @@ class GeminiWebService:
         from playwright.async_api import async_playwright
         from app.config import settings
 
-        target_thinking = thinking_level or getattr(settings, "GEMINI_WEB_THINKING", "medium")
+        target_thinking = thinking_level or getattr(settings, "GEMINI_WEB_THINKING", "low")
 
         if cls.is_running() and cls._warm_page:
             if cls._current_thinking_level != target_thinking.lower().strip():
@@ -361,6 +361,7 @@ class GeminiWebService:
                     is_headless = getattr(settings, "GEMINI_WEB_HEADLESS", False)
                     launch_opts = GeminiBrowserSessionManager._get_launch_kwargs(headless=is_headless)
                     cls._context = await cls._playwright.chromium.launch_persistent_context(**launch_opts)
+                    GeminiBrowserSessionManager.track_active_gemini_processes()
 
                     cls._warm_page = cls._context.pages[0] if cls._context.pages else await cls._context.new_page()
                     await cls._warm_page.goto("https://gemini.google.com/app", timeout=60000, wait_until="domcontentloaded")
@@ -388,9 +389,64 @@ class GeminiWebService:
                 return False
 
     @classmethod
+    def _stop_loop_thread(cls) -> None:
+        """Dừng background thread & event loop chuyên biệt của Gemini Web sau khi đóng browser."""
+        loop = cls._loop
+        thread = cls._thread
+        cls._loop = None
+        cls._thread = None
+        cls._lock = None
+        cls._current_thinking_level = "high"
+        if loop is not None:
+            try:
+                if loop.is_running():
+                    loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            try:
+                thread.join(timeout=2.0)
+            except Exception:
+                pass
+        if loop is not None and not loop.is_running():
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+    @classmethod
+    def shutdown_worker_sync(cls, timeout: float = 15.0) -> None:
+        """Đóng sạch sẽ Chromium và Worker Thread từ ngữ cảnh đồng bộ (worker thread / atexit)."""
+        loop = cls._loop
+        stopped_on_loop = False
+        if loop is not None and loop.is_running():
+            try:
+                curr_thread = threading.current_thread()
+                if cls._thread is not None and curr_thread is cls._thread:
+                    # Tránh deadlock nếu gọi từ chính thread của loop
+                    GeminiBrowserSessionManager.kill_orphaned_gemini_chrome()
+                else:
+                    fut = asyncio.run_coroutine_threadsafe(cls._do_shutdown_worker(), loop)
+                    fut.result(timeout=timeout)
+                    stopped_on_loop = True
+            except Exception:
+                pass
+        if not stopped_on_loop:
+            cls._warm_page = None
+            cls._context = None
+            cls._playwright = None
+            GeminiBrowserSessionManager.kill_orphaned_gemini_chrome()
+        cls._stop_loop_thread()
+
+    @classmethod
     async def shutdown_worker(cls) -> None:
-        """Đóng sạch sẽ tiến trình Chromium và giải phóng toàn bộ tài nguyên khi tắt server."""
+        """Đóng sạch sẽ tiến trình Chromium và giải phóng toàn bộ tài nguyên."""
         if cls._loop is None or not cls._loop.is_running():
+            cls._warm_page = None
+            cls._context = None
+            cls._playwright = None
+            GeminiBrowserSessionManager.kill_orphaned_gemini_chrome()
+            cls._stop_loop_thread()
             return
         try:
             curr_loop = asyncio.get_running_loop()
@@ -400,43 +456,56 @@ class GeminiWebService:
         if curr_loop == cls._loop:
             await cls._do_shutdown_worker()
             return
+
         fut = asyncio.run_coroutine_threadsafe(cls._do_shutdown_worker(), cls._loop)
-        if curr_loop is not None and curr_loop.is_running():
-            await asyncio.wrap_future(fut)
-        else:
-            try:
+        try:
+            if curr_loop is not None and curr_loop.is_running():
+                await asyncio.wait_for(asyncio.wrap_future(fut), timeout=15)
+            else:
                 fut.result(timeout=15)
-            except Exception:
-                pass
+        except Exception:
+            cls._warm_page = None
+            cls._context = None
+            cls._playwright = None
+            GeminiBrowserSessionManager.kill_orphaned_gemini_chrome()
+        finally:
+            cls._stop_loop_thread()
 
     @classmethod
     async def _do_shutdown_worker(cls) -> None:
+        async def _close_all():
+            if cls._warm_page is not None:
+                try:
+                    await asyncio.wait_for(cls._warm_page.close(), timeout=4.0)
+                except Exception:
+                    pass
+                cls._warm_page = None
+
+            if cls._context is not None:
+                try:
+                    await asyncio.wait_for(cls._context.close(), timeout=5.0)
+                except Exception:
+                    pass
+                cls._context = None
+
+            if cls._playwright is not None:
+                try:
+                    await asyncio.wait_for(cls._playwright.stop(), timeout=5.0)
+                except Exception:
+                    pass
+                cls._playwright = None
+
+            GeminiBrowserSessionManager.kill_orphaned_gemini_chrome()
+            logger.info("🛑 Đã tắt sạch Gemini Web Worker và giải phóng 100% RAM.")
+
         if cls._lock is not None:
-            async with cls._lock:
-                if cls._warm_page is not None:
-                    try:
-                        await cls._warm_page.close()
-                    except Exception:
-                        pass
-                    cls._warm_page = None
-
-                if cls._context is not None:
-                    try:
-                        await cls._context.close()
-                    except Exception:
-                        pass
-                    cls._context = None
-
-                if cls._playwright is not None:
-                    try:
-                        await cls._playwright.stop()
-                    except Exception:
-                        pass
-                    cls._playwright = None
-
-                # Đóng dứt điểm mọi tiến trình Chromium con còn sót
+            try:
+                async with cls._lock:
+                    await _close_all()
+            except Exception:
                 GeminiBrowserSessionManager.kill_orphaned_gemini_chrome()
-                logger.info("🛑 Đã tắt sạch Gemini Web Worker và giải phóng 100% RAM.")
+        else:
+            await _close_all()
 
     @staticmethod
     def _get_windows_clipboard() -> str:
@@ -578,7 +647,7 @@ class GeminiWebService:
                 )
 
         from app.config import settings
-        thinking_level = getattr(settings, "GEMINI_WEB_THINKING", "medium").lower().strip()
+        thinking_level = getattr(settings, "GEMINI_WEB_THINKING", "low").lower().strip()
 
         def _clean_web_output(raw_text: str) -> str:
             if not raw_text:

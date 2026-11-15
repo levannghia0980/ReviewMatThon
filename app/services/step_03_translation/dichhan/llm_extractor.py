@@ -3,11 +3,14 @@ import os
 import httpx
 import re
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from app.config import settings
 from app.core.llm_client import execute_llm_call, safe_json_loads
 
 logger = logging.getLogger(__name__)
+
+_CJK_HANZI_RE = re.compile(r"[\u4e00-\u9fff]")
+_CJK_HANZI_CHUNK_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
 async def _remove_sensitive_words_for_extraction(text: str) -> str:
@@ -85,10 +88,11 @@ CÁC TRƯỜNG HỢP TUYỆT ĐỐI CẤM BÓC TÁCH VÀO BẢNG THỰC THỂ (N
    - Quét kỹ toàn bộ các chương trong lô. Nếu có chương nào NỘI DUNG 100% LÀ LỜI CẢM ƠN / XIN PHIẾU / DANH SÁCH DONATE / THÔNG BÁO / LỜI NHẮN NGOÀI LỀ CỦA TÁC GIẢ (ví dụ: '致谢', '感言', '单章', '通知', '说明', hoặc các chương toàn danh sách người ủng hộ không có diễn biến cốt truyện), hãy đưa số chương đó vào mảng JSON "pure_author_note_chapters": [14].
 
 NGUYÊN TẮC DỊCH TÊN CHUẨN XÁC THEO NGỮ CẢNH VĂN HỌC & BÓC TÁCH TOÀN DIỆN:
-- NGUYÊN TẮC XỬ LÝ LỖI ASR BIẾN DẠNG / ĐỒNG ÂM (CHỐNG LỆCH THỰC THỂ GIỮA CÁC CHƯƠNG/LÔ):
-  * Văn bản đầu vào là từ nhận dạng giọng nói tự động (ASR) của video, thường xuyên bị biến dạng các chữ Hán đồng âm hoặc lệch âm do nhạc nền/giọng đọc nhanh.
-  * KHI BÓC TÁCH: Bắt buộc đối chiếu ngữ cảnh cốt truyện và bảng thực thể đã có. Nếu phát hiện một danh từ mới thực chất là biến thể nghe sai/đồng âm của một nhân vật, thảo dược, đan dược, pháp bảo hay địa danh đã xuất hiện trước đó:
-    -> BẮT BUỘC gán 'vietnamese_name' theo đúng tên chuẩn của thực thể gốc đã xác lập, TUYỆT ĐỐI KHÔNG sinh ra một tên dịch mới làm phân mảnh kịch bản!
+- NGUYÊN TẮC XỬ LÝ LỖI ASR BIẾN DẠNG / ĐỒNG ÂM THEO LÔ (text_fixes + ĐỒNG BỘ THỰC THỂ):
+  * Văn bản đầu vào là từ nhận dạng giọng nói tự động (ASR) của video, thường xuyên bị sai chữ Hán đồng âm/lệch âm do nhạc nền hoặc giọng đọc nhanh (ví dụ tên nhân vật nghe nhầm thành chữ đồng âm khác, hoặc thuật ngữ sai mặt chữ).
+  * KHI QUÉT LÔ NÀY: Bắt buộc đối chiếu ngữ cảnh cốt truyện và bảng thực thể đã có. Nếu phát hiện một cụm chữ Hán trong văn bản lô hiện tại thực chất là lỗi ASR nghe nhầm/đồng âm:
+    -> Đưa cặp sửa lỗi vào mảng JSON "text_fixes" theo dạng {"wrong": "<cụm SAI xuất hiện nguyên văn trong lô, tối thiểu 2 chữ>", "right": "<cụm ĐÚNG>"} để code tự động thay thế trực tiếp vào văn bản của lô này trước khi dịch.
+    -> Nếu cụm đó là thực thể (tên người, địa danh, vật phẩm, kỹ năng...), ghi "chinese_name" trong mảng "entities" là chữ Hán ĐÚNG ("right"), và giữ nguyên "vietnamese_name" chuẩn của thực thể gốc (nếu đã có ở lô trước).
 - NGUYÊN TẮC BÓC TÁCH ĐẦY ĐỦ 100% (KHÔNG PHỤ THUỘC ĐỘ LẶP LẠI): Bắt buộc quét trích xuất TẤT CẢ các thực thể (Tên người, Địa danh, Vật phẩm, Võ học, Linh thú, Cảnh giới...) xuất hiện trong văn bản. Dù thực thể đó CHỈ XUẤT HIỆN 1 LẦN DUY NHẤT hay xuất hiện nhiều lần đều BẮT BUỘC phải bóc tách chi tiết và đầy đủ 100%, TUYỆT ĐỐI KHÔNG ĐƯỢC BỎ SÓT bất kỳ tên riêng nào chỉ vì nó ít lặp lại!
 - DỊCH ĐÚNG ÂM HÁN-VIỆT VĂN HỌC BÁC HỌC CHUẨN 100% TIẾNG VIỆT:
   * BẮT BUỘC đọc ngữ cảnh câu chuyện để dịch đúng nghĩa thực thể (không tra từ điển cơ học từng chữ làm sai lệch bản chất vũ khí, sinh vật, chức vị hay địa danh).
@@ -138,12 +142,12 @@ CHI TIẾT CÁC NHÓM THỰC THỂ HIỆN ĐẠI:
    - CHỨC DANH QUÂN SỰ / CHỈ HUY:
      * 长官 trong bối cảnh quân sự, căn cứ, tận thế BẮT BUỘC dịch là "Thủ trưởng", "Chỉ huy", "Sĩ quan" hoặc "Sếp" (TUYỆT ĐỐI CẤM dịch thành "Quan lớn" của thời phong kiến).
 
-CÁC NGUYÊN TẮC LỌC RÁC & SỬA LỖI ASR NGHE SAI (CỰC KỲ QUAN TRỌNG):
-1. LỌC BỎ RÁC DO ASR NGHE NHẦM NGỮ CẢNH:
-   - Nếu một từ/cụm từ xuất hiện do ASR nhận diện sai âm thanh, hoàn toàn lạc quẻ với mạch truyện (ví dụ: trong câu đang tả vũ khí bị vô hiệu hóa mà ASR nghe thành '北京' - Bắc Kinh; hoặc tả cảnh nguy hiểm mà nghe thành '景区' - khu thắng cảnh):
-   - TUYỆT ĐỐI CẤM bóc tách những từ nghe nhầm ngữ cảnh này vào bảng thực thể, để không trói buộc LLM dịch phải dịch theo!
-2. SỬA LỆCH ÂM TÊN NHÂN VẬT & THUẬT NGỮ:
-   - Nếu ASR nghe chệch âm của nhân vật chính hoặc thuật ngữ quen thuộc (ví dụ: ASR nghe '下半' trong câu '下半觉醒了升级系统'): Bắt buộc nhận diện theo ngữ cảnh đó là nhân vật 夏凡 (Hạ Phàm), gán đúng vietnamese_name = 'Hạ Phàm', tuyệt đối KHÔNG trả về từ rác '下半'."""
+CÁC NGUYÊN TẮC BẮT LỖI ASR NGHE SAI & SỬA TRONG "text_fixes" (CỰC KỲ QUAN TRỌNG):
+1. PHÁT HIỆN TỪ NGHE NHẦM NGỮ CẢNH / ĐỒNG ÂM:
+   - Nếu một cụm từ (>= 2 chữ Hán) xuất hiện nguyên văn trong văn bản do ASR nghe nhầm đồng âm (ví dụ: câu đang nói Hạ Phàm thức tỉnh hệ thống mà ASR nghe thành '下半', hoặc thuật ngữ '词条' bị nghe thành '磁条', hoặc tên riêng bị sai mặt chữ đồng âm):
+   - HÃY GHI VÀO MẢNG "text_fixes": {"wrong": "<cụm sai nguyên văn trong lô>", "right": "<cụm chữ Hán đúng>"} để code thay trực tiếp vào văn bản lô hiện tại.
+2. ĐỒNG BỘ VÀO BẢNG "entities":
+   - Với tên nhân vật hoặc thuật ngữ vừa được sửa qua "text_fixes", đưa chữ Hán ĐÚNG ("right", ví dụ '夏凡' -> 'Hạ Phàm') vào mảng "entities" kèm 'vietnamese_name' chuẩn, không giữ từ sai vào bảng thực thể."""
 
 
 def inject_chapter_extraction_prompts(text: str) -> str:
@@ -168,10 +172,127 @@ def inject_chapter_extraction_prompts(text: str) -> str:
     return text.strip()
 
 
+def _strip_residual_hanzi_in_vn(vn_name: str) -> str:
+    """Chỉ chuyển đổi các ký tự chữ Hán (nếu bị sót) trong `vietnamese_name` sang Hán-Việt, không sửa biến âm tùy tiện."""
+    clean_str = (vn_name or "").strip()
+    if not clean_str or not _CJK_HANZI_RE.search(clean_str):
+        return clean_str
+
+    from app.services.step_03_translation.dichhan.hanviet_data import build_hanviet_name
+
+    def _replace_chunk(match: re.Match) -> str:
+        hv = build_hanviet_name(match.group(0))
+        return f" {hv} " if hv else match.group(0)
+
+    converted = _CJK_HANZI_CHUNK_RE.sub(_replace_chunk, clean_str)
+    converted = re.sub(r"\s+", " ", converted).strip()
+    return converted or clean_str
+
+
+def _resolve_existing_viet_name(existing_entities: Optional[Dict[str, Any]], ch_name: str) -> Optional[str]:
+    """Lấy bản dịch `vietnamese_name` đã khóa từ `existing_entities` nếu thực thể đã tồn tại."""
+    if not existing_entities or ch_name not in existing_entities:
+        return None
+    existing_val = existing_entities[ch_name]
+    if isinstance(existing_val, dict):
+        locked = existing_val.get("vietnamese_name") or existing_val.get("viet")
+        return str(locked).strip() if locked else None
+    return str(existing_val).strip() if existing_val else None
+
+
+def _clean_raw_entities(
+    raw_entities: Any,
+    existing_entities: Optional[Dict[str, Any]],
+    mapping_table: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Chuẩn hóa tối thiểu danh sách thực thể từ LLM 1 (không cắt xén/lọc heuristic)."""
+    if not isinstance(raw_entities, list):
+        return []
+
+    unmask_fn = None
+    if mapping_table:
+        from app.services.step_03_translation.unblock.unblock_pipeline import unmask_text_with_dictionary
+        unmask_fn = unmask_text_with_dictionary
+
+    final_entities: List[Dict[str, Any]] = []
+    seen = set()
+    for item in raw_entities:
+        if not isinstance(item, dict):
+            continue
+        ch_name = str(item.get("chinese_name") or "").strip()
+        vn_name = str(item.get("vietnamese_name") or "").strip()
+        if unmask_fn and vn_name:
+            vn_name = unmask_fn(vn_name, mapping_table).strip()
+        if not ch_name or not vn_name or ch_name in seen:
+            continue
+
+        item["chinese_name"] = ch_name
+        locked_vn = _resolve_existing_viet_name(existing_entities, ch_name)
+        item["vietnamese_name"] = locked_vn or _strip_residual_hanzi_in_vn(vn_name)
+
+        seen.add(ch_name)
+        final_entities.append(item)
+
+    return final_entities
+
+
+def _clean_raw_text_fixes(
+    raw_fixes: Any,
+    mapping_table: Dict[str, str],
+) -> List[Dict[str, str]]:
+    """Chuẩn hóa danh sách `{wrong, right}` của lô hiện tại: giữ `len(wrong) >= 2`, khử trùng lặp, sắp từ dài tới ngắn."""
+    if not isinstance(raw_fixes, list):
+        return []
+
+    unmask_fn = None
+    if mapping_table:
+        from app.services.step_03_translation.unblock.unblock_pipeline import unmask_text_with_dictionary
+        unmask_fn = unmask_text_with_dictionary
+
+    cleaned: List[Dict[str, str]] = []
+    seen_wrong = set()
+    for item in raw_fixes:
+        if not isinstance(item, dict):
+            continue
+        wrong = str(item.get("wrong") or "").strip()
+        right = str(item.get("right") or "").strip()
+        if unmask_fn:
+            if wrong:
+                wrong = unmask_fn(wrong, mapping_table).strip()
+            if right:
+                right = unmask_fn(right, mapping_table).strip()
+        if not wrong or not right or wrong == right or len(wrong) < 2 or wrong in seen_wrong:
+            continue
+        seen_wrong.add(wrong)
+        cleaned.append({"wrong": wrong, "right": right})
+
+    cleaned.sort(key=lambda pair: len(pair["wrong"]), reverse=True)
+    return cleaned
+
+
+def _format_extractor_return(
+    final_entities: List[Dict[str, Any]],
+    final_text_fixes: List[Dict[str, str]],
+    final_author_notes: List[str],
+    final_pure_note_chaps: List[int],
+    return_author_notes: bool,
+    return_text_fixes: bool,
+) -> Any:
+    """Đóng gói giá trị trả về nhất quán theo cờ tương thích ngược."""
+    if return_text_fixes and return_author_notes:
+        return final_entities, final_text_fixes, final_author_notes, final_pure_note_chaps
+    if return_text_fixes:
+        return final_entities, final_text_fixes
+    if return_author_notes:
+        return final_entities, final_author_notes, final_pure_note_chaps
+    return final_entities
+
+
 async def extract_batch_entities_direct_llm(
     combined_raw_text: str = None,
     existing_entities: Dict[str, Any] = None,
     return_author_notes: bool = False,
+    return_text_fixes: bool = False,
     genre_key: str = "xianxia",
     genre_profile_desc: str = "",
     raw_text: str = None,
@@ -201,7 +322,7 @@ async def extract_batch_entities_direct_llm(
     - Lặp lại khối mệnh lệnh ở đầu MỖI CHƯƠNG trong lô để LLM không bị trôi chú ý / quên yêu cầu.
     """
     if not combined_raw_text or not combined_raw_text.strip():
-        return ([], []) if return_author_notes else []
+        return _format_extractor_return([], [], [], [], return_author_notes, return_text_fixes)
 
     # MẶC ĐỊNH: Không tự ý bật Unblock, gửi văn bản tự nhiên 100%
     mapping_table = {}
@@ -246,7 +367,7 @@ Hệ thống đã tự động rà soát CSDL và phát hiện các thực thể
 
 MỆNH LỆNH BẮT BUỘC ĐỐI VỚI CÁC THỰC THỂ ĐÃ CÓ NÀY:
 1. DỊCH Y HỆT 100%: Dùng đúng 100% bản dịch 'vietnamese_name' đã cho ở trên, TUYỆT ĐỐI CẤM tự ý dịch khác hay sửa đổi tên!
-2. BẮT LỖI ASR BIẾN DẠNG / ĐỒNG ÂM: Nếu trong văn bản hiện tại xuất hiện chữ Hán nghe sai/đồng âm hoặc biến thể ngữ âm của một thực thể cũ trong danh sách trên, BẮT BUỘC quy 'vietnamese_name' về đúng tên thực thể cũ tương ứng!
+2. BẮT LỖI ASR BIẾN DẠNG / ĐỒNG ÂM TRONG LÔ NÀY: Nếu trong văn bản lô hiện tại xuất hiện chữ Hán nghe sai/đồng âm hoặc biến thể ngữ âm (>= 2 chữ Hán, xuất hiện nguyên văn trong lô) của một thực thể cũ hoặc thuật ngữ quen thuộc, HÃY ghi cặp {{"wrong": "<cụm sai nguyên văn trong lô>", "right": "<cụm chữ Hán chuẩn>"}} vào mảng JSON "text_fixes" để hệ thống thay thế thẳng vào văn bản của lô này; đồng thời trong "entities" dùng "chinese_name" = "<right>" và giữ đúng 'vietnamese_name' chuẩn!
 3. VẪN BẮT BUỘC TRẢ VỀ: Nếu các thực thể trên xuất hiện trong lô này, BẮT BUỘC vẫn đưa chúng vào mảng JSON "entities" trả về cùng với các thực thể mới (giữ nguyên 'vietnamese_name' chuẩn).
 4. TẬP TRUNG TÌM MỚI: Đồng thời quét kỹ toàn bộ văn bản để bóc tách thêm tất cả các thực thể MỚI chưa có trong danh sách trên!
 """
@@ -259,6 +380,7 @@ MỆNH LỆNH BẮT BUỘC ĐỐI VỚI CÁC THỰC THỂ ĐÃ CÓ NÀY:
     rules_block = HIEN_DAI_EXTRACTION_RULES if is_modern else CO_DAI_EXTRACTION_RULES
 
     if is_modern:
+        example_fixes = '    {"wrong": "下半", "right": "夏凡"},\n    {"wrong": "磁条", "right": "词条"}'
         example_entities = """    {"chinese_name": "夏凡", "vietnamese_name": "Hạ Phàm", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật chính"},
     {"chinese_name": "强子", "vietnamese_name": "Cường Tử", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "đồng đội / bạn thân"},
     {"chinese_name": "佳佳", "vietnamese_name": "Giai Giai", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "female", "role": "nhân vật nữ"},
@@ -270,11 +392,12 @@ MỆNH LỆNH BẮT BUỘC ĐỐI VỚI CÁC THỰC THỂ ĐÃ CÓ NÀY:
     {"chinese_name": "长官", "vietnamese_name": "Thủ trưởng", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "chức vị chỉ huy / sĩ quan"},
     {"chinese_name": "诡异", "vietnamese_name": "Quỷ Dị", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thực thể quái dị"}"""
     else:
+        example_fixes = '    {"wrong": "野羊", "right": "夜央"}'
         example_entities = """    {"chinese_name": "林冲", "vietnamese_name": "Lâm Xung", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật"},
     {"chinese_name": "豹子头", "vietnamese_name": "Báo Tử Đầu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "ngoại hiệu của Lâm Xung"},
     {"chinese_name": "二狗", "vietnamese_name": "Nhị Cẩu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "tên cúng cơm nông thôn"},
     {"chinese_name": "金翅大鹏", "vietnamese_name": "Kim Sí Đại Bàng", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "chủng loài thần thú"},
-    {"chinese_name": "青云宗", "vietnamese_name": "Thanh Vân Tông", "entity_type": "SECT", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "tông môn"},
+    {"chinese_name": "青云宗", "vietnamese_name": "Thanh Vân Tông", "entity_type": "SECT", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "tông môn"},
     {"chinese_name": "落霞峰", "vietnamese_name": "Lạc Hà Phong", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "địa danh núi"},
     {"chinese_name": "青龙偃月刀", "vietnamese_name": "Thanh Long Yển Nguyệt Đao", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh binh khí"},
     {"chinese_name": "太极拳", "vietnamese_name": "Thái Cực Quyền", "entity_type": "SKILL", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "công pháp võ học"},
@@ -294,10 +417,18 @@ MỆNH LỆNH BẮT BUỘC ĐỐI VỚI CÁC THỰC THỂ ĐÃ CÓ NÀY:
 
 {rules_block}
 
+QUY TẮC BẮT BUỘC CHO MẢNG "text_fixes" (CHỈ SỬA LỖI ASR CÓ THẬT TRONG LÔ NÀY):
+- Chỉ liệt kê những cụm chữ Hán SAI (do ASR nghe nhầm đồng âm / sai mặt chữ theo ngữ cảnh) thực sự xuất hiện NGUYÊN VĂN trong văn bản lô trên.
+- Mỗi "wrong" BẮT BUỘC dài từ 2 chữ Hán trở lên (cấm ghi 1 chữ đơn lẻ để tránh thay nhầm vào từ khác); "right" là cụm chữ Hán chuẩn tương ứng.
+- Chỉ sửa khi thật sự chắc chắn là lỗi ASR trong lô này; không bịa lỗi, không chép ví dụ minh họa nếu không có trong văn bản. Nếu không có lỗi cần sửa, trả về "text_fixes": [].
+
 Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sau, không kèm bất kỳ lời dẫn nào:
 {{
   "entities": [
 {example_entities}
+  ],
+  "text_fixes": [
+{example_fixes}
   ],
   "author_notes": [
     "求月票，求推荐票！",
@@ -320,8 +451,6 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
                 provider=provider,
                 model=model,
                 response_mime_type="application/json",
-                thinking_budget=None,
-                timeout=120.0
             )
             if not text_response or len(text_response.strip()) < 5:
                 raise ValueError("Phản hồi LLM rỗng hoặc quá ngắn")
@@ -342,97 +471,23 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
         parsed = {}
 
     raw_entities = parsed.get("entities", []) if isinstance(parsed, dict) else []
+    raw_text_fixes = parsed.get("text_fixes", []) if isinstance(parsed, dict) else []
     raw_author_notes = parsed.get("author_notes", []) if isinstance(parsed, dict) else []
 
-    if mapping_table:
-        from app.services.step_03_translation.unblock.unblock_pipeline import unmask_text_with_dictionary
-        for e in raw_entities:
-            if "vietnamese_name" in e and e["vietnamese_name"]:
-                e["vietnamese_name"] = unmask_text_with_dictionary(e["vietnamese_name"], mapping_table)
-
-    EXCLUDED_CHINESE_TERMS = {
-        "老登", "老家伙", "老头", "小子", "丫头", "老伯", "船公", "掌柜", "大兄弟",
-        "老夫", "老朽", "在下", "草民", "小的", "奴才", "老娘", "大爷", "大叔", "大婶",
-        "师兄", "师弟", "师姐", "师妹", "师尊", "师父", "掌门", "长老", "宗主", "堂主",
-        "县尉", "捕快", "县令", "知府", "尚书", "侍郎", "皇帝", "皇后", "贵妃", "公公"
-    }
-
-    # TÍCH HỢP THUẬT TOÁN SAFE ENTITY PRUNING TỪ AIREAD GỐC:
-    # 1. Khử chuỗi dính động từ/liên từ/ngữ pháp rác
-    JUNK_PARTICLES = (
-        "给", "杀", "救", "看", "当", "见", "说", "道", "冷笑", "神色", 
-        "大喊", "喝道", "说道", "冷哼", "一闪", "一拳", "一掌", "一刀", "一剑"
-    )
-    
-    # 2. Sắp xếp thực thể theo độ dài giảm dần để phát hiện chuỗi dài nuốt chuỗi ngắn
-    entities_sorted = sorted(raw_entities, key=lambda x: len(x.get("chinese_name", "").strip()) if isinstance(x, dict) else 0, reverse=True)
-    suppressed_names = set()
-
-    for e in entities_sorted:
-        if not isinstance(e, dict):
-            continue
-        cn = e.get("chinese_name", "").strip()
-        if not cn:
-            continue
-        # Loại bỏ nếu dính liên từ rác ở đầu hoặc cuối
-        if any(cn.startswith(jp) or cn.endswith(jp) for jp in JUNK_PARTICLES):
-            suppressed_names.add(cn)
-
-    # Xử lý chuỗi dài (>= 5 chữ) nuốt thực thể ngắn chuẩn (2-4 chữ) như '万气本根金光神咒' nuốt '金光神咒'
-    for i, e_long in enumerate(entities_sorted):
-        if not isinstance(e_long, dict):
-            continue
-        c_long = e_long.get("chinese_name", "").strip()
-        if c_long in suppressed_names:
-            continue
-        for e_short in entities_sorted[i + 1:]:
-            if not isinstance(e_short, dict):
-                continue
-            c_short = e_short.get("chinese_name", "").strip()
-            if c_short in suppressed_names:
-                continue
-            if c_short and c_long and (c_short in c_long) and len(c_short) < len(c_long):
-                # Chuỗi dài >= 5 chữ nuốt thực thể chuẩn 2-4 chữ -> Gạt bỏ chuỗi dài, bảo toàn thực thể chuẩn!
-                if len(c_long) >= 5 and 2 <= len(c_short) <= 4:
-                    suppressed_names.add(c_long)
-                    break
-                elif c_long.endswith(c_short) and len(c_long) - len(c_short) == 1:
-                    suppressed_names.add(c_short)
-
-    from app.services.step_03_translation.dichhan.hanviet_data import sanitize_entity_vietnamese
-
-    final_entities = []
-    seen = set()
-    for e in entities_sorted:
-        if not isinstance(e, dict):
-            continue
-        ch_name = e.get("chinese_name", "").strip()
-        vn_name = e.get("vietnamese_name", "").strip()
-        if not ch_name or not vn_name or len(ch_name) < 2 or ch_name in seen or ch_name in EXCLUDED_CHINESE_TERMS or ch_name in suppressed_names:
-            continue
-
-        e["chinese_name"] = ch_name
-        # Khóa cứng 100% bản dịch cũ nếu đã có trong CSDL các chương trước
-        if existing_entities and ch_name in existing_entities:
-            existing_val = existing_entities[ch_name]
-            if isinstance(existing_val, dict):
-                e["vietnamese_name"] = existing_val.get("vietnamese_name") or existing_val.get("viet") or vn_name
-            else:
-                e["vietnamese_name"] = str(existing_val)
-        else:
-            # Thẩm định và làm sạch âm Hán-Việt qua từ điển nội bộ
-            e["vietnamese_name"] = sanitize_entity_vietnamese(vn_name, ch_name) or vn_name
-
-        seen.add(ch_name)
-        final_entities.append(e)
+    final_entities = _clean_raw_entities(raw_entities, existing_entities, mapping_table)
+    final_text_fixes = _clean_raw_text_fixes(raw_text_fixes, mapping_table)
 
     final_author_notes = []
     if isinstance(raw_author_notes, list):
+        unmask_note = None
+        if mapping_table:
+            from app.services.step_03_translation.unblock.unblock_pipeline import unmask_text_with_dictionary
+            unmask_note = unmask_text_with_dictionary
         for note in raw_author_notes:
             if isinstance(note, str) and note.strip():
                 clean_n = note.strip()
-                if mapping_table:
-                    clean_n = unmask_text_with_dictionary(clean_n, mapping_table)
+                if unmask_note:
+                    clean_n = unmask_note(clean_n, mapping_table)
                 final_author_notes.append(clean_n)
 
     raw_pure_note_chaps = parsed.get("pure_author_note_chapters", []) if isinstance(parsed, dict) else []
@@ -444,10 +499,14 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
             except Exception:
                 pass
 
-    if return_author_notes:
-        return final_entities, final_author_notes, final_pure_note_chaps
-
-    return final_entities
+    return _format_extractor_return(
+        final_entities=final_entities,
+        final_text_fixes=final_text_fixes,
+        final_author_notes=final_author_notes,
+        final_pure_note_chaps=final_pure_note_chaps,
+        return_author_notes=return_author_notes,
+        return_text_fixes=return_text_fixes,
+    )
 
 
 async def extract_entities_via_llm(raw_text: str) -> List[Dict[str, Any]]:

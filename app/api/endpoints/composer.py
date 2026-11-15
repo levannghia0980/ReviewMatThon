@@ -54,6 +54,16 @@ def _run_compose_worker(task_id: str, req: VideoComposeRequest):
         )
     finally:
         db.close()
+        try:
+            from app.utils.resource_cleaner import cleanup_after_task
+            cleanup_after_task(
+                "compose",
+                task_id=task_id,
+                project_id=req.project_id,
+                purge_project_temp=True,
+            )
+        except Exception:
+            pass
 
 
 @router.post("/compose", response_model=VideoComposeResponse, summary="Khởi chạy render Video thành phẩm (Karaoke ASS + BGM Mix + Logo + Watermark)")

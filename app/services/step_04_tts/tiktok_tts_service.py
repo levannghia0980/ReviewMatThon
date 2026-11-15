@@ -209,9 +209,28 @@ _GLOBAL_SESSION.headers.update({
 })
 
 _AUDIO_CACHE: Dict[str, AudioSegment] = {}
+_MAX_AUDIO_CACHE: int = 128
 
 
 class TikTokTTSService:
+    @classmethod
+    def clear_memory_cache(cls) -> int:
+        n = len(_AUDIO_CACHE)
+        _AUDIO_CACHE.clear()
+        return n
+
+    @classmethod
+    def cleanup_project_audio_chunks(cls, video_id: str) -> int:
+        if not video_id:
+            return 0
+        from app.utils.resource_cleaner import cleanup_tts_temp_cache
+        return cleanup_tts_temp_cache(video_id=video_id)
+
+    @classmethod
+    def clean_tts_cache(cls, video_id: Optional[str] = None) -> int:
+        from app.utils.resource_cleaner import cleanup_tts_temp_cache
+        return cleanup_tts_temp_cache(video_id=video_id)
+
     VOICE_MAP = {
         "BV074_streaming": "Nữ: Cô Gái Hoạt Ngôn (Trẻ trung, Review Trend - Mặc định)",
         "vi-VN-HoaiMyNeural": "Nữ: Hoài My (Truyền cảm, Ngọt ngào - Mới)",
@@ -282,7 +301,8 @@ class TikTokTTSService:
                         seg = _load_audio_from_bytes(audio_bytes, format="mp3")
                         seg = cls.trim_audio_silence(seg)
                         if len(seg) > 100:
-                            _AUDIO_CACHE[cache_key] = seg
+                            from app.utils.resource_cleaner import bounded_cache_set
+                            bounded_cache_set(_AUDIO_CACHE, cache_key, seg, max_entries=_MAX_AUDIO_CACHE)
                             return seg
                 time.sleep(0.15)
             except Exception as exc:
@@ -728,6 +748,11 @@ class TikTokTTSService:
         pipe_proc.stdin.close()
         pipe_proc.wait()
         del master_buffer
+        raw_audio_bytes_map.clear()
+        raw_results_map.clear()
+        cls.clear_memory_cache()
+        AsyncTTSEngine.clear_memory_cache()
+        cls.cleanup_project_audio_chunks(project.video_id)
 
         task_manager.add_log(task_id, f"🎉 ĐÃ XUẤT MASTER VOICEOVER THÀNH CÔNG: {master_voice_file.name}", "emerald")
 

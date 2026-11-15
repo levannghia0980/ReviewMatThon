@@ -51,14 +51,13 @@ export default function SettingsTab() {
   const [groqModel, setGroqModel] = useState('whisper-large-v3');
   const [asrEngine, setAsrEngine] = useState('capcut');
   const [whisperSize, setWhisperSize] = useState('base');
-  const [enableVisualSubRefiner, setEnableVisualSubRefiner] = useState(true);
+  const [enableVisualSubRefiner, setEnableVisualSubRefiner] = useState(false);
 
   const [openrouterKey, setOpenrouterKey] = useState('');
   
   // Translation Batch Settings
   const [translationMaxChars, setTranslationMaxChars] = useState(50000);
   const [translationBatchSize, setTranslationBatchSize] = useState(500);
-  const [translationTemperature, setTranslationTemperature] = useState(0.85);
 
   const handleModeSwitch = (mode) => {
     setGeminiMode(mode);
@@ -112,13 +111,10 @@ export default function SettingsTab() {
         setGroqModel(data.groq_model || 'whisper-large-v3');
         setAsrEngine(data.asr_engine || 'capcut');
         setWhisperSize(data.whisper_model_size || 'base');
-        setEnableVisualSubRefiner(data.enable_visual_sub_refiner !== undefined ? !!data.enable_visual_sub_refiner : true);
+        setEnableVisualSubRefiner(data.enable_visual_sub_refiner !== undefined ? !!data.enable_visual_sub_refiner : false);
         setOpenrouterKey(data.openrouter_api_key || '');
         setTranslationMaxChars(data.translation_max_chars || 50000);
         setTranslationBatchSize(data.translation_batch_size || 500);
-        if (data.translation_temperature !== undefined && data.translation_temperature !== null) {
-          setTranslationTemperature(data.translation_temperature);
-        }
         setTtsThreads(data.tts_threads || 128);
         setTtsEngine(data.tts_engine || 'capcut');
         setCapcutCookie(data.capcut_cookie || '');
@@ -305,7 +301,6 @@ export default function SettingsTab() {
         openrouter_api_key: orK,
         translation_max_chars: parseInt(translationMaxChars, 10) || 50000,
         translation_batch_size: parseInt(translationBatchSize, 10) || 500,
-        translation_temperature: parseFloat(translationTemperature) || 0.85,
         tts_threads: parseInt(ttsThreads, 10) || 128,
         tts_engine: ttsEngine,
         capcut_cookie: capcutCookie.trim(),
@@ -341,20 +336,14 @@ export default function SettingsTab() {
     {
       id: 'gemini-3.1-flash-lite',
       title: '⚡ Gemini 3.1 Flash Lite',
-      badge: 'Khuyên Dùng - Siêu Tốc',
-      desc: 'Tốc độ phản hồi nhanh nhất, tiết kiệm quota API, dịch mượt mà không độ trễ.'
+      badge: 'Khuyên Dùng - Chuẩn Nhất',
+      desc: 'Chất lượng dịch, phân vai và sửa từ đồng âm ASR chuẩn nhất. Gateway tự khóa Temp=0.25, TopP=0.95, TopK=40, Thinking=8192.'
     },
     {
       id: 'gemini-3.5-flash-lite',
       title: '🚀 Gemini 3.5 Flash Lite',
-      badge: 'Cân Bằng Chuẩn',
-      desc: 'Cân bằng giữa tốc độ cực nhanh và khả năng hiểu ngữ cảnh phim phức tạp.'
-    },
-    {
-      id: 'gemini-flash-latest',
-      title: '🌟 Gemini Flash Latest',
-      badge: 'Bản Mới Nhất • Cực Thông Minh',
-      desc: 'Tự động trỏ về bản Flash frontier mới nhất của Google, bắt trọn ngữ khí âm thanh và dịch chuẩn xác.'
+      badge: 'Dự Phòng - Dynamic Thinking',
+      desc: 'Dùng dự phòng khi 3.1 quá tải. Gateway tự động chuyển Thinking Dynamic (-1), Temp=0.25, TopP=0.95, TopK=40.'
     }
   ];
 
@@ -975,93 +964,29 @@ export default function SettingsTab() {
               </div>
             </div>
 
-            {/* 1C. Mức Sáng Tạo & Thông Minh (Temperature: 0.1 – 1.0) */}
+            {/* 1C. Thông số Gateway BE đã khóa chuẩn theo bản Lite */}
             <div style={{
-              padding: '16px 18px',
+              padding: '14px 18px',
               borderRadius: '10px',
-              background: 'rgba(255, 255, 255, 0.02)',
-              border: '1px solid var(--border)',
+              background: 'rgba(0, 242, 254, 0.05)',
+              border: '1px solid rgba(0, 242, 254, 0.25)',
               display: 'flex',
-              flexDirection: 'column',
-              gap: '12px'
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '10px'
             }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Sparkles size={16} color="var(--cyan)" />
-                  <label style={{ fontSize: '12.5px', fontWeight: 800, color: 'var(--text-main)', margin: 0 }}>
-                    Độ Sáng Tạo & Độ Thông Minh (Temperature):
-                  </label>
-                  <span className="tag-badge cyan" style={{ fontSize: '11px', fontWeight: 800, fontFamily: 'var(--font-mono)' }}>
-                    {translationTemperature}
-                  </span>
-                </div>
-                <span style={{ fontSize: '12px', color: 'var(--text-sub)', fontWeight: 600 }}>
-                  {translationTemperature <= 0.3
-                    ? '🎯 Rập khuôn chính xác, bám sát từng chữ'
-                    : translationTemperature <= 0.7
-                    ? '✨ Lồng tiếng tự nhiên, biểu cảm mượt mà (Khuyên Dùng)'
-                    : '🚀 Siêu sáng tạo, ngôn từ phong phú bay bổng'}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ShieldCheck size={16} color="var(--cyan)" />
+                <span style={{ fontSize: '12.5px', fontWeight: 700, color: 'var(--text-main)' }}>
+                  Cấu Hình Chuẩn Gateway BE (Đã Khóa Tự Động Cho 4 Bước LLM):
                 </span>
               </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 700 }}>0.1 (Chính xác)</span>
-                <input
-                  type="range"
-                  min="0.1"
-                  max="1.0"
-                  step="0.05"
-                  value={translationTemperature}
-                  onChange={(e) => setTranslationTemperature(parseFloat(e.target.value))}
-                  style={{
-                    flex: 1,
-                    accentColor: 'var(--cyan)',
-                    cursor: 'pointer',
-                    height: '6px'
-                  }}
-                />
-                <span style={{ fontSize: '11px', color: 'var(--text-dim)', fontWeight: 700 }}>1.0 (Bay bổng)</span>
-              </div>
-
-              {/* Nút Preset 1-chạm */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '8px' }}>
-                {[
-                  { val: 0.2, label: '0.2 - Chuẩn Xác', desc: 'Bám sát nghĩa đen' },
-                  { val: 0.5, label: '0.5 - Cân Bằng', desc: 'Trôi chảy, mạch lạc' },
-                  { val: 0.65, label: '0.65 - Chuẩn Lồng Tiếng', desc: 'Khuyên dùng (Văn nói mượt mà)', isRec: true },
-                  { val: 0.85, label: '0.85 - Siêu Hấp Dẫn', desc: 'Giàu cảm xúc, kịch tính' }
-                ].map((preset) => {
-                  const isSelected = Math.abs(translationTemperature - preset.val) < 0.02;
-                  return (
-                    <button
-                      key={preset.val}
-                      type="button"
-                      onClick={() => setTranslationTemperature(preset.val)}
-                      style={{
-                        padding: '8px 12px',
-                        borderRadius: '6px',
-                        border: isSelected ? '1.5px solid var(--cyan)' : '1px solid var(--border)',
-                        background: isSelected ? 'rgba(0, 242, 254, 0.15)' : 'rgba(255, 255, 255, 0.02)',
-                        color: isSelected ? 'var(--cyan)' : 'var(--text-main)',
-                        cursor: 'pointer',
-                        textAlign: 'left',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '2px',
-                        transition: 'all 0.15s ease'
-                      }}
-                    >
-                      <div style={{ fontSize: '12px', fontWeight: 800, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span>{preset.label}</span>
-                        {preset.isRec && <span style={{ fontSize: '10px', color: '#f59e0b', fontWeight: 900 }}>★ KHUYÊN DÙNG</span>}
-                      </div>
-                      <div style={{ fontSize: '10.5px', color: isSelected ? 'var(--text-main)' : 'var(--text-dim)' }}>
-                        {preset.desc}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+              <span className="tag-badge cyan" style={{ fontSize: '11px', fontFamily: 'var(--font-mono)', fontWeight: 700 }}>
+                {geminiModel.includes('3.5')
+                  ? 'Temp 0.25 • TopP 0.95 • TopK 40 • Thinking Dynamic (-1) • Timeout 300s'
+                  : 'Temp 0.25 • TopP 0.95 • TopK 40 • Thinking 8192 • Timeout 300s'}
+              </span>
             </div>
 
           </div>

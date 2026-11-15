@@ -51,6 +51,16 @@ def _run_tts_worker(task_id: str, req: TTSProjectRequest):
         )
     finally:
         db.close()
+        try:
+            from app.utils.resource_cleaner import cleanup_after_task
+            cleanup_after_task(
+                "tts",
+                task_id=task_id,
+                project_id=req.project_id,
+                purge_project_temp=True,
+            )
+        except Exception:
+            pass
 
 
 @router.get("/voices", summary="Lấy danh sách các giọng đọc hỗ trợ (CapCut & TikTok)")

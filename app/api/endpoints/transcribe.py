@@ -15,8 +15,11 @@ router = APIRouter()
 
 @router.post("/process", response_model=TranscribeResponse, summary="Bóc tách lời thoại AI từ file Video hoặc Audio")
 def transcribe_media(req: TranscribeRequest):
+    src_path = req.audio_or_video_path
+    is_video = False
+    audio_path = None
+    clean_audio = None
     try:
-        src_path = req.audio_or_video_path
         if not os.path.exists(src_path):
             raise HTTPException(status_code=404, detail=f"Không tìm thấy file: {src_path}")
             
@@ -51,8 +54,22 @@ def transcribe_media(req: TranscribeRequest):
             txt_path=txt_path,
             json_path=json_path
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            from app.utils.resource_cleaner import cleanup_after_task
+            cleanup_after_task(
+                "stt",
+                audio_path=audio_path,
+                clean_audio_path=clean_audio,
+                video_path=src_path if is_video else None,
+                purge_project_temp=True,
+            )
+        except Exception:
+            pass
 
 @router.post("/clean", response_model=CleanTextResponse, summary="Làm sạch danh sách câu thoại (loại bỏ từ đệm, tạp âm)")
 def clean_transcript(req: CleanTextRequest):

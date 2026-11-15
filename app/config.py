@@ -100,6 +100,80 @@ try:
 except Exception:
     pass
 
+_BOOL_DEFAULTS = {
+    "TTS_MERGE_CHUNKS": False,
+    "GEMINI_WEB_HEADLESS": False,
+    "IS_SERVER_HOST": False,
+    "ENABLE_VISUAL_SUB_REFINER": False,
+}
+_INT_DEFAULTS = {
+    "ASR_MAX_WORKERS": 10,
+    "STT_TIME_OFFSET_MS": 30,
+    "TTS_MAX_WORKERS": 128,
+    "TRANSLATION_BATCH_SIZE": 500,
+    "TRANSLATION_MAX_CHARS": 50000,
+    "GEMINI_THINKING_BUDGET": 8192,
+    "GEMINI_TOP_K": 40,
+    "VIDEO_RENDER_WORKERS": 0,
+    "VIDEO_SEGMENT_DURATION": 300,
+    "VIDEO_SINGLE_CHUNK_LIMIT": 1200,
+    "OCR_WORKERS": 0,
+    "OCR_CHUNK_SECONDS": 0,
+}
+_FLOAT_DEFAULTS = {
+    "TRANSLATION_TEMPERATURE": 0.25,
+    "GEMINI_TOP_P": 0.95,
+    "GEMINI_REQUEST_TIMEOUT": 300.0,
+    "GEMINI_PACING_INTERVAL": 4.1,
+}
+
+
+def _parse_env_value(key: str, raw: Optional[str]):
+    """Chuyển đổi giá trị cấu hình .env sang đúng kiểu dữ liệu với fallback an toàn cho chuỗi rỗng."""
+    val = "" if raw is None else str(raw).strip()
+    if key in _BOOL_DEFAULTS:
+        return val.lower() in ("true", "1", "yes") if val else _BOOL_DEFAULTS[key]
+    if key in _FLOAT_DEFAULTS:
+        if not val:
+            return _FLOAT_DEFAULTS[key]
+        try:
+            return float(val)
+        except Exception:
+            return _FLOAT_DEFAULTS[key]
+    if key in _INT_DEFAULTS:
+        if not val:
+            return _INT_DEFAULTS[key]
+        try:
+            return int(val)
+        except Exception:
+            return _INT_DEFAULTS[key]
+    if key == "OCR_HWACCEL":
+        return (val or "auto").lower()
+    if val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
+        try:
+            return int(val)
+        except Exception:
+            return val
+    return val
+
+
+def _env_str(key: str, default: str = "") -> str:
+    val = os.getenv(key)
+    return default if val is None or not str(val).strip() else str(val).strip()
+
+
+def _env_bool(key: str) -> bool:
+    return _parse_env_value(key, os.getenv(key))
+
+
+def _env_int(key: str) -> int:
+    return _parse_env_value(key, os.getenv(key))
+
+
+def _env_float(key: str) -> float:
+    return _parse_env_value(key, os.getenv(key))
+
+
 class Settings:
     PROJECT_NAME: str = "ReviewMatThon Video Dubbing & Processing Backend"
     VERSION: str = "1.0.0"
@@ -108,49 +182,60 @@ class Settings:
     # SQLite Database URL
     DATABASE_URL: str = f"sqlite:///{DB_PATH}"
     
-    # ASR Engine Selection: "groq" (Groq Whisper Cloud - Chuẩn nhất) | "faster_whisper" (Offline CPU/GPU)
-    ASR_ENGINE: str = os.getenv("ASR_ENGINE", "capcut")
+    # Chế độ máy chủ phát triển
+    IS_SERVER_HOST: bool = _env_bool("IS_SERVER_HOST")
+
+    # ASR Engine Selection: "capcut" | "groq" | "faster_whisper"
+    ASR_ENGINE: str = _env_str("ASR_ENGINE", "capcut")
     
     # Groq API Configuration
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "whisper-large-v3")
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
+    GROQ_MODEL: str = _env_str("GROQ_MODEL", "whisper-large-v3")
     
     # Faster-Whisper Model Settings (Offline)
-    WHISPER_MODEL_SIZE: str = os.getenv("WHISPER_MODEL_SIZE", "base")
-    WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "auto")
-    WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+    WHISPER_MODEL_SIZE: str = _env_str("WHISPER_MODEL_SIZE", "base")
+    WHISPER_DEVICE: str = _env_str("WHISPER_DEVICE", "auto")
+    WHISPER_COMPUTE_TYPE: str = _env_str("WHISPER_COMPUTE_TYPE", "int8")
     
-    # Gemini API Settings
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
-    GEMINI_THINKING_BUDGET: int = int(os.getenv("GEMINI_THINKING_BUDGET", "-1"))
+    # Gemini API Settings (Khóa chuẩn thông số tối ưu cho 2 model Lite qua Gateway)
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_MODEL: str = _env_str("GEMINI_MODEL", "gemini-3.1-flash-lite")
+    GEMINI_THINKING_BUDGET: int = _env_int("GEMINI_THINKING_BUDGET")
+    GEMINI_TOP_P: float = _env_float("GEMINI_TOP_P")
+    GEMINI_TOP_K: int = _env_int("GEMINI_TOP_K")
+    GEMINI_REQUEST_TIMEOUT: float = _env_float("GEMINI_REQUEST_TIMEOUT")
+    GEMINI_PACING_INTERVAL: float = _env_float("GEMINI_PACING_INTERVAL")
     
     # OpenRouter API Settings
-    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "")
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "").strip()
+    OPENROUTER_MODEL: str = _env_str("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
     # Translation Settings (Lô lớn 200 - 500 câu theo chuẩn AIRead)
-    TRANSLATION_PROVIDER: str = os.getenv("TRANSLATION_PROVIDER", "gemini")
-    GEMINI_WEB_MODEL: str = os.getenv("GEMINI_WEB_MODEL", "flash")
-    GEMINI_WEB_THINKING: str = os.getenv("GEMINI_WEB_THINKING", "medium")
-    GEMINI_WEB_HEADLESS: bool = os.getenv("GEMINI_WEB_HEADLESS", "false").lower() == "true"
-    TRANSLATION_GENRE: str = os.getenv("TRANSLATION_GENRE", "tienhiep")
-    TRANSLATION_BATCH_SIZE: int = int(os.getenv("TRANSLATION_BATCH_SIZE", "500"))
-    TRANSLATION_MAX_CHARS: int = int(os.getenv("TRANSLATION_MAX_CHARS", "50000"))
-    TRANSLATION_TEMPERATURE: float = float(os.getenv("TRANSLATION_TEMPERATURE", "0.25"))
+    TRANSLATION_PROVIDER: str = _env_str("TRANSLATION_PROVIDER", "gemini")
+    GEMINI_WEB_MODEL: str = _env_str("GEMINI_WEB_MODEL", "flash")
+    GEMINI_WEB_THINKING: str = _env_str("GEMINI_WEB_THINKING", "low")
+    GEMINI_WEB_HEADLESS: bool = _env_bool("GEMINI_WEB_HEADLESS")
+    TRANSLATION_GENRE: str = _env_str("TRANSLATION_GENRE", "tienhiep")
+    TRANSLATION_BATCH_SIZE: int = _env_int("TRANSLATION_BATCH_SIZE")
+    TRANSLATION_MAX_CHARS: int = _env_int("TRANSLATION_MAX_CHARS")
+    TRANSLATION_TEMPERATURE: float = _env_float("TRANSLATION_TEMPERATURE")
     
     # STT ASR Settings (Nhận diện giọng nói đa luồng song song: 6 - 10 luồng tối ưu tốc độ)
-    ASR_MAX_WORKERS: int = int(os.getenv("ASR_MAX_WORKERS", "10"))
+    ASR_MAX_WORKERS: int = _env_int("ASR_MAX_WORKERS")
     # Độ trễ thời gian STT (mili-giây) trừ về trước để khớp giọng đọc với thoại gốc (Chuẩn 30ms)
-    STT_TIME_OFFSET_MS: int = int(os.getenv("STT_TIME_OFFSET_MS", "30"))
-    # Tự động quét phụ đề cứng trên video để gộp câu & sửa đồng âm CapCut (Zero-LLM, thích ứng GPU QSV/CUDA)
-    ENABLE_VISUAL_SUB_REFINER: bool = os.getenv("ENABLE_VISUAL_SUB_REFINER", "True").lower() in ("true", "1", "yes")
+    STT_TIME_OFFSET_MS: int = _env_int("STT_TIME_OFFSET_MS")
+    # Tự động quét phụ đề cứng trên video để gộp câu & sửa đồng âm CapCut (Mặc định TẮT vì chậm và ít tác dụng thực tế; có thể bật lại trong Settings)
+    ENABLE_VISUAL_SUB_REFINER: bool = _env_bool("ENABLE_VISUAL_SUB_REFINER")
+    OCR_WORKERS: int = _env_int("OCR_WORKERS")
+    OCR_CHUNK_SECONDS: int = _env_int("OCR_CHUNK_SECONDS")
+    OCR_HWACCEL: str = _env_str("OCR_HWACCEL", "auto").lower()
 
     # TTS Voiceover Settings: "capcut" (CapCut Cloud SAMI - Khuyên dùng) | "tiktok" (TikTok Legacy)
-    TTS_ENGINE: str = os.getenv("TTS_ENGINE", "capcut")
-    TTS_MAX_WORKERS: int = int(os.getenv("TTS_MAX_WORKERS", "96"))
-    CAPCUT_COOKIE: str = os.getenv("CAPCUT_COOKIE", "")
-    TIKTOK_SESSION_ID: str = os.getenv("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
+    TTS_ENGINE: str = _env_str("TTS_ENGINE", "capcut")
+    TTS_MAX_WORKERS: int = _env_int("TTS_MAX_WORKERS")
+    CAPCUT_COOKIE: str = os.getenv("CAPCUT_COOKIE", "").strip()
+    TIKTOK_SESSION_ID: str = _env_str("TIKTOK_SESSION_ID", "410bfa37bdc185e1c6da82e1afb48409")
+    PROXY_LIST: str = os.getenv("PROXY_LIST", "").strip()
     
     # =========================================================================
     # CỜ CẤU HÌNH GỘP CÂU TTS (TTS CHUNK MERGING FLAG):
@@ -158,15 +243,15 @@ class Settings:
     #   Mỗi câu LLM là 1 chunk TTS riêng biệt, triệt tiêu nguy cơ CapCut nuốt chữ khi chunk quá dài.
     # - True (KHÔI PHỤC LẠI): Bật gộp các câu thoại ngắn liên tiếp của cùng 1 nhân vật (<0.85s).
     # =========================================================================
-    TTS_MERGE_CHUNKS: bool = os.getenv("TTS_MERGE_CHUNKS", "False").lower() in ("true", "1", "yes")
+    TTS_MERGE_CHUNKS: bool = _env_bool("TTS_MERGE_CHUNKS")
     
-    # Render Video Settings (Render phân đoạn song song thích ứng phần cứng)
-    VIDEO_RENDER_WORKERS: int = int(os.getenv("VIDEO_RENDER_WORKERS", "3"))
-    VIDEO_SEGMENT_DURATION: int = int(os.getenv("VIDEO_SEGMENT_DURATION", "300"))
-    VIDEO_SINGLE_CHUNK_LIMIT: int = int(os.getenv("VIDEO_SINGLE_CHUNK_LIMIT", "1200"))
+    # Render Video Settings (Render phân đoạn song song thích ứng phần cứng; 0 = auto-detect)
+    VIDEO_RENDER_WORKERS: int = _env_int("VIDEO_RENDER_WORKERS")
+    VIDEO_SEGMENT_DURATION: int = _env_int("VIDEO_SEGMENT_DURATION")
+    VIDEO_SINGLE_CHUNK_LIMIT: int = _env_int("VIDEO_SINGLE_CHUNK_LIMIT")
 
     # Downloader / Bilibili Cookie Settings (Không dùng proxy, hỗ trợ cookie file để tải HD 1080p 60fps)
-    BILIBILI_COOKIE_FILE: str = os.getenv("BILIBILI_COOKIE_FILE", "cookies.txt")
+    BILIBILI_COOKIE_FILE: str = _env_str("BILIBILI_COOKIE_FILE", "cookies.txt")
 
     # Paths
     BASE_DIR: Path = BASE_DIR
@@ -220,37 +305,21 @@ class Settings:
         return None
 
     @classmethod
+    def _cast_env_value(cls, k: str, v: str):
+        return _parse_env_value(k, v)
+
+    @classmethod
     def reload_from_env(cls):
         """Đọc lại toàn bộ cấu hình từ file .env vào runtime settings và os.environ ngay lập tức"""
         if not cls.ENV_PATH.exists():
             return
-        bool_fields = {"TTS_MERGE_CHUNKS", "GEMINI_WEB_HEADLESS", "IS_SERVER_HOST", "ENABLE_VISUAL_SUB_REFINER"}
-        int_fields = {
-            "ASR_MAX_WORKERS", "STT_TIME_OFFSET_MS", "TTS_MAX_WORKERS",
-            "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS", "GEMINI_THINKING_BUDGET",
-            "VIDEO_RENDER_WORKERS", "VIDEO_SEGMENT_DURATION", "VIDEO_SINGLE_CHUNK_LIMIT"
-        }
-        float_fields = {"TRANSLATION_TEMPERATURE"}
         with open(cls.ENV_PATH, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
                     k, v = k.strip(), v.strip()
-                    if k in bool_fields:
-                        val = v.lower() in ("true", "1", "yes")
-                    elif k in float_fields:
-                        try:
-                            val = float(v)
-                        except Exception:
-                            val = 0.65
-                    elif k in int_fields or (isinstance(v, str) and (v.isdigit() or (v.startswith('-') and v[1:].isdigit()))):
-                        try:
-                            val = int(v)
-                        except Exception:
-                            val = v
-                    else:
-                        val = v
+                    val = cls._cast_env_value(k, v)
                     setattr(cls, k, val)
                     if 'settings' in globals():
                         setattr(globals()['settings'], k, val)
@@ -267,39 +336,21 @@ class Settings:
                     if line and not line.startswith("#") and "=" in line:
                         k, v = line.split("=", 1)
                         env_dict[k.strip()] = v.strip()
-        
-        bool_fields = {"TTS_MERGE_CHUNKS", "GEMINI_WEB_HEADLESS", "IS_SERVER_HOST", "ENABLE_VISUAL_SUB_REFINER"}
-        int_fields = {"ASR_MAX_WORKERS", "TTS_MAX_WORKERS", "TRANSLATION_BATCH_SIZE", "TRANSLATION_MAX_CHARS", "GEMINI_THINKING_BUDGET"}
-        float_fields = {"TRANSLATION_TEMPERATURE"}
 
         for k, v in updates.items():
             if v is not None:
                 str_v = str(v).strip()
                 env_dict[k] = str_v
-
-                if k in bool_fields:
-                    val = str_v.lower() in ("true", "1", "yes")
-                elif k in float_fields:
-                    try:
-                        val = float(str_v)
-                    except Exception:
-                        val = 0.65
-                elif k in int_fields or (str_v.isdigit() or (str_v.startswith('-') and str_v[1:].isdigit())):
-                    try:
-                        val = int(str_v)
-                    except Exception:
-                        val = str_v
-                else:
-                    val = str_v
+                val = cls._cast_env_value(k, str_v)
                 setattr(cls, k, val)
                 if 'settings' in globals():
                     setattr(globals()['settings'], k, val)
                 os.environ[k] = str_v
-                
+
         with open(cls.ENV_PATH, "w", encoding="utf-8") as f:
             for k, v in sorted(env_dict.items()):
                 f.write(f"{k}={v}\n")
-        
+
         cls.reload_from_env()
 
 settings = Settings()

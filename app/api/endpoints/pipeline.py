@@ -44,11 +44,16 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
     except Exception:
         pass
     db = SessionLocal()
+    project_id = req.project_id
+    fa_video_id = None
+    fa_video_path = None
+    fa_audio_path = None
+    fa_clean_audio_path = None
     try:
+        task_manager.update_task_meta(task_id, project_id=project_id, phase="stt")
         task_manager.update_task(task_id, status="running", step=1, progress=2)
         task_manager.add_log(task_id, "🚀 BẮT ĐẦU QUY TRÌNH TỰ ĐỘNG HÓA 100% (FULL-AUTO PIPELINE)", "purple")
 
-        project_id = req.project_id
         project = None
 
         # BƯỚC 1: Nếu chưa có project_id thì Tải Video & STT
@@ -68,15 +73,21 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     task_manager.add_log(task_id, f"[1/5] {msg}", "cyan")
 
             video_path, info = DownloaderService.download_video(url=req.url, quality=req.quality, progress_callback=on_fa_download)
+            fa_video_id = info.get("id")
+            fa_video_path = video_path
+            task_manager.update_task_meta(task_id, video_id=fa_video_id, video_path=fa_video_path)
             task_manager.add_log(task_id, f"   ✔ Video đã tải: {info['title']}", "emerald")
 
             task_manager.update_task(task_id, step=1, progress=10)
             task_manager.add_log(task_id, "[1/5] 🎵 Trích xuất Audio 16kHz PCM WAV...", "cyan")
             audio_path = AudioExtractorService.extract_audio_16k_wav(video_path)
+            fa_audio_path = audio_path
 
             task_manager.update_task(task_id, step=1, progress=14)
             task_manager.add_log(task_id, "[1/5] 🎙️ Đang lọc sạch tạp âm & khử ồn nền trước khi gửi CapCut ASR...", "cyan")
             clean_audio_path = AudioExtractorService.get_clean_audio_for_asr(audio_path)
+            fa_clean_audio_path = clean_audio_path
+            task_manager.update_task_meta(task_id, audio_path=fa_audio_path, clean_audio_path=fa_clean_audio_path)
             task_manager.add_log(task_id, f"   ✔ Đã làm sạch âm thanh (Vocal Denoise) -> Sẵn sàng bóc tách.", "emerald")
 
             engine = getattr(settings, "ASR_ENGINE", "capcut").lower()
@@ -164,11 +175,29 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 ))
             db.commit()
             db.refresh(project)
+            fa_video_path = project.video_path
+            fa_audio_path = project.audio_path
+            task_manager.update_task_meta(task_id, project_id=project_id, video_id=fa_video_id, video_path=fa_video_path, audio_path=fa_audio_path)
+            try:
+                from app.utils.resource_cleaner import clear_stt_caches_and_temp
+                clear_stt_caches_and_temp(
+                    audio_path=fa_audio_path,
+                    clean_audio_path=fa_clean_audio_path,
+                    video_path=fa_video_path,
+                    video_id=fa_video_id,
+                    purge_visual_cache=True,
+                )
+            except Exception:
+                pass
             task_manager.add_log(task_id, f"   ✔ Đã tạo Project #{project_id} trong SQLite CSDL.", "emerald")
         else:
             project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
             if not project:
                 raise ValueError(f"Không tìm thấy Project #{project_id}")
+            fa_video_id = project.video_id
+            fa_video_path = project.video_path
+            fa_audio_path = project.audio_path
+            task_manager.update_task_meta(task_id, project_id=project_id, video_id=fa_video_id, video_path=fa_video_path, audio_path=fa_audio_path)
             task_manager.add_log(task_id, f"✔ Sử dụng Project #{project_id} có sẵn: {project.title}", "emerald")
 
             p_dirs = get_project_dirs(project_id)
@@ -191,6 +220,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     else:
                         project.video_path = downloaded_vpath
                     db.commit()
+                    fa_video_path = project.video_path
+                    task_manager.update_task_meta(task_id, video_path=fa_video_path)
                     task_manager.add_log(task_id, f"✔ Đã tải video gốc thành công: {Path(project.video_path).name}", "emerald")
                 else:
                     raise FileNotFoundError(f"Không tìm thấy file video gốc trên ổ đĩa: {project.video_path}")
@@ -202,12 +233,16 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                 task_manager.add_log(task_id, "[1/5] 🎵 Video chưa có câu thoại trong CSDL. Đang trích xuất Audio 16kHz PCM WAV...", "cyan")
                 raw_audio_path = AudioExtractorService.extract_audio_16k_wav(project.video_path)
                 project.audio_path = raw_audio_path
+                fa_video_path = project.video_path
+                fa_audio_path = raw_audio_path
                 db.commit()
 
                 # Lọc sạch tạp âm RIÊNG cho CapCut ASR để nhận diện chuẩn, không ảnh hưởng đến âm thanh video gốc
                 task_manager.update_task(task_id, step=1, progress=14)
                 task_manager.add_log(task_id, "[1/5] 🎙️ Đang lọc sạch tạp âm & khử ồn nền trước khi gửi CapCut ASR...", "cyan")
                 clean_audio_path = AudioExtractorService.get_clean_audio_for_asr(raw_audio_path)
+                fa_clean_audio_path = clean_audio_path
+                task_manager.update_task_meta(task_id, video_path=fa_video_path, audio_path=fa_audio_path, clean_audio_path=fa_clean_audio_path)
                 task_manager.add_log(task_id, f"   ✔ Đã làm sạch âm thanh (Vocal Denoise) -> Sẵn sàng bóc tách.", "emerald")
 
                 engine = getattr(settings, "ASR_ENGINE", "capcut").lower()
@@ -264,6 +299,17 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                         status="RAW"
                     ))
                 db.commit()
+                try:
+                    from app.utils.resource_cleaner import clear_stt_caches_and_temp
+                    clear_stt_caches_and_temp(
+                        audio_path=fa_audio_path,
+                        clean_audio_path=fa_clean_audio_path,
+                        video_path=fa_video_path,
+                        video_id=fa_video_id,
+                        purge_visual_cache=True,
+                    )
+                except Exception:
+                    pass
                 task_manager.add_log(task_id, f"   ✔ Đã lưu {len(dialogues)} câu thoại vào SQLite CSDL.", "emerald")
 
         if task_manager.is_cancelled(task_id):
@@ -312,6 +358,7 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     "cyan"
                 )
             
+            task_manager.update_task_meta(task_id, phase="translating")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
@@ -328,11 +375,27 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
                     )
                 )
             finally:
-                # GIỮ NGUYÊN PHIÊN GEMINI WEB CHO CÁC VIDEO TIẾP THEO (KHÔNG TẮT GIỮA CHỪNG)
                 try:
                     loop.close()
                 except Exception:
                     pass
+                # Giải phóng ngay Chromium Gemini Web + Cache dịch thuật trước khi vào pha TTS & GPU Render nặng RAM/CPU
+                try:
+                    from app.utils.resource_cleaner import cleanup_after_task
+                    cleanup_after_task(
+                        "translate",
+                        task_id=task_id,
+                        project_id=project_id,
+                        video_id=fa_video_id,
+                        video_path=fa_video_path,
+                        audio_path=fa_audio_path,
+                        clean_audio_path=fa_clean_audio_path,
+                        purge_project_temp=False,
+                        shutdown_browser=True,
+                    )
+                except Exception:
+                    pass
+                task_manager.update_task_meta(task_id, phase="tts_render")
             task_manager.add_log(task_id, f"   ✔ Dịch thuật & Quét lỗi Hán hoàn tất ({trans_res.get('total_segments', 0)} câu).", "emerald")
         else:
             task_manager.update_task(task_id, step=2, progress=50)
@@ -702,6 +765,8 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
         # Dọn dẹp file tạm nếu có
         if temp_visual_video.exists():
             temp_visual_video.unlink(missing_ok=True)
+        if mixed_audio_file.exists():
+            mixed_audio_file.unlink(missing_ok=True)
 
         # Cập nhật CSDL
         project.final_video_path = str(output_final_path)
@@ -751,11 +816,29 @@ def _run_full_auto_worker(task_id: str, req: FullAutoPipelineRequest):
             )
     finally:
         db.close()
+        try:
+            from app.utils.resource_cleaner import cleanup_after_task
+            cleanup_after_task(
+                "full_auto",
+                task_id=task_id,
+                project_id=project_id,
+                video_id=fa_video_id,
+                video_path=fa_video_path,
+                audio_path=fa_audio_path,
+                clean_audio_path=fa_clean_audio_path,
+                purge_project_temp=True,
+                shutdown_browser=True,
+            )
+        except Exception:
+            pass
 
 
 def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
     """Worker chạy background thread độc lập, không block HTTP request"""
     db = SessionLocal()
+    p_video_id = None
+    p_video_path = None
+    p_audio_path = None
     try:
         task_manager.update_task(task_id, status="running", step=1, progress=5)
         task_manager.add_log(task_id, f"[1/4] 📥 Bắt đầu tải video từ URL: {req.url}", "cyan")
@@ -777,6 +860,9 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
             quality=req.quality,
             progress_callback=on_ingest_download
         )
+        p_video_id = info.get("id")
+        p_video_path = video_path
+        task_manager.update_task_meta(task_id, video_id=p_video_id, video_path=p_video_path)
         task_manager.add_log(task_id, f"✔ Video đã tải xong: {info['title']}", "emerald")
 
         # Nếu không yêu cầu tách sub (khi bấm Tải Về ở giao diện, tách sub sẽ làm ở bước Bắt đầu)
@@ -852,6 +938,8 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
         task_manager.update_task(task_id, step=2, progress=30)
         task_manager.add_log(task_id, f"[2/4] 🎵 Đang trích xuất Audio 16kHz PCM WAV qua FFmpeg (input/audio_raw)...", "cyan")
         audio_path = AudioExtractorService.extract_audio_16k_wav(video_path)
+        p_audio_path = audio_path
+        task_manager.update_task_meta(task_id, audio_path=p_audio_path)
         task_manager.add_log(task_id, f"✔ Trích xuất Audio 16kHz thành công.", "emerald")
 
         # Bước 3: AI Bóc tách lời thoại & Làm sạch text
@@ -974,6 +1062,18 @@ def _run_pipeline_worker(task_id: str, req: IngestPipelineRequest):
         )
     finally:
         db.close()
+        try:
+            from app.utils.resource_cleaner import cleanup_after_task
+            cleanup_after_task(
+                "stt",
+                task_id=task_id,
+                video_id=p_video_id,
+                video_path=p_video_path,
+                audio_path=p_audio_path,
+                purge_project_temp=True,
+            )
+        except Exception:
+            pass
 
 
 @router.post("/full-auto", response_model=AsyncTaskResponse, summary="Khởi chạy trọn gói 100% Tự động 1-Click (Tải -> Dịch AIREAD -> Quét lỗi -> TTS -> Video)")
@@ -1130,13 +1230,48 @@ def cleanup_chunks_endpoint(video_id: str):
     TikTokTTSService.cleanup_project_audio_chunks(video_id)
     return {"status": "success", "message": f"Đã dọn dẹp sạch sẽ các chunk tạm của video {video_id}."}
 
+
+@router.post("/cleanup-memory", summary="Giải phóng toàn bộ RAM đệm, Chromium ngầm và file tạm rảnh ngay lập tức")
+async def cleanup_memory_endpoint():
+    """Tắt Chromium Gemini Web (nếu không có tác vụ dịch đang chạy), xả model/cache RAM và dọn file tạm rảnh."""
+    from app.utils.resource_cleaner import (
+        cleanup_after_task,
+        get_process_memory_mb,
+        shutdown_gemini_browser_async,
+    )
+    before_mem = get_process_memory_mb()
+    is_idle = task_manager.count_active_tasks() == 0
+    browser_closed = await shutdown_gemini_browser_async(force=is_idle)
+    res = cleanup_after_task(
+        "all" if is_idle else "stt",
+        purge_project_temp=is_idle,
+        shutdown_browser=False,
+        force_trim=True,
+    )
+    return {
+        "status": "success",
+        "idle": is_idle,
+        "browser_closed": browser_closed,
+        "before_memory": before_mem,
+        "after_memory": res.get("memory", {}),
+        "details": res,
+    }
+
+
 def _run_extract_stt_worker(task_id: str, req: ExtractSTTRequest):
     db = SessionLocal()
+    s_video_id = None
+    s_video_path = None
+    s_audio_path = None
+    s_clean_audio_path = None
     try:
         task_manager.update_task(task_id, status="running", step=1, progress=10)
         project = db.query(ProjectTask).filter(ProjectTask.id == req.project_id).first()
         if not project:
             raise ValueError(f"Không tìm thấy Project #{req.project_id}")
+        s_video_id = project.video_id
+        s_video_path = project.video_path
+        task_manager.update_task_meta(task_id, project_id=project.id, video_id=s_video_id, video_path=s_video_path)
             
         task_manager.add_log(task_id, f"[1/2] 🎵 Đang xử lý Audio từ project: {project.title}", "cyan")
         
@@ -1150,10 +1285,13 @@ def _run_extract_stt_worker(task_id: str, req: ExtractSTTRequest):
                 db.commit()
             else:
                 raise ValueError("Không tìm thấy file Video hoặc Audio gốc của dự án này.")
+        s_audio_path = audio_path
 
         task_manager.update_task(task_id, step=1, progress=30)
         task_manager.add_log(task_id, f"[1/2] 🎙️ Đang lọc sạch tạp âm trước khi STT...", "cyan")
         clean_audio_path = AudioExtractorService.get_clean_audio_for_asr(audio_path)
+        s_clean_audio_path = clean_audio_path
+        task_manager.update_task_meta(task_id, audio_path=s_audio_path, clean_audio_path=s_clean_audio_path)
         
         engine = getattr(settings, "ASR_ENGINE", "capcut").lower()
         engine_name = "CapCut Cloud STT" if engine == "capcut" else "Groq Whisper"
@@ -1211,6 +1349,20 @@ def _run_extract_stt_worker(task_id: str, req: ExtractSTTRequest):
         task_manager.update_task(task_id, status="failed", error=err_msg, message=f"Lỗi: {err_msg}")
     finally:
         db.close()
+        try:
+            from app.utils.resource_cleaner import cleanup_after_task
+            cleanup_after_task(
+                "stt",
+                task_id=task_id,
+                project_id=req.project_id,
+                video_id=s_video_id,
+                video_path=s_video_path,
+                audio_path=s_audio_path,
+                clean_audio_path=s_clean_audio_path,
+                purge_project_temp=True,
+            )
+        except Exception:
+            pass
 
 
 @router.post("/extract-stt", response_model=AsyncTaskResponse, summary="Bóc tách thoại riêng biệt cho project đã tải")

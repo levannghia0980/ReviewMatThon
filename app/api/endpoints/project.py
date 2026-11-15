@@ -1,15 +1,17 @@
 import os
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
+import app.config as app_config
 from app.db.session import get_db
 from app.models.project import ProjectTask
-from app.models.dialogue import DialogueSegmentModel, TTSDialogueSegmentModel
+from app.models.dialogue import DialogueSegmentModel, TTSDialogueSegmentModel, PipelineSegmentModel
 from pydantic import BaseModel
 from app.config import settings
 
@@ -852,62 +854,127 @@ def update_project_dialogues(
         "message": f"Đã lưu thành công {updated_count} câu thoại vào Database SQLite và đồng bộ toàn bộ file trên ổ đĩa máy tính!"
     }
 
+@router.delete("/{project_id}", summary="Xóa vĩnh viễn Project và toàn bộ file/cache liên quan trên đĩa & Database")
 def delete_project(project_id: int, db: Session = Depends(get_db)):
     project = db.query(ProjectTask).filter(ProjectTask.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Không tìm thấy project để xóa!")
-        
-    vid = project.video_id
-    deleted_files = []
 
-    # 1. Danh sách các thư mục cần quét và dọn sạch file liên quan đến video_id
-    scan_dirs = [
-        settings.INPUT_VIDEOS_DIR,
-        settings.INPUT_AUDIO_DIR,
-        settings.OUTPUT_TRANSCRIPTS_DIR,
-        settings.OUTPUT_RAW_CLEANED_DIR,
-        settings.OUTPUT_ENTITIES_DIR,
-        settings.OUTPUT_DICH_AI_LLM_DIR,
-        settings.OUTPUT_POST_PROCESSED_DIR,
-        settings.OUTPUT_TRANSLATIONS_DIR,
-        settings.OUTPUT_VOICEOVER_DIR,
-        settings.OUTPUT_FINAL_VIDEOS_DIR,
-        settings.TEMP_TTS_DIR,
-        settings.BASE_DIR / "scratch",
+    vid = (project.video_id or "").strip()
+    explicit_paths = [
+        project.video_path,
+        project.audio_path,
+        project.srt_path,
+        project.txt_path,
+        project.json_path,
+        project.final_video_path,
     ]
+    deleted_files: List[str] = []
 
-    for target_dir in scan_dirs:
-        if target_dir.exists():
-            for f in list(target_dir.glob(f"*{vid}*")):
-                try:
-                    if f.is_file():
-                        f.unlink(missing_ok=True)
-                        deleted_files.append(f.name)
-                    elif f.is_dir():
-                        import shutil
-                        shutil.rmtree(f, ignore_errors=True)
-                        deleted_files.append(f"{f.name}/")
-                except Exception as e:
-                    print(f"Không thể xóa file {f}: {e}")
+    def _delete_fs_item(target: Path, display_name: Optional[str] = None) -> None:
+        label = display_name or (f"{target.name}/" if target.is_dir() else target.name)
+        try:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+                if not target.exists():
+                    deleted_files.append(label)
+            elif target.exists() or target.is_symlink():
+                target.unlink(missing_ok=True)
+                if not target.exists():
+                    deleted_files.append(label)
+        except Exception as e:
+            print(f"Không thể xóa {target}: {e}")
 
-    # 2. Xóa các đường dẫn cụ thể được lưu trong database nếu còn sót
-    for path_attr in [project.video_path, project.audio_path, project.srt_path, project.txt_path, project.json_path, project.final_video_path]:
-        if path_attr and os.path.exists(path_attr):
-            try:
-                os.remove(path_attr)
-                deleted_files.append(os.path.basename(path_attr))
-            except Exception:
-                pass
+    # 1. Dừng mọi tác vụ đang chạy cho project này để nhả khóa file (FFmpeg/Chromium)
+    try:
+        from app.services.task_manager import task_manager
+        task_manager.cancel_tasks_for_project(project_id)
+    except Exception:
+        pass
 
-    # 3. Xóa Database Record (tự động cascade xóa các câu thoại trong DialogueSegmentModel)
-    db.delete(project)
+    # 2. Xóa thư mục project chuẩn (output/projects/project_{id}/)
+    try:
+        proj_root = app_config.OUTPUT_PROJECTS_DIR / f"project_{project_id}"
+        if proj_root.exists():
+            _delete_fs_item(proj_root, f"projects/{proj_root.name}/")
+    except Exception as e:
+        print(f"Không thể xóa thư mục project_{project_id}: {e}")
+
+    # 3. Xóa cache OCR phụ đề cứng & cache TTS đĩa gắn với project
+    try:
+        from app.services.step_02_stt.visual_sub_refiner import clear_visual_cache_for_video
+        if clear_visual_cache_for_video(video_path=project.video_path, video_id=vid or None) > 0:
+            deleted_files.append("visual_sub_cache")
+    except Exception:
+        pass
+
+    try:
+        from app.utils.resource_cleaner import cleanup_tts_temp_cache
+        if vid and len(vid) >= 3:
+            cleanup_tts_temp_cache(video_id=vid)
+    except Exception:
+        pass
+
+    # 4. Quét các thư mục input/output/temp theo video_id (chỉ chạy khi vid đủ dài để tránh glob quá rộng)
+    if vid and len(vid) >= 3:
+        scan_dirs = [
+            settings.INPUT_VIDEOS_DIR,
+            settings.INPUT_AUDIO_DIR,
+            settings.OUTPUT_TRANSCRIPTS_DIR,
+            settings.OUTPUT_RAW_CLEANED_DIR,
+            settings.OUTPUT_ENTITIES_DIR,
+            settings.OUTPUT_DICH_AI_LLM_DIR,
+            settings.OUTPUT_POST_PROCESSED_DIR,
+            settings.OUTPUT_TRANSLATIONS_DIR,
+            settings.OUTPUT_VOICEOVER_DIR,
+            settings.OUTPUT_FINAL_VIDEOS_DIR,
+            settings.TEMP_TTS_DIR,
+            settings.TEMP_DIR,
+            settings.BASE_DIR / "scratch",
+        ]
+        for target_dir in scan_dirs:
+            if target_dir and target_dir.exists():
+                for f in list(target_dir.glob(f"*{vid}*")):
+                    if target_dir == settings.TEMP_DIR and f.name in ("tts_cache", "visual_sub_cache"):
+                        continue
+                    _delete_fs_item(f)
+
+    # 5. Xóa file trung gian STT theo stem của audio_path + toàn bộ đường dẫn lưu trong Database
+    if project.audio_path:
+        ap = Path(project.audio_path)
+        for extra in (
+            ap.parent / f"{ap.stem}_clean.wav",
+            ap.parent / f"{ap.stem}_chunks",
+            ap.parent / f"{ap.stem}_clean_chunks",
+        ):
+            if extra.exists():
+                _delete_fs_item(extra)
+
+    for path_attr in explicit_paths:
+        if path_attr:
+            _delete_fs_item(Path(path_attr))
+
+    # 6. Bulk delete SQLite (không tải hàng chục nghìn ORM row lên RAM như ORM cascade)
+    db.expunge_all()
+    db.query(PipelineSegmentModel).filter(PipelineSegmentModel.task_id == project_id).delete(synchronize_session=False)
+    db.query(ProjectTask).filter(ProjectTask.id == project_id).delete(synchronize_session=False)
     db.commit()
+
+    # 7. Xả cache RAM nếu hệ thống đang rảnh để trả lại bộ nhớ ngay
+    try:
+        from app.services.task_manager import task_manager
+        from app.utils.resource_cleaner import clear_tts_caches, trim_process_memory
+        if task_manager.count_active_tasks() == 0:
+            clear_tts_caches(clear_disk_cache=False)
+        trim_process_memory()
+    except Exception:
+        pass
 
     return {
         "status": "success",
-        "message": f"Đã xóa vĩnh viễn Project #{project_id} ({vid}) cùng {len(deleted_files)} file liên quan sạch sẽ 100%!",
+        "message": f"Đã xóa vĩnh viễn Project #{project_id} ({vid}) cùng {len(deleted_files)} mục dữ liệu trên ổ đĩa & DB sạch sẽ 100%!",
         "deleted_files_count": len(deleted_files),
-        "deleted_files": deleted_files[:10]
+        "deleted_files": deleted_files[:15],
     }
 
 @router.post("/{project_id}/reset-to-translated", summary="Reset Project về tình trạng ĐÃ DỊCH (giữ video gốc và câu thoại đã dịch, chỉ dọn dẹp TTS audio và video render)")

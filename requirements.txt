@@ -41,3 +41,4 @@ jieba>=0.42.1
 
 # Browser Automation & AI Web Worker
 playwright>=1.40.0
+filelock>=3.13.0

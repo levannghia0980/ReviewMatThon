@@ -21,12 +21,34 @@ from app.services.step_05_video.karaoke_subtitle_service import KaraokeSubtitleS
 from app.services.step_05_video.audio_mixer_service import AudioMixerService
 from app.services.task_manager import task_manager
 from app.utils.bin_helper import get_ffmpeg_cmd, get_ffprobe_cmd
+from app.utils.hardware_profile import recommend_render_workers
 
 
 class VideoComposerService:
     # Bộ nhớ đệm phần cứng GPU & Metadata giúp triệt tiêu thời gian chờ subprocess lặp lại
     _CACHED_ENCODER: Optional[Tuple[str, str, str]] = None
     _METADATA_CACHE: Dict[str, Tuple[float, int, int, float, str, float]] = {}
+    _MAX_METADATA_CACHE: int = 40
+
+    @classmethod
+    def prune_caches(cls, max_entries: int = 20) -> int:
+        """Cắt bớt _METADATA_CACHE để không giữ metadata của quá nhiều video cũ trong RAM."""
+        if max_entries <= 0:
+            n = len(cls._METADATA_CACHE)
+            cls._METADATA_CACHE.clear()
+            return n
+        removed = 0
+        while len(cls._METADATA_CACHE) > max_entries:
+            oldest_key = next(iter(cls._METADATA_CACHE))
+            cls._METADATA_CACHE.pop(oldest_key, None)
+            removed += 1
+        return removed
+
+    @classmethod
+    def clear_metadata_cache(cls) -> int:
+        n = len(cls._METADATA_CACHE)
+        cls._METADATA_CACHE.clear()
+        return n
 
     @classmethod
     def detect_best_encoder(cls) -> Tuple[str, str, str]:
@@ -181,6 +203,7 @@ class VideoComposerService:
 
         if p_str and dur > 0:
             cls._METADATA_CACHE[p_str] = (mtime, w, h, fps_val, fps_str, dur)
+            cls.prune_caches(cls._MAX_METADATA_CACHE)
         return w, h, fps_val, fps_str, dur
 
     @classmethod
@@ -873,12 +896,8 @@ class VideoComposerService:
             env_workers = os.getenv("VIDEO_RENDER_WORKERS")
             if env_workers and env_workers.isdigit() and int(env_workers) > 0:
                 workers = int(env_workers)
-            elif vcodec == "h264_nvenc":
-                workers = 4 if cpu_cores >= 8 else max(3, min(4, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
-            elif vcodec in ("h264_qsv", "h264_amf"):
-                workers = 4 if cpu_cores >= 8 else max(2, min(4, cpu_cores // 2 if cpu_cores >= 4 else cpu_cores))
             else:
-                workers = max(1, cpu_cores - 1)
+                workers = recommend_render_workers(vcodec=vcodec, cpu_cores=cpu_cores)
 
         if total_duration <= 300.0:
             segment_duration = max(30.0, total_duration / float(max(2, workers)))

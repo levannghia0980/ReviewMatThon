@@ -244,9 +244,7 @@ Chỉ trả về DUY NHẤT một mảng JSON thuần hợp lệ (không kèm ma
                     prompt=prompt,
                     provider=provider,
                     model=model,
-                    temperature=0.2,
                     response_mime_type="application/json",
-                    timeout=120.0
                 )
 
                 if not ans_text:

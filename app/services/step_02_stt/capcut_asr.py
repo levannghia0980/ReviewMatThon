@@ -401,30 +401,34 @@ class CapCutASRService:
             video_path
             and os.path.exists(video_path)
             and is_chinese
-            and getattr(settings, "ENABLE_VISUAL_SUB_REFINER", True)
+            and getattr(settings, "ENABLE_VISUAL_SUB_REFINER", False)
         )
 
-        # Kiểm tra cache sub ảnh trước; nếu chưa có cache thì quét FFmpeg + PP-OCRv4 song song lúc chờ CapCut Cloud
+        # Kiểm tra cache sub ảnh trước; nếu chưa có cache thì thăm dò ROI song song lúc chờ CapCut Cloud
+        # và chạy đối chiếu nhảy cóc ASR-Guided Lookahead (n -> n+k) ngay khi có mốc câu ASR.
         cached_visual_subs: List[Dict[str, Any]] = []
         visual_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         visual_future: Optional[concurrent.futures.Future] = None
+        asr_segments_future: Optional[concurrent.futures.Future] = None
         if use_visual_refiner:
             from app.services.step_02_stt.visual_sub_refiner import VisualSubRefiner
 
             cached_visual_subs = VisualSubRefiner.try_load_cached_subs(video_path)
             if cached_visual_subs:
-                logger.info(f"[VisualSubRefiner] Tìm thấy cache sub ảnh ({len(cached_visual_subs)} dòng) -> bỏ qua quét FFmpeg.")
+                logger.info(f"[VisualSubRefiner] Tìm thấy cache sub ảnh ({len(cached_visual_subs)} dòng) -> bỏ qua quét video.")
             else:
                 def _visual_progress(msg: str) -> None:
                     if task_id:
                         task_manager.add_log(task_id, f"   [VisualSubRefiner] {msg}", "cyan")
 
+                asr_segments_future = concurrent.futures.Future()
                 visual_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                 visual_future = visual_executor.submit(
                     VisualSubRefiner.extract_visual_blocks,
                     video_path=video_path,
                     fps=2.0,
                     progress_cb=_visual_progress,
+                    asr_segments_future=asr_segments_future,
                 )
 
         try:
@@ -479,6 +483,9 @@ class CapCutASRService:
             else:
                 cleaned_segments = all_raw_segments
 
+            if asr_segments_future is not None and not asr_segments_future.done():
+                asr_segments_future.set_result(cleaned_segments)
+
             # Đợi quét sub ảnh (nếu đang chạy song song) rồi tinh chỉnh trước khi áp dụng offset timeline
             extracted_subs: List[Dict[str, Any]] = []
             extract_stats: Dict[str, Any] = {}
@@ -505,7 +512,8 @@ class CapCutASRService:
                         f"[VisualSubRefiner] {ref_stats.get('total_in')} -> {ref_stats.get('total_out')} câu | "
                         f"Exact={ref_stats.get('exact')} (MW={ref_stats.get('multi_witness_saved')}), "
                         f"Superset={ref_stats.get('safe_superset')}, Fused={ref_stats.get('auto_fused')}, "
-                        f"Alias={ref_stats.get('alias_polished')}, Guard={ref_stats.get('bleed_guarded')} | "
+                        f"Alias={ref_stats.get('alias_polished')}, Guard={ref_stats.get('bleed_guarded')}, "
+                        f"SkipLookahead={extract_stats.get('skipped_lookahead', 0)} | "
                         f"t_vis={extract_stats.get('t_extract_wall', 0.0)}s ({extract_stats.get('hwaccel', 'cache')}), "
                         f"t_arb={ref_stats.get('t_arbiter', 0.0)}s"
                     )
@@ -521,7 +529,7 @@ class CapCutASRService:
                                 task_id,
                                 f"   ✔ [VisualSubRefiner] Gộp & sửa đồng âm: {ref_stats.get('total_in')} -> {ref_stats.get('total_out')} câu "
                                 f"(Exact={ref_stats.get('exact')}, Sửa từ={ref_stats.get('auto_fused', 0) + ref_stats.get('safe_superset', 0)}, "
-                                f"Alias={ref_stats.get('alias_polished', 0)}).",
+                                f"Alias={ref_stats.get('alias_polished', 0)}, Nhảy cóc={extract_stats.get('skipped_lookahead', 0)} câu).",
                                 "cyan",
                             )
                 except Exception as e_ref:
@@ -537,6 +545,8 @@ class CapCutASRService:
                 if is_chinese:
                     cleaned_segments = cls._merge_micro_fragments(cleaned_segments, is_chinese=is_chinese)
         finally:
+            if asr_segments_future is not None and not asr_segments_future.done():
+                asr_segments_future.set_result([])
             if visual_executor is not None:
                 visual_executor.shutdown(wait=True)
 

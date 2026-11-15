@@ -97,6 +97,15 @@ export default function MainStudioView({ onNavigateTab }) {
     }
 
     try {
+      if (selectedProject?.id === targetId && videoRef.current) {
+        try {
+          videoRef.current.pause();
+          videoRef.current.removeAttribute('src');
+          videoRef.current.load();
+        } catch {
+          // Ignore media unload errors
+        }
+      }
       const res = await fetch(`/api/v1/projects/${targetId}`, { method: 'DELETE' });
       const data = await res.json();
       if (res.ok) {

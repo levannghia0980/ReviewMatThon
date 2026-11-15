@@ -15,6 +15,7 @@ router = APIRouter()
 def _run_translation_worker(task_id: str, req: TranslateProjectRequest):
     """Worker chạy background thread độc lập để dịch thuật không block HTTP request"""
     db = SessionLocal()
+    loop = None
     try:
         # Tự động nạp lại cấu hình mới nhất từ file .env trước khi thực thi
         try:
@@ -22,6 +23,7 @@ def _run_translation_worker(task_id: str, req: TranslateProjectRequest):
         except Exception:
             pass
 
+        task_manager.update_task_meta(task_id, phase="translating")
         task_manager.update_task(task_id, status="running", step=1, progress=5)
         
         loop = asyncio.new_event_loop()
@@ -62,9 +64,20 @@ def _run_translation_worker(task_id: str, req: TranslateProjectRequest):
         )
     finally:
         db.close()
-        # GIỮ NGUYÊN PHIÊN GEMINI WEB CHO CÁC TÁC VỤ TIẾP THEO (KHÔNG TẮT GIỮA CHỪNG)
+        if loop is not None:
+            try:
+                loop.close()
+            except Exception:
+                pass
         try:
-            loop.close()
+            from app.utils.resource_cleaner import cleanup_after_task
+            cleanup_after_task(
+                "translate",
+                task_id=task_id,
+                project_id=req.project_id,
+                purge_project_temp=True,
+                shutdown_browser=True,
+            )
         except Exception:
             pass
 
@@ -127,13 +140,8 @@ def get_gemini_web_status():
 @router.post("/gemini-web/login", summary="Mở cửa sổ trình duyệt Chromium để người dùng đăng nhập tài khoản Google 1 lần")
 async def trigger_gemini_web_login():
     from app.services.step_03_translation.gemini_browser_session import GeminiBrowserSessionManager
-    from app.services.step_03_translation.gemini_web_service import GeminiWebService
-    from app.config import settings
     res = await GeminiBrowserSessionManager.open_login_window()
-    if res.get("success"):
-        # Tự động nạp ngay worker ngầm duy nhất để sẵn sàng làm việc
-        saved_thinking = getattr(settings, "GEMINI_WEB_THINKING", "medium")
-        asyncio.create_task(GeminiWebService.init_worker(saved_thinking))
+    # Tuân thủ nguyên tắc On-Demand: Không mở sẵn Chromium chạy ngầm sau khi đăng nhập, chỉ mở khi bắt đầu dịch.
     return res
 
 

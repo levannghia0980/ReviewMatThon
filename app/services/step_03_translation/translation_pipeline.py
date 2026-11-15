@@ -29,11 +29,11 @@ def format_timestamp(seconds: float) -> str:
 
 
 def is_true_mega_summary(items_list: List[Dict[str, Any]], batch_orig_dicts: List[Dict[str, Any]]) -> bool:
-    """Bắt khối gộp quá lớn: gộp >= 10 mẩu ASR hoặc >= 6 mẩu nhưng bị tóm tắt cụt (< 28% độ dài chữ Hán)."""
+    """Bắt khối gộp quá lớn hoặc tóm tắt cụt: gộp >= 20 mẩu ASR hoặc >= 6 mẩu nhưng bị tóm tắt cụt (< 28% độ dài chữ Hán)."""
     orig_zh_map = {s.get("index", idx + 1): str(s.get("zh", "")) for idx, s in enumerate(batch_orig_dicts)}
     for it in (items_list or []):
         src_ids = it.get("src", []) or []
-        if len(src_ids) >= 10:
+        if len(src_ids) >= 20:
             return True
         if len(src_ids) >= 6:
             vi_words = len(str(it.get("vi", "") or "").split())
@@ -191,6 +191,174 @@ class TranslationPipelineService:
         except Exception as e_exp:
             logger.warning(f"Lỗi xuất bản thảo trung gian khi dừng: {e_exp}")
 
+    @staticmethod
+    def _apply_batch_text_fixes(
+        batch: List[DialogueSegment],
+        text_fixes: Any,
+        project_id: int,
+        b_num: int,
+        proj_entities_dir: Path,
+        db: Session,
+        task_id: str,
+    ) -> int:
+        """
+        Áp dụng danh sách `{wrong, right}` từ LLM 1 CHỈ trong phạm vi lô `batch` hiện tại:
+        - Bảo vệ độ dài `len(wrong) >= 2`, thay thế 1 lần duy nhất từ cụm dài nhất -> ngắn nhất.
+        - Cập nhật `s.text` / `s.clean_text` trong RAM và `DialogueSegmentModel.original_text` trong DB.
+        - Ghi file backup `batch_{b_num:02d}_text_fixes.json` lưu bản trước/sau khi sửa để đối soát.
+        """
+        fixes_file = proj_entities_dir / f"batch_{b_num:02d}_text_fixes.json"
+
+        fix_map: Dict[str, str] = {}
+        ordered_fixes: List[Dict[str, str]] = []
+        if isinstance(text_fixes, list):
+            for item in text_fixes:
+                if not isinstance(item, dict):
+                    continue
+                wrong = str(item.get("wrong") or "").strip()
+                right = str(item.get("right") or "").strip()
+                if not wrong or not right or wrong == right or len(wrong) < 2 or wrong in fix_map:
+                    continue
+                fix_map[wrong] = right
+                ordered_fixes.append({"wrong": wrong, "right": right})
+
+        if not fix_map:
+            if fixes_file.exists():
+                fixes_file.unlink(missing_ok=True)
+            return 0
+
+        ordered_wrongs = sorted(fix_map.keys(), key=len, reverse=True)
+        replace_pattern = re.compile("|".join(re.escape(w) for w in ordered_wrongs))
+
+        changed_segments: List[Dict[str, Any]] = []
+        changed_by_idx: Dict[int, str] = {}
+        matched_wrongs = set()
+
+        for seg in batch:
+            before_text = (seg.clean_text or seg.text or "").strip()
+            if not before_text:
+                continue
+
+            def _sub_cb(match: re.Match) -> str:
+                token = match.group(0)
+                matched_wrongs.add(token)
+                return fix_map[token]
+
+            after_text = replace_pattern.sub(_sub_cb, before_text)
+            if after_text != before_text:
+                seg.text = after_text
+                seg.clean_text = after_text
+                seg_idx = getattr(seg, "id", getattr(seg, "index", None))
+                changed_segments.append({"id": seg_idx, "before": before_text, "after": after_text})
+                if seg_idx is not None:
+                    changed_by_idx[int(seg_idx)] = after_text
+
+        if not changed_segments:
+            if fixes_file.exists():
+                fixes_file.unlink(missing_ok=True)
+            return 0
+
+        if changed_by_idx:
+            db_rows = db.query(DialogueSegmentModel).filter(
+                DialogueSegmentModel.task_id == project_id,
+                DialogueSegmentModel.index.in_(list(changed_by_idx.keys())),
+            ).all()
+            for row in db_rows:
+                if row.index in changed_by_idx:
+                    row.original_text = changed_by_idx[row.index]
+            db.commit()
+
+        applied_rules = [f for f in ordered_fixes if f["wrong"] in matched_wrongs]
+        try:
+            with open(fixes_file, "w", encoding="utf-8") as f_fix:
+                json.dump(
+                    {
+                        "batch_index": b_num,
+                        "fixes": applied_rules,
+                        "segments": changed_segments,
+                    },
+                    f_fix,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+        except Exception as e_fix:
+            logger.warning(f"Lỗi ghi file backup text_fixes lô #{b_num}: {e_fix}")
+
+        summary_pairs = ", ".join(f"{f['wrong']} -> {f['right']}" for f in applied_rules)
+        log_msg = f"      🔧 [LLM 1 Text Fixes] Lô #{b_num}: Đã sửa {len(changed_segments)} câu trong lô & lưu DB ({summary_pairs})"
+        print(log_msg, flush=True)
+        if task_id:
+            task_manager.add_log(task_id, log_msg, "amber")
+        return len(changed_segments)
+
+    @staticmethod
+    def _build_and_merge_batch_entities(
+        raw_entities: List[Dict[str, Any]],
+        accumulated_entities: Dict[str, Dict[str, Any]],
+        batch_ent_file: Path,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Chuyển đổi thực thể lô hiện tại, lưu JSON lô và gộp toàn bộ vào `accumulated_entities` (không cắt xén)."""
+        new_entities: List[Dict[str, Any]] = []
+        for ent in raw_entities:
+            ch = str(ent.get("chinese_name") or "").strip()
+            vn = str(ent.get("vietnamese_name") or "").strip()
+            et = str(ent.get("entity_type") or "NAME").strip()
+            role = str(ent.get("role") or "").strip()
+            gender = str(ent.get("gender") or "").strip()
+            if gender.lower() == "null":
+                gender = ""
+            if not ch or not vn:
+                continue
+
+            if ch in accumulated_entities:
+                vn = accumulated_entities[ch]["viet"]
+            desc_parts = []
+            if gender:
+                desc_parts.append(f"Giới tính: {gender}")
+            if role and role != "-":
+                desc_parts.append(role)
+            new_entities.append({
+                "raw": ch,
+                "viet": vn,
+                "type": et,
+                "gender": gender,
+                "role": role,
+                "desc": "; ".join(desc_parts),
+            })
+
+        with open(batch_ent_file, "w", encoding="utf-8") as f:
+            json.dump(new_entities, f, ensure_ascii=False, indent=2)
+
+        new_found_count = 0
+        for ent in new_entities:
+            raw = ent.get("raw", "").strip()
+            if raw and raw not in accumulated_entities:
+                accumulated_entities[raw] = ent
+                new_found_count += 1
+            elif raw and raw in accumulated_entities:
+                ex = accumulated_entities[raw]
+                if (not ex.get("gender")) and ent.get("gender"):
+                    ex["gender"] = ent["gender"]
+                if (not ex.get("role") or ex.get("role") == "-") and ent.get("role"):
+                    ex["role"] = ent["role"]
+                if (not ex.get("desc") or ex.get("desc") == "-") and ent.get("desc"):
+                    ex["desc"] = ent["desc"]
+
+        return new_entities, new_found_count
+
+    @staticmethod
+    def _build_full_entity_table(accumulated_entities: Dict[str, Dict[str, Any]]) -> Tuple[int, str]:
+        """Đưa toàn bộ thực thể từ LLM 1 & tích lũy vào bảng ngữ cảnh cho LLM 2 (tuyệt đối không lọc bỏ)."""
+        entity_lines = []
+        for raw, ent in accumulated_entities.items():
+            if not raw:
+                continue
+            viet = ent.get("viet", "")
+            etype = ent.get("type", "NAME")
+            desc = ent.get("desc", "")
+            entity_lines.append(f"- {raw} ➔ {viet} ({etype}{': ' + desc if desc else ''})")
+        return len(entity_lines), "\n".join(entity_lines)
+
     @classmethod
     async def translate_project_dialogues(
         cls,
@@ -300,6 +468,18 @@ class TranslationPipelineService:
                 ))
             db.commit()
 
+            try:
+                from app.utils.resource_cleaner import clear_stt_caches_and_temp
+                clear_stt_caches_and_temp(
+                    audio_path=resolved_audio,
+                    clean_audio_path=clean_audio_path,
+                    video_path=resolved_video,
+                    video_id=project.video_id,
+                    purge_visual_cache=True,
+                )
+            except Exception:
+                pass
+
             dialogue_models = db.query(DialogueSegmentModel).filter(
                 DialogueSegmentModel.task_id == project_id
             ).order_by(DialogueSegmentModel.index.asc()).all()
@@ -323,14 +503,19 @@ class TranslationPipelineService:
         # Lấy thông tin model cụ thể để hiển thị minh bạch cho người dùng
         if provider == "gemini_web":
             tMap = {"low": "THẤP (~5-7s)", "medium": "TRUNG BÌNH (~10-15s)", "high": "CAO (~15-20s)"}
-            raw_t = (getattr(settings, "GEMINI_WEB_THINKING", "medium") or "medium").lower()
+            raw_t = (getattr(settings, "GEMINI_WEB_THINKING", "low") or "low").lower()
             t_str = tMap.get(raw_t, raw_t.upper())
             model_info_str = f"🌐 Gemini Web (Tự động Gemini 3 • Tư duy: {t_str})"
         else:
-            api_model = (getattr(settings, "GEMINI_MODEL", "") or "").strip()
-            tb = getattr(settings, "GEMINI_THINKING_BUDGET", -1)
-            tb_str = "Tự Động" if tb == -1 else ("Tắt" if tb == 0 else f"{tb} token")
-            model_info_str = f"⚡ Gemini API ({api_model} • Tư duy: {tb_str})"
+            from app.core.llm_client import resolve_gemini_runtime_config
+            rt_cfg = resolve_gemini_runtime_config()
+            api_model = rt_cfg["model"]
+            tb = rt_cfg["thinking_budget"]
+            tb_str = "Tự Động (-1)" if tb == -1 else ("Tắt (0)" if tb == 0 else f"{tb} token")
+            model_info_str = (
+                f"⚡ Gemini API ({api_model} • Temp: {rt_cfg['temperature']} • "
+                f"TopP: {rt_cfg['top_p']} • TopK: {rt_cfg['top_k']} • Tư duy: {tb_str})"
+            )
 
         # Tự động nhận diện thể loại nếu genre là auto, rỗng hoặc giá trị mặc định
         raw_genre = (genre or "").lower().strip()
@@ -338,7 +523,7 @@ class TranslationPipelineService:
             # Quét tiêu đề và mẫu các câu thoại đầu tiên
             sample_text = (project.title or "") + " " + " ".join(d.original_text or "" for d in dialogue_models[:35])
             sample_low = sample_text.lower()
-            if any(k in sample_low for k in ["求生", "公路", "末世", "丧尸", "废土", "zombie", "tận thế", "mạt thế", "避难所", "防空洞", "安全屋"]):
+            if any(k in sample_low for k in ["求生", "公路", "末世", "末日", "丧尸", "废土", "zombie", "tận thế", "mạt thế", "避难所", "庇护所", "防空洞", "安全屋"]):
                 detected_genre = "sci_fi_apocalypse"
             elif any(k in sample_low for k in ["系统", "升级", "签到", "hệ thống", "thăng cấp", "属性面板", "杀戮点"]):
                 detected_genre = "system_reincarnation"
@@ -617,73 +802,46 @@ class TranslationPipelineService:
                     pass
 
             clean_batch_text = BatchManager.pack_dialogues_to_clean_text(batch)
-            tagged_batch_text = BatchManager.pack_dialogues_to_tagged_text(batch)
             context_text = BatchManager.get_context_from_previous_batch(prev_batch)
 
             batch_status_msg = f"   ⚡ [Lô #{b_num}/{len(batches)}] LLM: Đang dịch (Câu #{start_bid} ➔ #{end_bid}, tổng {len(batch)} câu)..."
             task_manager.add_log(task_id, batch_status_msg, "cyan")
             print(f"⚡ [LÔ #{b_num}/{len(batches)}] Bắt đầu dịch Câu #{start_bid} ➔ #{end_bid} ({len(batch)} câu)...", flush=True)
 
-            # --- LLM 1: TRÍCH XUẤT & ĐỒNG BỘ THỰC THỂ THEO LÔ (Qua dịch Hán chuẩn) ---
-            raw_entities = await extract_batch_entities_direct_llm(
+            # --- LLM 1: TRÍCH XUẤT THỰC THỂ & PHÁT HIỆN LỖI ASR THEO LÔ ---
+            raw_entities, text_fixes = await extract_batch_entities_direct_llm(
                 combined_raw_text=clean_batch_text,
                 existing_entities=accumulated_entities,
+                return_text_fixes=True,
                 genre_key=genre,
                 provider=provider
             )
-            # Chuẩn hóa format sang dict {raw, viet, type, gender, role, desc}
-            new_entities = []
-            for ent in raw_entities:
-                ch = ent.get("chinese_name", "").strip()
-                vn = ent.get("vietnamese_name", "").strip()
-                et = ent.get("entity_type", "NAME").strip()
-                role = (ent.get("role") or "").strip()
-                gender = str(ent.get("gender") or "").strip()
-                if gender.lower() == "null":
-                    gender = ""
-                if ch and vn:
-                    # Nếu thực thể đã có trong từ điển tích lũy: BẢO VỆ 100% BẢN DỊCH CŨ
-                    if ch in accumulated_entities:
-                        vn = accumulated_entities[ch]["viet"]
-                    desc_parts = []
-                    if gender:
-                        desc_parts.append(f"Giới tính: {gender}")
-                    if role and role != "-":
-                        desc_parts.append(role)
-                    new_entities.append({
-                        "raw": ch,
-                        "viet": vn,
-                        "type": et,
-                        "gender": gender,
-                        "role": role,
-                        "desc": "; ".join(desc_parts),
-                    })
 
-            # LƯU THỰC THỂ RIÊNG CỦA LÔ NÀY VÀO FOLDER entities/
+            # ÁP DỤNG SỬA LỖI CHỈ TRONG LÔ NÀY (cập nhật DB + memory trước khi đóng gói văn bản gửi LLM 2)
+            fixed_seg_count = cls._apply_batch_text_fixes(
+                batch=batch,
+                text_fixes=text_fixes,
+                project_id=project.id,
+                b_num=b_num,
+                proj_entities_dir=proj_entities_dir,
+                db=db,
+                task_id=task_id,
+            )
+            if fixed_seg_count > 0:
+                clean_batch_text = BatchManager.pack_dialogues_to_clean_text(batch)
+            tagged_batch_text = BatchManager.pack_dialogues_to_tagged_text(batch)
+
             batch_ent_file = proj_entities_dir / f"batch_{b_num:02d}_entities.json"
-            with open(batch_ent_file, "w", encoding="utf-8") as f:
-                json.dump(new_entities, f, ensure_ascii=False, indent=2)
+            new_entities, new_found_count = cls._build_and_merge_batch_entities(
+                raw_entities=raw_entities,
+                accumulated_entities=accumulated_entities,
+                batch_ent_file=batch_ent_file,
+            )
 
             if task_manager.is_cancelled(task_id):
                 task_manager.add_log(task_id, f"🛑 Đã dừng tiến trình dịch thuật ở Lô #{b_num}. Bảo toàn nguyên vẹn các lô đã hoàn tất...", "amber")
                 cls._export_partial_transcripts(project, db, task_id)
                 raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
-
-            new_found_count = 0
-            for ent in new_entities:
-                raw = ent.get("raw", "").strip()
-                if raw and raw not in accumulated_entities:
-                    accumulated_entities[raw] = ent
-                    new_found_count += 1
-                elif raw and raw in accumulated_entities:
-                    # Tuyệt đối không ghi đè bản dịch cũ; chỉ bổ sung role/gender còn thiếu (vd khi resume từ bảng cũ)
-                    ex = accumulated_entities[raw]
-                    if (not ex.get("gender")) and ent.get("gender"):
-                        ex["gender"] = ent["gender"]
-                    if (not ex.get("role") or ex.get("role") == "-") and ent.get("role"):
-                        ex["role"] = ent["role"]
-                    if (not ex.get("desc") or ex.get("desc") == "-") and ent.get("desc"):
-                        ex["desc"] = ent["desc"]
 
             # Lưu entities tích lũy ra file all_entities.json (Đồng bộ format với Web UI)
             entities_export = [
@@ -708,15 +866,8 @@ class TranslationPipelineService:
             else:
                 task_manager.add_log(task_id, f"      ✔ LLM 1 xác nhận {len(new_entities)} thực thể trùng khớp với bảng tích lũy hiện có", "emerald")
 
-            # Tạo bảng thực thể cho LLM 2
-            entity_lines = []
-            for raw, ent in accumulated_entities.items():
-                if raw and (raw in clean_batch_text or raw in tagged_batch_text):
-                    viet = ent.get("viet", "")
-                    etype = ent.get("type", "NAME")
-                    desc = ent.get("desc", "")
-                    entity_lines.append(f"- {raw} ➔ {viet} ({etype}{': ' + desc if desc else ''})")
-            entity_table_text = "\n".join(entity_lines)
+            # Đưa TOÀN BỘ bảng thực thể từ LLM 1 & tích lũy sang LLM 2 (không lọc bỏ)
+            entity_count_for_llm2, entity_table_text = cls._build_full_entity_table(accumulated_entities)
 
             # Giãn cách 7s để Google AI Studio hoàn toàn xả tải xong trước khi nhận prompt dịch dài (chống 503 Server Busy)
             task_manager.add_log(task_id, f"      ⏳ [Lô #{b_num}] Giãn cách 7s xả tải Google AI Studio...", "gray")
@@ -727,7 +878,7 @@ class TranslationPipelineService:
                 raise asyncio.CancelledError(f"Người dùng đã hủy tiến trình tại Lô #{b_num}")
 
             # --- LLM 2: DỊCH VĂN PHONG CHUẨN AIREAD ---
-            task_manager.add_log(task_id, f"   ✨ [Lô #{b_num}/{len(batches)}] LLM 2: Dịch kịch bản văn phong AIRead với bảng {len(entity_lines)} thực thể xuất hiện trong lô...", "cyan")
+            task_manager.add_log(task_id, f"   ✨ [Lô #{b_num}/{len(batches)}] LLM 2: Dịch kịch bản văn phong AIRead với bảng {entity_count_for_llm2} thực thể đầy đủ từ LLM 1...", "cyan")
 
             # CHỈ LƯU DUY NHẤT 1 FILE PROMPT ĐẦU VÀO CỦA LLM: batch_XX_full_prompt.txt
             batch_prompt_file = proj_llm_io_dir / f"batch_{b_num:02d}_full_prompt.txt"
@@ -1224,7 +1375,6 @@ class TranslationPipelineService:
                 genre=genre,
                 provider=provider,
                 project_title=project.title,
-                timeout=180.0
             )
             if tts_fixed_map:
                 for t_row in tts_db_rows:
@@ -1239,7 +1389,6 @@ class TranslationPipelineService:
                 genre=genre,
                 provider=provider,
                 project_title=project.title,
-                timeout=180.0
             )
             if diag_fixed_map:
                 for d_row in diag_db_rows:

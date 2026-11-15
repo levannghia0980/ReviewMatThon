@@ -36,7 +36,7 @@ def _get_pacing_delay(min_interval: Optional[float] = None) -> float:
     if min_interval is None:
         try:
             env_val = os.getenv("GEMINI_PACING_INTERVAL")
-            min_interval = max(0.0, float(env_val)) if env_val is not None else 4.1
+            min_interval = max(0.0, float(env_val.strip())) if (env_val and env_val.strip()) else 4.1
         except Exception:
             min_interval = 4.1
 
@@ -63,7 +63,7 @@ async def post_gemini_with_retry(
     - Chủ động giãn cách tối thiểu 4.1s giữa các request (Adaptive Pacing) để 100% không chạm mốc 15 RPM.
     - Bắt và thử lại tự động các lỗi mạng/ngắt kết nối.
     - Xử lý thông minh lỗi HTTP 429 (Rate Limit / Quota Exceeded) với delay từ API.
-    - Xử lý lỗi 503 Server Busy: Chờ giãn cách tăng dần từ 20s - 80s và tự động fallback sang gemini-2.5-flash nếu 3.1 quá tải.
+    - Xử lý lỗi 503 Server Busy: Chờ giãn cách tăng dần từ 20s - 80s trên đúng model đã chọn.
     - Tự động gắn bộ lọc safetySettings=BLOCK_NONE để loại bỏ hoàn toàn vi phạm chặn văn bản.
     """
     if payload is not None and "safetySettings" not in payload:
@@ -71,9 +71,9 @@ async def post_gemini_with_retry(
 
     last_exception = None
     for attempt in range(1, max_retries + 1):
-        # Tự động điều tiết tần suất request (Pacing): Giãn cách tối thiểu 4.1s giữa các request
-        # để đảm bảo 100% không vượt quá ngưỡng 15 RPM của Gemini Free Tier, an toàn tuyệt đối trên mọi event loop.
-        delay = _get_pacing_delay(min_interval=4.1)
+        # Tự động điều tiết tần suất request (Pacing): mặc định giãn cách tối thiểu 4.1s (hoặc GEMINI_PACING_INTERVAL)
+        # giữa các request để không vượt ngưỡng 15 RPM của Gemini Free Tier, an toàn tuyệt đối trên mọi event loop.
+        delay = _get_pacing_delay()
         if delay > 0:
             await asyncio.sleep(delay)
 
@@ -286,23 +286,82 @@ def get_active_openrouter_keys() -> List[str]:
     return keys
 
 
+def resolve_gemini_runtime_config(
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+    thinking_budget: Optional[int] = None,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Hợp nhất cấu hình thực thi chuẩn xác cho 1 Cổng LLM Gateway duy nhất (khóa tối ưu cho 2 model Lite):
+    - gemini-3.1-flash-lite: temp=0.25, topP=0.95, topK=40, thinkingBudget=8192 (chống sập Q4 & chống tràn 62k MAX_TOKENS)
+    - gemini-3.5-flash-lite: temp=0.25, topP=0.95, topK=40, thinkingBudget=-1 (bắt buộc Dynamic để không rớt th=0)
+    - timeout mặc định 300s để toàn bộ 4 LLM (bóc thực thể, dịch thoại, sửa sót Hán, cứu phình TTS) chạy thông suốt.
+    """
+    from app.config import settings
+
+    model_name = (model or getattr(settings, "GEMINI_MODEL", "gemini-3.1-flash-lite") or "gemini-3.1-flash-lite").strip()
+    model_low = model_name.lower()
+
+    if temperature is not None:
+        temp_eff = float(temperature)
+    else:
+        temp_eff = 0.25
+
+    top_p_eff = float(getattr(settings, "GEMINI_TOP_P", 0.95) or 0.95)
+    top_k_eff = int(getattr(settings, "GEMINI_TOP_K", 40) or 40)
+    if timeout is not None:
+        timeout_eff = float(timeout)
+    else:
+        timeout_eff = float(getattr(settings, "GEMINI_REQUEST_TIMEOUT", 300.0) or 300.0)
+
+    if thinking_budget is not None:
+        try:
+            tb_eff = int(thinking_budget)
+        except (ValueError, TypeError):
+            tb_eff = -1 if "3.5" in model_low else 8192
+    elif "3.5" in model_low:
+        tb_eff = -1
+    elif "3.1" in model_low or "flash-lite" in model_low:
+        tb_eff = 8192
+    else:
+        try:
+            tb_eff = int(getattr(settings, "GEMINI_THINKING_BUDGET", -1))
+        except (ValueError, TypeError):
+            tb_eff = -1
+
+    if tb_eff == 0 and "pro" in model_low:
+        tb_eff = 128
+
+    return {
+        "model": model_name,
+        "temperature": temp_eff,
+        "top_p": top_p_eff,
+        "top_k": top_k_eff,
+        "max_output_tokens": 65536,
+        "thinking_budget": tb_eff,
+        "timeout": timeout_eff,
+    }
+
+
 async def execute_llm_call(
     prompt: str,
     provider: Optional[str] = None,
     model: Optional[str] = None,
-    temperature: float = 0.2,
+    temperature: Optional[float] = None,
     response_mime_type: Optional[str] = None,
     thinking_budget: Optional[int] = None,
     prompt_file_path: Optional[str] = None,
-    timeout: float = 300.0,
+    timeout: Optional[float] = None,
     system_instruction: Optional[str] = None
 ) -> str:
     """
     CỔNG ĐIỀU PHỐI LLM DUY NHẤT (UNIFIED LLM GATEWAY):
-    Tập trung 100% logic gọi AI cho toàn bộ hệ thống:
-    - Pass 1: Bóc tách thực thể (llm_extractor)
-    - Pass 2: Dịch thoại kịch bản (llm_translator)
-    - Pass 3: Hậu kiểm & Chuốt mượt chữ Hán (translation_auditor)
+    Tập trung 100% logic & thông số gọi AI cho toàn bộ 4 caller của hệ thống:
+    - LLM 1: Bóc tách thực thể (llm_extractor)
+    - LLM 2: Dịch thoại kịch bản (llm_translator)
+    - LLM 3: Sửa sót Hán toàn phim (translation_auditor)
+    - LLM 4: Cứu phình > 1.30x (tts_swollen_rescuer)
 
     Hỗ trợ chuẩn hóa các Provider:
     1. 'gemini_web': Tự động điều phối qua Browser Worker (chia 2 tin nhắn, New Chat, Thinking UI).
@@ -312,14 +371,15 @@ async def execute_llm_call(
     """
     from app.config import settings
 
-    if thinking_budget is None:
-        tb_raw = getattr(settings, "GEMINI_THINKING_BUDGET", -1)
-    else:
-        tb_raw = thinking_budget
-    try:
-        thinking_budget = int(tb_raw)
-    except (ValueError, TypeError):
-        thinking_budget = -1
+    runtime_cfg = resolve_gemini_runtime_config(
+        model=model,
+        temperature=temperature,
+        thinking_budget=thinking_budget,
+        timeout=timeout,
+    )
+    temp_eff = runtime_cfg["temperature"]
+    timeout_eff = runtime_cfg["timeout"]
+    thinking_budget = runtime_cfg["thinking_budget"]
 
     prov = (provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")).lower().strip()
 
@@ -334,8 +394,8 @@ async def execute_llm_call(
     if is_grok_local:
         grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
         full_p = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=20.0)) as client:
-            res_data = await post_grok_local_with_retry(client, grok_url, {"text": full_p, "timeout": timeout})
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_eff, connect=20.0)) as client:
+            res_data = await post_grok_local_with_retry(client, grok_url, {"text": full_p, "timeout": timeout_eff})
             return (res_data.get("translated_text") or "").strip()
 
     # 3. NHÁNH OPENROUTER
@@ -361,12 +421,12 @@ async def execute_llm_call(
         or_body: Dict[str, Any] = {
             "model": model_name,
             "messages": or_messages,
-            "temperature": temperature
+            "temperature": temp_eff
         }
         if response_mime_type == "application/json":
             or_body["response_format"] = {"type": "json_object"}
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=20.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_eff, connect=20.0)) as client:
             resp = await post_openrouter_with_retry(client, url, or_headers, or_body)
             if resp.status_code != 200:
                 raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
@@ -381,21 +441,20 @@ async def execute_llm_call(
     if not keys:
         raise ValueError("Chưa cấu hình GEMINI_API_KEY trong file .env hoặc Cài đặt!")
     api_key = keys[0]
-    model_name = (model or getattr(settings, "GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash").strip()
+    model_name = runtime_cfg["model"]
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
     gen_config: Dict[str, Any] = {
-        "temperature": temperature,
-        "maxOutputTokens": 65536,
+        "temperature": temp_eff,
+        "topP": runtime_cfg["top_p"],
+        "topK": runtime_cfg["top_k"],
+        "maxOutputTokens": runtime_cfg["max_output_tokens"],
     }
     model_low = model_name.lower()
     if any(k in model_low for k in ("2.5", "gemini-3", "3.", "thinking")):
-        tb_eff = thinking_budget
-        if tb_eff == 0 and "pro" in model_low:
-            tb_eff = 128
-        if tb_eff >= -1:
-            gen_config["thinkingConfig"] = {"thinkingBudget": tb_eff}
+        if thinking_budget >= -1:
+            gen_config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
 
     payload: Dict[str, Any] = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -408,7 +467,7 @@ async def execute_llm_call(
     if response_mime_type:
         payload["generationConfig"]["responseMimeType"] = response_mime_type
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=20.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_eff, connect=20.0)) as client:
         # Giãn cách 2.5s để nạp từ từ, chống nghẽn và giảm tải cho Google AI Studio
         await asyncio.sleep(2.5)
         resp = await post_gemini_with_retry(client, url, headers, payload)

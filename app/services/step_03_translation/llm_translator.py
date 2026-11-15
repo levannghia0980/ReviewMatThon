@@ -121,18 +121,15 @@ async def translate_batch_pass2_llm(
             logger.warning(f"Không thể lưu prompt ra {prompt_save_path}: {e}")
 
     provider = provider or getattr(settings, "TRANSLATION_PROVIDER", "gemini")
-    trans_temperature = float(getattr(settings, "TRANSLATION_TEMPERATURE", 0.85))
 
-    # Hàm nội bộ gọi LLM thông qua Cổng tập trung
+    # Hàm nội bộ gọi LLM thông qua Cổng tập trung (toàn bộ temp/topP/topK/thinking/timeout do Gateway khóa chuẩn)
     async def _execute_single_call(u_prompt: str) -> str:
         return await execute_llm_call(
             prompt=u_prompt,
             provider=provider,
             model=model,
-            temperature=trans_temperature,
             response_mime_type=None,
             prompt_file_path=prompt_save_path,
-            timeout=240.0,
             system_instruction=system_prompt
         )
 

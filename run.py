@@ -77,7 +77,7 @@ def check_environment():
         from app.config import settings
         current_provider = getattr(settings, "TRANSLATION_PROVIDER", "gemini")
         if current_provider == "gemini_web":
-            web_thinking = getattr(settings, "GEMINI_WEB_THINKING", "medium")
+            web_thinking = getattr(settings, "GEMINI_WEB_THINKING", "low")
             print(f"[OK] Che do dich: Google Gemini Web (Chromium On-Demand • Tu duy: {web_thinking.upper()})")
         else:
             api_model = getattr(settings, "GEMINI_MODEL", "gemini-3.1-flash-lite")
@@ -114,10 +114,13 @@ def main():
     # 2. Đăng ký dọn rác khi tiến trình thoát
     def _on_exit():
         try:
+            from app.services.task_manager import task_manager
+            task_manager.kill_all_subprocesses()
+        except Exception:
+            pass
+        try:
             from app.services.step_03_translation.gemini_web_service import GeminiWebService
-            if getattr(GeminiWebService, "_warm_page", None) is not None or getattr(GeminiWebService, "_context", None) is not None:
-                import asyncio
-                asyncio.run(GeminiWebService.shutdown_worker())
+            GeminiWebService.shutdown_worker_sync(timeout=4.0)
         except Exception:
             pass
 
@@ -133,14 +136,17 @@ def main():
     if hasattr(signal, 'SIGBREAK'):
         signal.signal(signal.SIGBREAK, lambda sig, frame: _fast_exit())
 
-    # Bộ bắt sự kiện bấm dấu [X] tắt nhanh Console trên Windows (thoát tức thì 0.01s, không bao giờ bị Not Responding)
+    # Bộ bắt sự kiện bấm dấu [X] tắt nhanh Console trên Windows (dọn sạch tiến trình con trước khi thoát)
     if sys.platform == "win32":
         try:
             import ctypes
             from ctypes import wintypes
             PHANDLER_ROUTINE = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
             def _console_ctrl_handler(ctrl_type):
-                os._exit(0)
+                try:
+                    _on_exit()
+                finally:
+                    os._exit(0)
                 return True
             _handler_func = PHANDLER_ROUTINE(_console_ctrl_handler)
             ctypes.windll.kernel32.SetConsoleCtrlHandler(_handler_func, True)

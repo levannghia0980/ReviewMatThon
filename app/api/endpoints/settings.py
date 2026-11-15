@@ -45,7 +45,9 @@ def mask_key(key: str) -> str:
 
 @router.get("", summary="Lấy cấu hình hiện tại của hệ thống")
 def get_settings():
+    from app.core.llm_client import resolve_gemini_runtime_config
     settings.reload_from_env()
+    rt_cfg = resolve_gemini_runtime_config()
     return {
         "asr_engine": settings.ASR_ENGINE,
         "groq_api_key": settings.GROQ_API_KEY,
@@ -58,17 +60,20 @@ def get_settings():
         "gemini_api_key": settings.GEMINI_API_KEY,
         "gemini_api_key_masked": mask_key(settings.GEMINI_API_KEY),
         "has_gemini_key": bool(settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip()),
-        "gemini_model": settings.GEMINI_MODEL,
+        "gemini_model": rt_cfg["model"],
+        "gemini_thinking_budget": rt_cfg["thinking_budget"],
+        "gemini_top_p": rt_cfg["top_p"],
+        "gemini_top_k": rt_cfg["top_k"],
         "openrouter_api_key": settings.OPENROUTER_API_KEY,
         "openrouter_api_key_masked": mask_key(settings.OPENROUTER_API_KEY),
         "has_openrouter_key": bool(settings.OPENROUTER_API_KEY and settings.OPENROUTER_API_KEY.strip()),
         "translation_max_chars": getattr(settings, "TRANSLATION_MAX_CHARS", 50000),
         "translation_batch_size": getattr(settings, "TRANSLATION_BATCH_SIZE", 500),
-        "translation_temperature": getattr(settings, "TRANSLATION_TEMPERATURE", 0.85),
+        "translation_temperature": rt_cfg["temperature"],
         "translation_provider": getattr(settings, "TRANSLATION_PROVIDER", "gemini"),
         "gemini_web_model": getattr(settings, "GEMINI_WEB_MODEL", "flash"),
-        "gemini_web_thinking": getattr(settings, "GEMINI_WEB_THINKING", "medium"),
-        "asr_threads": getattr(settings, "ASR_MAX_WORKERS", 8),
+        "gemini_web_thinking": getattr(settings, "GEMINI_WEB_THINKING", "low"),
+        "asr_threads": getattr(settings, "ASR_MAX_WORKERS", 10),
         "tts_threads": getattr(settings, "TTS_MAX_WORKERS", 128),
         "tts_engine": getattr(settings, "TTS_ENGINE", "capcut"),
         "capcut_cookie": getattr(settings, "CAPCUT_COOKIE", ""),
@@ -76,7 +81,7 @@ def get_settings():
         "bilibili_cookie_file": getattr(settings, "BILIBILI_COOKIE_FILE", ""),
         "resolved_bilibili_cookie": settings.get_bilibili_cookie_path(),
         "has_bilibili_cookie": bool(settings.get_bilibili_cookie_path()),
-        "enable_visual_sub_refiner": getattr(settings, "ENABLE_VISUAL_SUB_REFINER", True),
+        "enable_visual_sub_refiner": getattr(settings, "ENABLE_VISUAL_SUB_REFINER", False),
     }
 
 @router.post("", summary="Lưu cấu hình hệ thống vào .env")
@@ -108,8 +113,14 @@ async def update_settings(req: SettingsUpdateRequest):
         updates["TRANSLATION_MAX_CHARS"] = str(max(1000, min(50000, req.translation_max_chars)))
     if req.translation_batch_size is not None:
         updates["TRANSLATION_BATCH_SIZE"] = str(max(10, min(500, req.translation_batch_size)))
-    if req.translation_temperature is not None:
-        updates["TRANSLATION_TEMPERATURE"] = str(max(0.1, min(1.0, round(float(req.translation_temperature), 2))))
+    # Khóa chuẩn bộ thông số Gateway cho 2 model Lite (không cho UI ghi đè temperature gây sập lô)
+    from app.core.llm_client import resolve_gemini_runtime_config
+    rt_preview = resolve_gemini_runtime_config(model=updates.get("GEMINI_MODEL", settings.GEMINI_MODEL))
+    updates["TRANSLATION_TEMPERATURE"] = str(rt_preview["temperature"])
+    updates["GEMINI_THINKING_BUDGET"] = str(rt_preview["thinking_budget"])
+    updates["GEMINI_TOP_P"] = str(rt_preview["top_p"])
+    updates["GEMINI_TOP_K"] = str(rt_preview["top_k"])
+    updates["GEMINI_REQUEST_TIMEOUT"] = str(rt_preview["timeout"])
     if req.translation_provider is not None:
         updates["TRANSLATION_PROVIDER"] = req.translation_provider.strip()
     if req.gemini_web_model is not None:
@@ -131,7 +142,7 @@ async def update_settings(req: SettingsUpdateRequest):
         try:
             from app.services.step_03_translation.gemini_web_service import GeminiWebService
             import asyncio
-            target_t = (req.gemini_web_thinking or getattr(settings, "GEMINI_WEB_THINKING", "medium")).strip()
+            target_t = (req.gemini_web_thinking or getattr(settings, "GEMINI_WEB_THINKING", "low")).strip()
             print(f"[*] Chế độ Web đang bật -> Đang cập nhật mức tư duy '{target_t}' trên phiên Gemini duy nhất...", flush=True)
             asyncio.create_task(GeminiWebService.set_thinking_level(target_t))
         except Exception as e:
@@ -145,7 +156,7 @@ async def update_settings(req: SettingsUpdateRequest):
             "tts_engine": getattr(settings, "TTS_ENGINE", "capcut"),
             "translation_provider": getattr(settings, "TRANSLATION_PROVIDER", "gemini"),
             "gemini_web_model": getattr(settings, "GEMINI_WEB_MODEL", "flash"),
-            "gemini_web_thinking": getattr(settings, "GEMINI_WEB_THINKING", "medium"),
+            "gemini_web_thinking": getattr(settings, "GEMINI_WEB_THINKING", "low"),
             "capcut_cookie": getattr(settings, "CAPCUT_COOKIE", ""),
             "tiktok_session_id": getattr(settings, "TIKTOK_SESSION_ID", ""),
             "bilibili_cookie_file": getattr(settings, "BILIBILI_COOKIE_FILE", ""),
@@ -157,15 +168,18 @@ async def update_settings(req: SettingsUpdateRequest):
             "whisper_model_size": settings.WHISPER_MODEL_SIZE,
             "gemini_api_key": settings.GEMINI_API_KEY,
             "has_gemini_key": bool(settings.GEMINI_API_KEY and settings.GEMINI_API_KEY.strip()),
-            "gemini_model": settings.GEMINI_MODEL,
+            "gemini_model": rt_preview["model"],
+            "gemini_thinking_budget": rt_preview["thinking_budget"],
+            "gemini_top_p": rt_preview["top_p"],
+            "gemini_top_k": rt_preview["top_k"],
             "openrouter_api_key": settings.OPENROUTER_API_KEY,
             "has_openrouter_key": bool(settings.OPENROUTER_API_KEY and settings.OPENROUTER_API_KEY.strip()),
             "translation_max_chars": settings.TRANSLATION_MAX_CHARS,
             "translation_batch_size": settings.TRANSLATION_BATCH_SIZE,
-            "translation_temperature": getattr(settings, "TRANSLATION_TEMPERATURE", 0.85),
+            "translation_temperature": rt_preview["temperature"],
             "tts_threads": settings.TTS_MAX_WORKERS,
-            "asr_threads": getattr(settings, "ASR_MAX_WORKERS", 8),
-            "enable_visual_sub_refiner": getattr(settings, "ENABLE_VISUAL_SUB_REFINER", True),
+            "asr_threads": getattr(settings, "ASR_MAX_WORKERS", 10),
+            "enable_visual_sub_refiner": getattr(settings, "ENABLE_VISUAL_SUB_REFINER", False),
         }
     }
 
